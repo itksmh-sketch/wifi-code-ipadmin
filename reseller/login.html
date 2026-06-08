@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reseller Login</title>
+    <link rel="stylesheet" href="/reseller/statics/app.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div class="card">
+        <h1 class="h1">Reseller Portal</h1>
+        <div class="muted">Sign in with your reseller credentials.</div>
+        <div class="spacer"></div>
+        <div id="msg" class="notice" style="display:none"></div>
+        <form id="form">
+          <label>Email</label>
+          <input id="email" type="email" required autocomplete="username" />
+          <label>Password</label>
+          <input id="password" type="password" required autocomplete="current-password" />
+          <div class="spacer"></div>
+          <button class="btn primary" type="submit">Login</button>
+        </form>
+        <div class="spacer"></div>
+        <div class="muted">
+          Seed accounts: <b>reseller1@example.com</b> / <b>reseller123</b> and <b>agent1@example.com</b> / <b>agent123</b>
+        </div>
+      </div>
+    </div>
+    <script src="/reseller/statics/app.js"></script>
+    <script>
+      const msg = document.getElementById("msg");
+      function show(text, good=false){
+        msg.style.display = "block";
+        msg.className = "notice " + (good ? "good" : "bad");
+        msg.textContent = text;
+      }
+
+      document.getElementById("form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        msg.style.display = "none";
+        try {
+          const data = await ResellerApp.API.request("/api/v1/reseller/auth/login", {
+            method: "POST",
+            auth: false,
+            body: {
+              email: document.getElementById("email").value.trim(),
+              password: document.getElementById("password").value,
+            },
+          });
+          sessionStorage.setItem("reseller_access_token", data.access_token);
+          sessionStorage.setItem("reseller_refresh_token", data.refresh_token);
+          window.location.href = "/reseller/dashboard";
+        } catch (err) {
+          show("Login failed. Check email/password.");
+        }
+      });
+    </script>
+  </body>
+</html>
+
