@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Login</title>
+  <style>
+    :root { --bg:#eef4fb; --card:#ffffff; --ink:#14213d; --muted:#5c677d; --line:#d7deea; --accent:#0d6e5f; --danger:#b42318; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Segoe UI, Arial, sans-serif; background:linear-gradient(180deg,#eef4fb 0,#f7f9fc 100%); color:var(--ink); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px; }
+    .card { width:min(420px,100%); background:var(--card); border:1px solid var(--line); border-radius:20px; padding:24px; box-shadow:0 16px 36px rgba(20,33,61,.08); }
+    h1 { margin:0 0 8px; font-size:28px; }
+    p { margin:0 0 20px; color:var(--muted); }
+    label { display:block; font-size:13px; font-weight:700; margin-bottom:6px; }
+    input { width:100%; padding:12px 14px; border:1px solid var(--line); border-radius:12px; margin-bottom:14px; }
+    button { width:100%; border:0; border-radius:12px; padding:12px 16px; font-weight:700; cursor:pointer; background:var(--accent); color:#fff; }
+    .error { display:none; margin-bottom:14px; padding:12px 14px; border-radius:12px; background:#fef3f2; color:var(--danger); }
+    .hint { margin-top:14px; font-size:12px; color:var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Admin Login</h1>
+    <p>Sign in to access router onboarding and diagnostics.</p>
+    <div id="error" class="error"></div>
+    <form id="loginForm">
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username" required>
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button>
+    </form>
+    <div class="hint">After login, you will be sent back to the router admin page you requested.</div>
+  </div>
+  <script>
+    (function(){
+      var params = new URLSearchParams(window.location.search);
+      var next = params.get("next") || "/admin/routers";
+      var token = localStorage.getItem("access_token");
+
+      function showError(message) {
+        var box = document.getElementById("error");
+        box.style.display = "block";
+        box.textContent = message;
+      }
+
+      function hideError() {
+        document.getElementById("error").style.display = "none";
+      }
+
+      function clearToken() {
+        localStorage.removeItem("access_token");
+      }
+
+      function parseJwt(accessToken) {
+        try {
+          return JSON.parse(atob(accessToken.split(".")[1]));
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function isExpired(payload) {
+        return !payload || !payload.exp || (payload.exp * 1000) <= Date.now();
+      }
+
+      function validateExistingToken(accessToken) {
+        return fetch("/api/v1/dashboard", {
+          headers: { "Authorization": "Bearer " + accessToken }
+        }).then(function (res) {
+          if (res.ok) {
+            window.location.replace(next);
+            return;
+          }
+          clearToken();
+        }).catch(function () {
+          clearToken();
+        });
+      }
+
+      if (token) {
+        var payload = parseJwt(token);
+        if (isExpired(payload)) {
+          clearToken();
+        } else {
+          validateExistingToken(token);
+        }
+      }
+
+      document.getElementById("loginForm").addEventListener("submit", function (event) {
+        event.preventDefault();
+        hideError();
+
+        fetch("/api/v1/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: document.getElementById("email").value.trim(),
+            password: document.getElementById("password").value
+          })
+        })
+        .then(function (res) {
+          return res.json().then(function (body) {
+            return { ok: res.ok, body: body };
+          });
+        })
+        .then(function (result) {
+          if (!result.ok) {
+            showError(result.body.detail || "Login failed.");
+            return;
+          }
+          localStorage.setItem("access_token", result.body.access_token);
+          window.location.replace(next);
+        })
+        .catch(function () {
+          showError("Network error. Please try again.");
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

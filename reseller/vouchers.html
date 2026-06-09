@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>My vouchers</title>
+    <link rel="stylesheet" href="/reseller/statics/app.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div class="nav no-print">
+        <div>
+          <div class="muted">Signed in as</div>
+          <div id="nav-email" style="font-weight:700"></div>
+        </div>
+        <div class="links">
+          <a class="btn" href="/reseller/dashboard">Dashboard</a>
+          <a class="btn" href="/reseller/buy">Buy vouchers</a>
+          <a class="btn" href="/reseller/wallet">Wallet</a>
+          <a class="btn" href="/reseller/sales">Sales</a>
+          <button class="btn danger" onclick="ResellerApp.logout()">Logout</button>
+        </div>
+      </div>
+
+      <div id="banner" class="notice good" style="display:none"></div>
+
+      <div class="card">
+        <h1 class="h1">My vouchers</h1>
+        <div class="row">
+          <div>
+            <label>Filter status</label>
+            <select id="statusFilter">
+              <option value="">All</option>
+              <option value="unused">unused</option>
+              <option value="active">active</option>
+              <option value="exhausted">exhausted</option>
+              <option value="expired">expired</option>
+            </select>
+          </div>
+          <div>
+            <label>Search code</label>
+            <input id="search" placeholder="e.g. ABCD-1234-...." />
+          </div>
+        </div>
+        <div class="spacer"></div>
+        <div class="row no-print">
+          <button class="btn" id="printBtn">Print selected</button>
+        </div>
+      </div>
+
+      <div class="spacer"></div>
+      <div class="card">
+        <table class="table" id="table">
+          <thead>
+            <tr>
+              <th class="no-print"></th>
+              <th>Code</th>
+              <th>Plan</th>
+              <th>Allocated</th>
+              <th>Status</th>
+              <th>Sold</th>
+              <th class="no-print"></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <script src="/reseller/statics/app.js"></script>
+    <script>
+      ResellerApp.requireAuth();
+      ResellerApp.loadNav();
+
+      const banner = document.getElementById("banner");
+      if (sessionStorage.getItem("purchase_success") === "1") {
+        banner.style.display = "block";
+        banner.textContent = "Purchase successful. Your vouchers are listed below.";
+        sessionStorage.removeItem("purchase_success");
+      }
+
+      const tbody = document.querySelector("#table tbody");
+      const statusFilter = document.getElementById("statusFilter");
+      const search = document.getElementById("search");
+      let rows = [];
+
+      function fmtDate(s){
+        if (!s) return "—";
+        try { return new Date(s).toLocaleString(); } catch { return s; }
+      }
+
+      function pill(status){
+        const cls = (status === "unused" || status === "active") ? "good" : "bad";
+        return `<span class="pill ${cls}">${status}</span>`;
+      }
+
+      function render(){
+        const st = statusFilter.value;
+        const q = (search.value || "").trim().toUpperCase();
+        const filtered = rows.filter(r => (!st || r.status === st) && (!q || r.code.includes(q)));
+        tbody.innerHTML = filtered.map(r => {
+          const sold = r.sold_at ? `Yes (${fmtDate(r.sold_at)})` : "No";
+          const soldCell = r.sold_at ? `<span class="pill good">sold</span>` : `<span class="pill">unsold</span>`;
+          const canMark = !r.sold_at;
+          return `
+            <tr>
+              <td class="no-print"><input type="checkbox" class="pick" data-code="${r.code}"></td>
+              <td><b>${r.code}</b></td>
+              <td>${r.plan.name}</td>
+              <td>${fmtDate(r.allocated_at)}</td>
+              <td>${pill(r.status)}</td>
+              <td>${soldCell}</td>
+              <td class="no-print">
+                ${canMark ? `<button class="btn" data-action="sold" data-id="${r.allocation_id}">Mark as sold</button>` : ""}
+              </td>
+            </tr>
+          `;
+        }).join("");
+      }
+
+      async function load(){
+        rows = await ResellerApp.API.request("/api/v1/reseller/vouchers");
+        render();
+      }
+
+      statusFilter.addEventListener("change", render);
+      search.addEventListener("input", render);
+
+      tbody.addEventListener("click", async (e) => {
+        const btn = e.target.closest("button");
+        if (!btn) return;
+        if (btn.dataset.action !== "sold") return;
+        const id = btn.dataset.id;
+        const phone = prompt("Customer phone number:");
+        if (!phone) return;
+        try {
+          await ResellerApp.API.request(`/api/v1/reseller/vouchers/${id}/mark-sold`, { method:"PUT", body:{ sold_to_phone: phone } });
+          await load();
+        } catch {
+          alert("Failed to mark sold.");
+        }
+      });
+
+      document.getElementById("printBtn").addEventListener("click", () => {
+        const codes = Array.from(document.querySelectorAll(".pick:checked")).map(x => x.dataset.code);
+        if (!codes.length) return alert("Select at least one voucher.");
+        const url = "/reseller/print?codes=" + encodeURIComponent(codes.join(","));
+        window.open(url, "_blank");
+      });
+
+      load().catch(() => window.location.href="/reseller/login");
+    </script>
+  </body>
+</html>
+

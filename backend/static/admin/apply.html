@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Apply to Join — YourISP Platform</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background: #f8fafc; margin: 0; padding: 24px; color: #1e293b; }
+  .card { max-width: 560px; margin: 40px auto; background: #fff; border-radius: 12px; padding: 40px; box-shadow: 0 2px 16px rgba(0,0,0,0.08); }
+  h1 { margin: 0 0 8px; font-size: 26px; }
+  .sub { color: #64748b; margin-bottom: 28px; font-size: 15px; }
+  label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+  input, select, textarea { width: 100%; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 12px; font-size: 15px; outline: none; }
+  input:focus, select:focus, textarea:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
+  .field { margin-bottom: 18px; }
+  .error { color: #ef4444; font-size: 13px; margin-top: 4px; display: none; }
+  button[type=submit] { width: 100%; background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 12px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 8px; }
+  button[type=submit]:hover { background: #4f46e5; }
+  button[type=submit]:disabled { background: #a5b4fc; cursor: not-allowed; }
+  .success { background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 24px; text-align: center; display: none; }
+  .success h2 { color: #15803d; margin-top: 0; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div id="form-section">
+    <h1>Apply to Join YourISP Platform</h1>
+    <p class="sub">Fill in the form below. We'll review your application and contact you within 24-48 hours.</p>
+
+    <form id="apply-form" novalidate>
+      <div class="field">
+        <label for="isp_name">ISP / Business Name *</label>
+        <input type="text" id="isp_name" name="isp_name" placeholder="e.g. AccraNet ISP" required minlength="3">
+        <div class="error" id="err_isp_name">Must be at least 3 characters.</div>
+      </div>
+      <div class="field">
+        <label for="contact_name">Your Full Name *</label>
+        <input type="text" id="contact_name" name="contact_name" placeholder="e.g. Kwame Mensah" required>
+        <div class="error" id="err_contact_name">Please enter your name.</div>
+      </div>
+      <div class="field">
+        <label for="email">Email Address *</label>
+        <input type="email" id="email" name="email" placeholder="you@example.com" required>
+        <div class="error" id="err_email">Please enter a valid email address.</div>
+      </div>
+      <div class="field">
+        <label for="phone">Phone Number (Ghana) *</label>
+        <input type="tel" id="phone" name="phone" placeholder="e.g. 0244123456" required>
+        <div class="error" id="err_phone">Please enter a valid Ghana mobile number (e.g. 0244123456).</div>
+      </div>
+      <div class="field">
+        <label for="region">Region / Area of Operation *</label>
+        <input type="text" id="region" name="region" placeholder="e.g. Greater Accra" required>
+        <div class="error" id="err_region">Please enter your region.</div>
+      </div>
+      <div class="field">
+        <label for="expected_sites">How many hotspot sites are you planning?</label>
+        <select id="expected_sites" name="expected_sites">
+          <option value="">— Select —</option>
+          <option value="2">1-2 sites</option>
+          <option value="5">3-5 sites</option>
+          <option value="10">6-10 sites</option>
+          <option value="11">10+ sites</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="message">Tell us about your setup (optional)</label>
+        <textarea id="message" name="message" rows="3" placeholder="Anything else you'd like us to know..."></textarea>
+      </div>
+      <div class="error" id="err_submit" style="margin-bottom:8px;font-size:14px;"></div>
+      <button type="submit" id="submit-btn">Apply to Join</button>
+    </form>
+  </div>
+
+  <div class="success" id="success-section">
+    <h2>✓ Application Received!</h2>
+    <p>Thank you for applying. We'll review your application and contact you within <strong>24-48 hours</strong>.</p>
+    <p style="color:#64748b;font-size:14px;">Check your email for a confirmation message.</p>
+  </div>
+</div>
+
+<script>
+const ghanaPhoneRe = /^(0[2-9]\d{8}|233[2-9]\d{8})$/;
+const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function show(id) { document.getElementById(id).style.display = 'block'; }
+function hide(id) { document.getElementById(id).style.display = 'none'; }
+function val(id) { return document.getElementById(id).value.trim(); }
+
+document.getElementById('apply-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  let ok = true;
+
+  ['err_isp_name','err_contact_name','err_email','err_phone','err_region','err_submit'].forEach(hide);
+
+  if (val('isp_name').length < 3) { show('err_isp_name'); ok = false; }
+  if (!val('contact_name')) { show('err_contact_name'); ok = false; }
+  if (!emailRe.test(val('email'))) { show('err_email'); ok = false; }
+  if (!ghanaPhoneRe.test(val('phone').replace(/\s/g,''))) { show('err_phone'); ok = false; }
+  if (!val('region')) { show('err_region'); ok = false; }
+  if (!ok) return;
+
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Submitting…';
+
+  const payload = {
+    isp_name: val('isp_name'),
+    contact_name: val('contact_name'),
+    email: val('email'),
+    phone: val('phone').replace(/\s/g,''),
+    region: val('region'),
+    message: val('message') || null,
+  };
+  const es = val('expected_sites');
+  if (es) payload.expected_sites = parseInt(es);
+
+  try {
+    const resp = await fetch('/api/v1/public/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (resp.status === 201 || resp.ok) {
+      hide('form-section');
+      show('success-section');
+    } else {
+      const data = await resp.json();
+      const err = document.getElementById('err_submit');
+      err.textContent = data.detail || 'An error occurred. Please try again.';
+      show('err_submit');
+      btn.disabled = false;
+      btn.textContent = 'Apply to Join';
+    }
+  } catch (ex) {
+    const err = document.getElementById('err_submit');
+    err.textContent = 'Network error. Please check your connection and try again.';
+    show('err_submit');
+    btn.disabled = false;
+    btn.textContent = 'Apply to Join';
+  }
+});
+</script>
+</body>
+</html>
