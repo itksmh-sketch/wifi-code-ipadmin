@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Buy vouchers</title>
+    <link rel="stylesheet" href="/reseller/statics/app.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div class="nav no-print">
+        <div>
+          <div class="muted">Signed in as</div>
+          <div id="nav-email" style="font-weight:700"></div>
+        </div>
+        <div class="links">
+          <a class="btn" href="/reseller/dashboard">Dashboard</a>
+          <a class="btn" href="/reseller/vouchers">My vouchers</a>
+          <a class="btn" href="/reseller/wallet">Wallet</a>
+          <a class="btn" href="/reseller/sales">Sales</a>
+          <button class="btn danger" onclick="ResellerApp.logout()">Logout</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h1 class="h1">Buy vouchers</h1>
+        <div class="muted">Select a plan and quantity (max 100).</div>
+      </div>
+
+      <div class="spacer"></div>
+      <div id="banner" class="notice" style="display:none"></div>
+
+      <div class="spacer"></div>
+      <div class="grid cols-2">
+        <div class="card">
+          <label>Plan</label>
+          <select id="plan"></select>
+          <label>Quantity</label>
+          <input id="qty" type="number" min="1" max="100" value="1" />
+          <div class="spacer"></div>
+          <button id="buyBtn" class="btn primary">Purchase</button>
+        </div>
+
+        <div class="card">
+          <div class="muted">Current wallet balance (GHS)</div>
+          <div id="balance" class="big">—</div>
+          <div class="spacer"></div>
+          <div class="notice">
+            <div><b>Unit cost after commission:</b> <span id="unit">—</span> GHS</div>
+            <div style="margin-top:6px"><b>Total cost:</b> <span id="total">—</span> GHS</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/reseller/statics/app.js"></script>
+    <script>
+      ResellerApp.requireAuth();
+      ResellerApp.loadNav();
+
+      const banner = document.getElementById("banner");
+      const planSel = document.getElementById("plan");
+      const qty = document.getElementById("qty");
+      const unit = document.getElementById("unit");
+      const total = document.getElementById("total");
+      const balanceEl = document.getElementById("balance");
+
+      function show(text, good=false){
+        banner.style.display = "block";
+        banner.className = "notice " + (good ? "good" : "bad");
+        banner.textContent = text;
+      }
+      function hide(){ banner.style.display = "none"; }
+
+      let plans = [];
+      function currentPlan(){
+        const id = planSel.value;
+        return plans.find(p => p.id === id);
+      }
+      function recalc(){
+        const p = currentPlan();
+        const q = Math.max(1, Math.min(100, Number(qty.value || 1)));
+        qty.value = q;
+        if (!p) return;
+        unit.textContent = ResellerApp.money(p.unit_cost_ghs);
+        total.textContent = ResellerApp.money(p.unit_cost_ghs * q);
+      }
+
+      (async () => {
+        const wallet = await ResellerApp.API.request("/api/v1/reseller/wallet");
+        balanceEl.textContent = ResellerApp.money(wallet.balance_ghs);
+
+        plans = await ResellerApp.API.request("/api/v1/reseller/plans");
+        planSel.innerHTML = plans.map(p => `<option value="${p.id}">${p.name} — GHS ${ResellerApp.money(p.price_ghs)}</option>`).join("");
+        recalc();
+      })().catch(() => window.location.href="/reseller/login");
+
+      planSel.addEventListener("change", recalc);
+      qty.addEventListener("input", recalc);
+
+      document.getElementById("buyBtn").addEventListener("click", async () => {
+        hide();
+        const p = currentPlan();
+        if (!p) return;
+        const q = Number(qty.value || 1);
+        try {
+          await ResellerApp.API.request("/api/v1/reseller/vouchers/purchase", {
+            method:"POST",
+            body:{ plan_id: p.id, quantity: q }
+          });
+          sessionStorage.setItem("purchase_success", "1");
+          window.location.href="/reseller/vouchers";
+        } catch (err) {
+          if (String(err.message || "").includes("INSUFFICIENT_FUNDS")) {
+            show("Insufficient wallet balance — contact your agent to top up");
+          } else {
+            show("Purchase failed. Please try again.");
+          }
+        }
+      });
+    </script>
+  </body>
+</html>
+

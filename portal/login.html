@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wi-Fi Login - ISP Hotspot</title>
+    <link rel="stylesheet" href="/portal/statics/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="logo">
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                    <circle cx="24" cy="24" r="24" fill="#2563EB"/>
+                    <path d="M14 28c0-5.523 4.477-10 10-10s10 4.477 10 10" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+                    <path d="M18 28c0-3.314 2.686-6 6-6s6 2.686 6 6" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+                    <circle cx="24" cy="28" r="2" fill="white"/>
+                </svg>
+            </div>
+            <h1>Connect to Wi-Fi</h1>
+            <p class="subtitle">Enter your voucher code to get online</p>
+
+            <div id="loginError" class="alert alert-error" style="{% if error %}display:flex{% else %}display:none{% endif %}">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 10.5a.75.75 0 110-1.5.75.75 0 010 1.5zM8.75 4.75a.75.75 0 00-1.5 0v3.5a.75.75 0 001.5 0v-3.5z"/>
+                </svg>
+                <span id="loginErrorText">{{ error or "" }}</span>
+            </div>
+            <form id="voucherLoginForm" action="/portal/authenticate" method="POST">
+                <input type="hidden" id="portalMac" name="mac" value="{{ mac or '' }}">
+                <input type="hidden" id="portalIp" name="ip" value="{{ ip or '' }}">
+                <input type="hidden" id="portalUrl" name="url" value="{{ url or '' }}">
+                <input type="hidden" id="portalGateway" name="gateway" value="{{ gateway or '' }}">
+                <input type="hidden" id="portalSiteId" name="site_id" value="{{ site_id or '' }}">
+                <input type="hidden" id="portalLinkLoginOnly" name="link_login_only" value="{{ link_login_only or '' }}">
+                <input type="hidden" id="portalLinkOrig" name="link_orig" value="{{ link_orig or '' }}">
+
+                <div class="form-group">
+                    <label for="code">Voucher Code</label>
+                    <input
+                        type="text"
+                        id="code"
+                        name="code"
+                        placeholder="XXXX-XXXX-XXXX-XXXX"
+                        autocomplete="off"
+                        required
+                        autofocus
+                    >
+                </div>
+
+                <button id="connectSubmit" type="submit" class="btn btn-primary">Connect</button>
+            </form>
+
+            <div class="portal-divider"></div>
+
+            <div class="buy-section">
+                <h2 class="section-title">Buy access</h2>
+                <p class="section-subtitle">Choose a plan and pay with mobile money or card</p>
+                <div id="sitePicker" class="form-group" style="display:none;margin-bottom:12px;">
+                    <label for="siteSelect">Location</label>
+                    <select id="siteSelect"></select>
+                </div>
+                <div id="plansStatus" class="muted">Loading plans...</div>
+                <div id="plansGrid" class="plans-grid" aria-live="polite"></div>
+            </div>
+
+            <script>
+                (function() {
+                    var params = new URLSearchParams(window.location.search);
+                    var siteId = params.get("site_id") || "{{ site_id or '' }}";
+                    var mac = params.get("mac") || "{{ mac or '' }}";
+                    var clientIp = params.get("ip") || "{{ ip or '' }}";
+                    var originalUrl = params.get("url") || params.get("link-orig") || params.get("link_orig") || "{{ link_orig or url or '' }}";
+                    var gateway = params.get("gateway") || "{{ gateway or '10.5.50.1' }}";
+                    var linkLoginOnly = params.get("link-login-only") || params.get("link_login_only") || "{{ link_login_only or '' }}";
+                    var statusEl = document.getElementById("plansStatus");
+                    var gridEl = document.getElementById("plansGrid");
+                    var sitePicker = document.getElementById("sitePicker");
+                    var siteSelect = document.getElementById("siteSelect");
+                    var loginForm = document.getElementById("voucherLoginForm");
+                    var loginError = document.getElementById("loginError");
+                    var loginErrorText = document.getElementById("loginErrorText");
+                    var connectSubmit = document.getElementById("connectSubmit");
+
+                    function setValue(id, value) {
+                        var input = document.getElementById(id);
+                        if (input) input.value = value || "";
+                    }
+
+                    function showLoginError(message) {
+                        loginErrorText.textContent = message || "Unable to connect. Please try again.";
+                        loginError.style.display = "flex";
+                    }
+
+                    function submitToMikroTik(routerGateway, username, password, dst) {
+                        var form = document.createElement("form");
+                        form.method = "POST";
+                        form.action = "http://" + routerGateway + "/login";
+
+                        var fields = {
+                            "username": username,
+                            "password": password,
+                            "dst": dst,
+                            "popup": "false"
+                        };
+
+                        for (var key in fields) {
+                            var input = document.createElement("input");
+                            input.type = "hidden";
+                            input.name = key;
+                            input.value = fields[key];
+                            form.appendChild(input);
+                        }
+
+                        document.body.appendChild(form);
+                        form.submit();
+                    }
+
+                    setValue("portalMac", mac);
+                    setValue("portalIp", clientIp);
+                    setValue("portalUrl", originalUrl);
+                    setValue("portalGateway", gateway);
+                    setValue("portalSiteId", siteId);
+                    setValue("portalLinkLoginOnly", linkLoginOnly);
+                    setValue("portalLinkOrig", originalUrl);
+
+                    try {
+                        if (siteId) sessionStorage.setItem("portal.site_id", siteId);
+                        if (originalUrl) sessionStorage.setItem("portal.original_url", originalUrl);
+                    } catch (e) {}
+
+                    loginForm.addEventListener("submit", function(event) {
+                        event.preventDefault();
+                        loginError.style.display = "none";
+                        loginErrorText.textContent = "";
+
+                        var codeInput = document.getElementById("code");
+                        var voucherCode = (codeInput.value || "").trim();
+                        if (!voucherCode) {
+                            showLoginError("Please enter a voucher code");
+                            return;
+                        }
+
+                        connectSubmit.disabled = true;
+                        connectSubmit.textContent = "Connecting...";
+
+                        var formData = new FormData();
+                        formData.append("code", voucherCode);
+                        if (mac) formData.append("mac", mac);
+                        if (clientIp) formData.append("ip", clientIp);
+                        if (originalUrl) formData.append("url", originalUrl);
+                        if (gateway) formData.append("gateway", gateway);
+                        if (siteId) formData.append("site_id", siteId);
+                        if (linkLoginOnly) formData.append("link_login_only", linkLoginOnly);
+                        if (originalUrl) formData.append("link_orig", originalUrl);
+
+                        fetch("/portal/authenticate", {
+                            method: "POST",
+                            body: formData,
+                            headers: { "Accept": "application/json" }
+                        })
+                            .then(function(response) {
+                                return response.json().catch(function() { return {}; }).then(function(body) {
+                                    return { ok: response.ok, body: body };
+                                });
+                            })
+                            .then(function(result) {
+                                if (!result.ok || !result.body.success) {
+                                    throw new Error(result.body.detail || "Unable to connect. Please try again.");
+                                }
+                                submitToMikroTik(
+                                    gateway || "10.5.50.1",
+                                    result.body.username,
+                                    result.body.password,
+                                    originalUrl || "/"
+                                );
+                            })
+                            .catch(function(error) {
+                                connectSubmit.disabled = false;
+                                connectSubmit.textContent = "Connect";
+                                showLoginError(error.message);
+                            });
+                    });
+
+                    function fmtSpeed(kbps) {
+                        var mbps = (kbps || 0) / 1000;
+                        return (mbps % 1 === 0 ? mbps.toFixed(0) : mbps.toFixed(1)) + " Mbps";
+                    }
+
+                    function fmtCap(plan) {
+                        if (!plan) return "";
+                        var parts = [];
+                        if ((plan.type === "time" || plan.type === "hybrid") && plan.duration_minutes) {
+                            var minutes = plan.duration_minutes;
+                            parts.push((minutes >= 60 && minutes % 60 === 0) ? ((minutes / 60) + " hrs") : (minutes + " mins"));
+                        }
+                        if ((plan.type === "data" || plan.type === "hybrid") && plan.data_limit_mb) {
+                            var mb = plan.data_limit_mb;
+                            parts.push((mb >= 1024 && mb % 1024 === 0) ? ((mb / 1024) + " GB") : (mb >= 1024 ? ((mb / 1024).toFixed(1) + " GB") : (mb + " MB")));
+                        }
+                        return parts.join(" + ");
+                    }
+
+                    function renderPlans(plans) {
+                        if (!plans || !plans.length) {
+                            statusEl.textContent = "No plans available at this location";
+                            gridEl.innerHTML = "";
+                            return;
+                        }
+                        statusEl.textContent = "";
+                        gridEl.innerHTML = plans.map(function(plan) {
+                            var speed = fmtSpeed(plan.download_speed_kbps) + " down / " + fmtSpeed(plan.upload_speed_kbps) + " up";
+                            var cap = fmtCap(plan);
+                            var price = Number(plan.price_ghs || 0).toFixed(2);
+                            return (
+                                '<div class="plan-card">' +
+                                    '<div class="plan-name">' + (plan.name || "Plan") + '</div>' +
+                                    '<div class="plan-meta">' + speed + '</div>' +
+                                    (cap ? ('<div class="plan-meta">' + cap + '</div>') : '') +
+                                    '<button class="btn btn-outline plan-btn" data-plan="' + plan.id + '">Buy - GHS ' + price + '</button>' +
+                                '</div>'
+                            );
+                        }).join("");
+                    }
+
+                    function loadPlans(activeSiteId) {
+                        statusEl.textContent = "Loading plans...";
+                        var url = "/portal/plans";
+                        var sep = "?";
+                        if (activeSiteId) {
+                            url += sep + "site_id=" + encodeURIComponent(activeSiteId);
+                            sep = "&";
+                        }
+                        if (gateway) url += sep + "gateway=" + encodeURIComponent(gateway);
+                        fetch(url, { headers: { "Accept": "application/json" } })
+                            .then(function(response) {
+                                if (!response.ok) throw new Error("plans_http_" + response.status);
+                                return response.json();
+                            })
+                            .then(renderPlans)
+                            .catch(function() {
+                                statusEl.textContent = "No plans available at this location";
+                            });
+                    }
+
+                    gridEl.addEventListener("click", function(event) {
+                        var button = event.target && event.target.closest ? event.target.closest("button[data-plan]") : null;
+                        if (!button) return;
+                        var chosenSiteId = siteId || siteSelect.value;
+                        if (!chosenSiteId) {
+                            statusEl.textContent = "Choose your location first";
+                            return;
+                        }
+                        try { sessionStorage.setItem("portal.site_id", chosenSiteId); } catch (e) {}
+                        var planId = button.getAttribute("data-plan");
+                        var target = "/portal/pay?plan_id=" + encodeURIComponent(planId) + "&site_id=" + encodeURIComponent(chosenSiteId);
+                        if (gateway) target += "&gateway=" + encodeURIComponent(gateway);
+                        window.location.href = target;
+                    });
+
+                    if (siteId) {
+                        loadPlans(siteId);
+                        return;
+                    }
+
+                    statusEl.textContent = "Choose your location to see available plans";
+                    fetch("/portal/sites", { headers: { "Accept": "application/json" } })
+                        .then(function(response) {
+                            if (!response.ok) throw new Error("sites_http_" + response.status);
+                            return response.json();
+                        })
+                        .then(function(sites) {
+                            if (!sites || !sites.length) {
+                                statusEl.textContent = "No plans available at this location";
+                                return;
+                            }
+                            sitePicker.style.display = "block";
+                            siteSelect.innerHTML =
+                                '<option value="">Select location</option>' +
+                                sites.map(function(site) {
+                                    return '<option value="' + site.id + '">' + site.town_name + ' - ' + site.name + '</option>';
+                                }).join("");
+                            siteSelect.addEventListener("change", function() {
+                                siteId = siteSelect.value;
+                                if (!siteId) {
+                                    statusEl.textContent = "Choose your location to see available plans";
+                                    gridEl.innerHTML = "";
+                                    return;
+                                }
+                                try { sessionStorage.setItem("portal.site_id", siteId); } catch (e) {}
+                                loadPlans(siteId);
+                            });
+                        })
+                        .catch(function() {
+                            statusEl.textContent = "Unable to load locations";
+                        });
+                })();
+            </script>
+
+            <div class="footer">
+                <p>Need a voucher? Contact your local ISP office.</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

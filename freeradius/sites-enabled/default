@@ -1,0 +1,69 @@
+# Default site configuration for FreeRADIUS
+# Handles authentication and accounting with SQL backend
+
+server default {
+    listen {
+        type = auth
+        ipaddr = *
+        port = 0
+    }
+
+    listen {
+        type = acct
+        ipaddr = *
+        port = 0
+    }
+
+    authorize {
+        # Filter out bad packets
+        filter_username
+
+        # SQL-based voucher authentication
+        sql_hotspot
+
+        # If SQL didn't find the user, reject
+        -sql_hotspot
+
+        # If no password found, reject
+        if (!control:Cleartext-Password) {
+            update reply {
+                Reply-Message := "Voucher not found or expired"
+            }
+            reject
+        }
+
+        # Derive Auth-Type from the password loaded by SQL.
+        pap
+    }
+
+    authenticate {
+        Auth-Type PAP {
+            pap
+        }
+    }
+
+    preacct {
+        preprocess
+        acct_unique
+    }
+
+    accounting {
+        # Log accounting to SQL
+        sql_hotspot
+    }
+
+    session {
+        radutmp
+    }
+
+    post-auth {
+        # Log auth attempts
+        sql_hotspot
+
+        Post-Auth-Type REJECT {
+            update reply {
+                Reply-Message := "Access denied: voucher may be expired, exhausted, or disabled"
+            }
+        }
+    }
+}

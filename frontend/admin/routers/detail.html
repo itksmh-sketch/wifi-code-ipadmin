@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Router Detail</title>
+  <style>
+    :root { --ink:#11213b; --muted:#58657d; --line:#d7deea; --card:#fff; --bg:#eef2f8; --accent:#0b6e4f; --danger:#b42318; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Segoe UI, Arial, sans-serif; background:linear-gradient(180deg,#eef4fb,#f7f9fc); color:var(--ink); }
+    .wrap { max-width:1180px; margin:0 auto; padding:24px 16px 48px; }
+    .hero { display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:18px; }
+    .hero h1 { margin:0; font-size:30px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:0 14px 30px rgba(17,33,59,.06); }
+    .tabs { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
+    .tab { border:1px solid var(--line); background:#fff; border-radius:999px; padding:10px 14px; cursor:pointer; }
+    .tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .panel { display:none; }
+    .panel.active { display:block; }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+    .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+    .field-full { grid-column:1 / -1; }
+    .stat { padding:14px; border:1px solid var(--line); border-radius:14px; background:#fafcff; }
+    .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.05em; }
+    .value { font-size:20px; font-weight:700; margin-top:6px; }
+    .btn { border:0; border-radius:12px; padding:12px 14px; cursor:pointer; font-weight:700; }
+    .btn-primary { background:var(--accent); color:#fff; }
+    .btn-danger { background:#fef3f2; color:var(--danger); }
+    .toolbar { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+    .toolbar-end { margin-left:auto; }
+    .banner { margin-bottom:16px; padding:12px 14px; border-radius:12px; background:#ecfdf3; color:#067647; display:none; }
+    canvas { width:100%; max-width:100%; border:1px solid var(--line); border-radius:14px; background:#fff; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left; font-size:14px; vertical-align:top; }
+    .status { display:inline-block; padding:4px 10px; border-radius:999px; background:#eef4ff; font-weight:700; font-size:12px; }
+    .modal { position:fixed; inset:0; background:rgba(17,33,59,.4); display:none; align-items:center; justify-content:center; padding:16px; }
+    .modal .card { width:min(760px,100%); max-height:90vh; overflow:auto; }
+    .hidden { display:none; }
+    label { display:block; font-size:13px; font-weight:700; margin-bottom:6px; }
+    input, select { width:100%; padding:12px 14px; border-radius:12px; border:1px solid var(--line); }
+    .hint { color:var(--muted); font-size:12px; margin-top:4px; }
+    .note { margin:14px 0; padding:12px 14px; border-radius:12px; background:#f8fafc; color:var(--muted); }
+    pre { white-space:pre-wrap; word-break:break-word; background:#0f172a; color:#e5efff; padding:12px; border-radius:12px; }
+    @media (max-width: 860px) { .grid, .form-grid { grid-template-columns:1fr; } .toolbar-end { margin-left:0; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="banner" id="page-banner"></div>
+    <div class="hero">
+      <div>
+        <h1 id="title">Router detail</h1>
+        <p id="subtitle"></p>
+      </div>
+      <div class="toolbar">
+        <button class="btn" id="open-edit">Edit router</button>
+        <button class="btn btn-primary" id="open-reprovision">Reprovision</button>
+        <button class="btn btn-primary" id="run-diagnostics">Run diagnostics</button>
+        <button class="btn btn-danger" id="open-reboot">Reboot</button>
+      </div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="metrics">Metrics</button>
+      <button class="tab" data-tab="sessions">Active sessions</button>
+      <button class="tab" data-tab="logs">Provision log</button>
+    </div>
+    <div class="card panel active" id="overview">
+      <div class="grid">
+        <div class="stat"><div class="label">Connection status</div><div class="value" id="connection-status">-</div></div>
+        <div class="stat"><div class="label">Last connected</div><div class="value" id="last-connected">-</div></div>
+        <div class="stat"><div class="label">Last seen</div><div class="value" id="last-seen">-</div></div>
+        <div class="stat"><div class="label">Board name</div><div class="value" id="board-name">-</div></div>
+        <div class="stat"><div class="label">RouterOS version</div><div class="value" id="ros-version">-</div></div>
+        <div class="stat"><div class="label">CPU / Memory</div><div class="value" id="cpu-memory">-</div></div>
+      </div>
+      <div id="diagnostics-output" class="hidden" style="margin-top:18px;"></div>
+    </div>
+    <div class="card panel" id="metrics">
+      <p>Last 24 hours of CPU load, active sessions, and traffic.</p>
+      <canvas id="cpu-chart" width="1000" height="220"></canvas>
+      <canvas id="sessions-chart" width="1000" height="220" style="margin-top:16px;"></canvas>
+      <canvas id="traffic-chart" width="1000" height="220" style="margin-top:16px;"></canvas>
+    </div>
+    <div class="card panel" id="sessions">
+      <table>
+        <thead><tr><th>User</th><th>IP</th><th>MAC</th><th>Uptime</th><th>Data In</th><th>Data Out</th><th>Time Left</th><th></th></tr></thead>
+        <tbody id="sessions-body"></tbody>
+      </table>
+    </div>
+    <div class="card panel" id="logs">
+      <table>
+        <thead><tr><th>Date</th><th>Action</th><th>Triggered By</th><th>Status</th><th>Details</th></tr></thead>
+        <tbody id="logs-body"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="modal" id="reboot-modal">
+    <div class="card">
+      <h3>Confirm reboot</h3>
+      <p>Type <strong>REBOOT</strong> to confirm.</p>
+      <input id="reboot-confirm" placeholder="REBOOT">
+      <div class="toolbar" style="margin-top:12px;">
+        <button class="btn btn-danger" id="confirm-reboot">Send reboot</button>
+        <button class="btn" id="close-reboot">Cancel</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal" id="edit-modal">
+    <div class="card">
+      <h3>Edit router</h3>
+      <p class="note">Update the saved router record here. Leave the RouterOS password blank if you do not want to change credentials.</p>
+      <div class="form-grid">
+        <div><label>Router name</label><input id="edit-name"></div>
+        <div><label>Router IP address</label><input id="edit-ip-address"></div>
+        <div><label>NAS identifier</label><input id="edit-nas-identifier"></div>
+        <div><label>NAS shared secret</label><input id="edit-nas-secret" placeholder="Leave blank to keep current secret"></div>
+        <div><label>RouterOS username</label><input id="edit-api-username"></div>
+        <div><label>API port</label><input id="edit-api-port" type="number" value="8728"></div>
+        <div><label>RouterOS password</label><input id="edit-api-password" type="password" placeholder="Leave blank to keep current password"></div>
+        <div>
+          <label>Use SSL</label>
+          <select id="edit-use-ssl">
+            <option value="false">No</option>
+            <option value="true">Yes</option>
+          </select>
+        </div>
+      </div>
+      <div class="toolbar" style="margin-top:16px;">
+        <button class="btn btn-primary" id="save-edit">Save changes</button>
+        <button class="btn toolbar-end" id="close-edit">Cancel</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal" id="reprovision-modal">
+    <div class="card">
+      <h3>Reprovision router</h3>
+      <p class="note">Use this after editing the saved record or changing RouterOS credentials. The latest provision log will appear in the Provision log tab.</p>
+      <div class="form-grid">
+        <div><label>Captive portal DNS name</label><input id="reprovision-dns-name" placeholder="hotspot.yourisp.com"></div>
+        <div>
+          <label>Config template</label>
+          <select id="reprovision-template-id">
+            <option value="">No template</option>
+          </select>
+        </div>
+        <div class="field-full">
+          <label>Hotspot interface</label>
+          <select id="reprovision-hotspot-interface">
+            <option value="">Select interface</option>
+          </select>
+          <div class="hint" id="reprovision-interface-hint">Load interfaces from the router before starting if this list is empty.</div>
+        </div>
+      </div>
+      <div class="toolbar" style="margin-top:16px;">
+        <button class="btn" id="refresh-reprovision-data">Load interfaces</button>
+        <button class="btn btn-primary" id="start-reprovision">Start reprovision</button>
+        <button class="btn toolbar-end" id="close-reprovision">Cancel</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    const routerId = location.pathname.split('/').filter(Boolean).pop();
+    let refreshTimer = null;
+    let routerDetail = null;
+
+    function token() { return localStorage.getItem('access_token'); }
+    async function api(path, options = {}) {
+      const res = await fetch('/api/v1' + path, { ...options, headers: { 'Content-Type':'application/json', Authorization:'Bearer ' + token(), ...(options.headers || {}) } });
+      if (res.status === 401) {
+        location.href = '/admin/login?next=' + encodeURIComponent(location.pathname + location.search);
+        throw new Error('Unauthorized');
+      }
+      if (!res.ok) throw new Error((await res.text()).replace(/^\"|\"$/g, ''));
+      return res.status === 204 ? null : res.json();
+    }
+    function showBanner(message) {
+      const box = document.getElementById('page-banner');
+      box.textContent = message;
+      box.style.display = 'block';
+    }
+    function hideBanner() {
+      document.getElementById('page-banner').style.display = 'none';
+    }
+    function openModal(id) { document.getElementById(id).style.display = 'flex'; }
+    function closeModal(id) { document.getElementById(id).style.display = 'none'; }
+    function fmt(value) { return value ? new Date(value).toLocaleString() : 'Never'; }
+    function bytes(value) { if (!value) return '0 B'; const units=['B','KB','MB','GB']; let i=0, n=value; while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; } return n.toFixed(1) + ' ' + units[i]; }
+    function draw(canvasId, series, color, mapValue) {
+      const canvas = document.getElementById(canvasId);
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+      if (!series.length) { ctx.fillStyle = '#58657d'; ctx.fillText('No metrics collected yet.', 20, 30); return; }
+      const values = series.map(mapValue);
+      const max = Math.max(...values, 1);
+      ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.beginPath();
+      values.forEach((value, index) => {
+        const x = 40 + (index * (canvas.width - 80) / Math.max(values.length - 1, 1));
+        const y = canvas.height - 30 - ((value / max) * (canvas.height - 60));
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+    function renderLogs(rows) {
+      const tbody = document.getElementById('logs-body');
+      tbody.innerHTML = rows.map((row) => `
+        <tr>
+          <td>${fmt(row.started_at)}</td>
+          <td>${row.action}</td>
+          <td>${row.triggered_by}</td>
+          <td><span class="status">${row.status}</span></td>
+          <td><details><summary>View commands</summary><pre>${JSON.stringify(row.commands_executed, null, 2)}</pre></details></td>
+        </tr>
+      `).join('');
+    }
+    function renderSessions(rows) {
+      const tbody = document.getElementById('sessions-body');
+      tbody.innerHTML = rows.length ? rows.map((row) => `
+        <tr>
+          <td>${row.user || '-'}</td><td>${row.address || '-'}</td><td>${row.mac_address || '-'}</td><td>${row.uptime || '-'}</td>
+          <td>${bytes(row.bytes_in || 0)}</td><td>${bytes(row.bytes_out || 0)}</td><td>${row.session_time_left || '-'}</td>
+          <td><button class="btn btn-danger" data-active="${row.id}" data-user="${row.user || ''}">Disconnect</button></td>
+        </tr>
+      `).join('') : '<tr><td colspan="8">No active sessions.</td></tr>';
+      tbody.querySelectorAll('button[data-active]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          await api(`/admin/routers/${routerId}/disconnect-user`, { method:'POST', body: JSON.stringify({ active_id: button.dataset.active, username: button.dataset.user }) });
+          await loadSessions();
+        });
+      });
+    }
+    function fillEditForm(data) {
+      document.getElementById('edit-name').value = data.name || '';
+      document.getElementById('edit-ip-address').value = data.ip_address || '';
+      document.getElementById('edit-nas-identifier').value = data.nas_identifier || '';
+      document.getElementById('edit-nas-secret').value = '';
+      document.getElementById('edit-api-username').value = data.credentials?.api_username || '';
+      document.getElementById('edit-api-port').value = data.credentials?.api_port || 8728;
+      document.getElementById('edit-api-password').value = '';
+      document.getElementById('edit-use-ssl').value = String(Boolean(data.credentials?.use_ssl));
+    }
+    function populateInterfaceOptions(interfaces) {
+      const select = document.getElementById('reprovision-hotspot-interface');
+      const current = select.value;
+      select.innerHTML = '<option value="">Select interface</option>' + interfaces.map((iface) => `<option value="${iface.name}">${iface.name}</option>`).join('');
+      if (current) select.value = current;
+    }
+    function populateTemplateOptions(templates) {
+      document.getElementById('reprovision-template-id').innerHTML = '<option value="">No template</option>' + templates.map((tpl) => `<option value="${tpl.id}">${tpl.name}</option>`).join('');
+    }
+    async function loadOverview() {
+      const data = await api(`/admin/routers/${routerId}`);
+      routerDetail = data;
+      document.getElementById('title').textContent = data.name;
+      document.getElementById('subtitle').textContent = `${data.site_name} - ${data.ip_address} - ${data.nas_identifier}`;
+      document.getElementById('connection-status').textContent = data.connection_status;
+      document.getElementById('last-connected').textContent = fmt(data.last_connected_at);
+      document.getElementById('last-seen').textContent = fmt(data.last_seen_at);
+      document.getElementById('board-name').textContent = data.system_info.board_name || '-';
+      document.getElementById('ros-version').textContent = data.system_info.ros_version || '-';
+      document.getElementById('cpu-memory').textContent = `${data.system_info.cpu_load_percent ?? '-'}% / ${data.system_info.memory_used_percent ?? '-'}%`;
+      fillEditForm(data);
+    }
+    async function loadMetrics() {
+      const metrics = await api(`/admin/routers/${routerId}/metrics?hours=24`);
+      draw('cpu-chart', metrics, '#0b6e4f', (row) => row.cpu_load_percent || 0);
+      draw('sessions-chart', metrics, '#175cd3', (row) => row.active_sessions || 0);
+      draw('traffic-chart', metrics, '#f97316', (row) => (row.total_tx_bytes || 0) + (row.total_rx_bytes || 0));
+    }
+    async function loadSessions() { renderSessions(await api(`/admin/routers/${routerId}/active-sessions`)); }
+    async function loadLogs() { renderLogs(await api(`/admin/routers/${routerId}/provision-logs`)); }
+    async function runDiagnostics() {
+      const box = document.getElementById('diagnostics-output');
+      box.classList.remove('hidden');
+      box.innerHTML = 'Running diagnostics...';
+      const data = await api(`/admin/routers/${routerId}/diagnostics`);
+      box.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+    }
+    async function saveEdit() {
+      hideBanner();
+      const routerPayload = {
+        name: document.getElementById('edit-name').value.trim(),
+        ip_address: document.getElementById('edit-ip-address').value.trim(),
+        nas_identifier: document.getElementById('edit-nas-identifier').value.trim(),
+        is_active: true,
+      };
+      const nasSecret = document.getElementById('edit-nas-secret').value.trim();
+      if (nasSecret) routerPayload.nas_secret = nasSecret;
+      await api(`/routers/${routerId}`, { method: 'PUT', body: JSON.stringify(routerPayload) });
+
+      const apiPassword = document.getElementById('edit-api-password').value;
+      if (apiPassword) {
+        await api(`/admin/routers/${routerId}/credentials`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            api_username: document.getElementById('edit-api-username').value.trim(),
+            api_password: apiPassword,
+            api_port: Number(document.getElementById('edit-api-port').value || 8728),
+            use_ssl: document.getElementById('edit-use-ssl').value === 'true',
+          }),
+        });
+      }
+      closeModal('edit-modal');
+      await Promise.all([loadOverview(), loadLogs()]);
+      showBanner(apiPassword ? 'Router record and credentials updated.' : 'Router record updated.');
+    }
+    async function loadReprovisionData() {
+      hideBanner();
+      const [interfaces, templates] = await Promise.all([
+        api(`/admin/routers/${routerId}/interfaces`).catch(() => []),
+        api('/admin/config-templates').catch(() => []),
+      ]);
+      populateInterfaceOptions(interfaces);
+      populateTemplateOptions(templates);
+      document.getElementById('reprovision-interface-hint').textContent = interfaces.length ? 'Select the hotspot interface to use for reprovisioning.' : 'No interfaces loaded. Check router connectivity or try again.';
+    }
+    async function startReprovision() {
+      hideBanner();
+      const dnsName = document.getElementById('reprovision-dns-name').value.trim();
+      const hotspotInterface = document.getElementById('reprovision-hotspot-interface').value;
+      const templateId = document.getElementById('reprovision-template-id').value || null;
+      if (!dnsName) throw new Error('Enter a DNS name before reprovisioning.');
+      if (!hotspotInterface) throw new Error('Choose a hotspot interface before reprovisioning.');
+      await api(`/admin/routers/${routerId}/provision`, {
+        method: 'POST',
+        body: JSON.stringify({
+          dns_name: dnsName,
+          hotspot_interface: hotspotInterface,
+          template_id: templateId,
+        }),
+      });
+      closeModal('reprovision-modal');
+      await Promise.all([loadOverview(), loadLogs()]);
+      document.querySelector('[data-tab="logs"]').click();
+      showBanner('Reprovision started. Watch the Provision log tab for live details.');
+    }
+
+    document.querySelectorAll('.tab').forEach((button) => button.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach((el) => el.classList.toggle('active', el === button));
+      document.querySelectorAll('.panel').forEach((el) => el.classList.toggle('active', el.id === button.dataset.tab));
+    }));
+    document.getElementById('open-edit').addEventListener('click', () => {
+      if (routerDetail) fillEditForm(routerDetail);
+      openModal('edit-modal');
+    });
+    document.getElementById('close-edit').addEventListener('click', () => closeModal('edit-modal'));
+    document.getElementById('save-edit').addEventListener('click', () => saveEdit().catch((err) => alert(err.message)));
+    document.getElementById('open-reprovision').addEventListener('click', () => {
+      document.getElementById('reprovision-dns-name').value = '';
+      openModal('reprovision-modal');
+      loadReprovisionData().catch((err) => alert(err.message));
+    });
+    document.getElementById('close-reprovision').addEventListener('click', () => closeModal('reprovision-modal'));
+    document.getElementById('refresh-reprovision-data').addEventListener('click', () => loadReprovisionData().catch((err) => alert(err.message)));
+    document.getElementById('start-reprovision').addEventListener('click', () => startReprovision().catch((err) => alert(err.message)));
+    document.getElementById('run-diagnostics').addEventListener('click', () => runDiagnostics().catch((err) => alert(err.message)));
+    document.getElementById('open-reboot').addEventListener('click', () => openModal('reboot-modal'));
+    document.getElementById('close-reboot').addEventListener('click', () => closeModal('reboot-modal'));
+    document.getElementById('confirm-reboot').addEventListener('click', async () => {
+      if (document.getElementById('reboot-confirm').value !== 'REBOOT') { alert('Type REBOOT to confirm.'); return; }
+      await api(`/admin/routers/${routerId}/reboot`, { method:'POST', body: JSON.stringify({ confirm: true }) });
+      closeModal('reboot-modal');
+      alert('Reboot command queued.');
+    });
+    Promise.all([loadOverview(), loadMetrics(), loadSessions(), loadLogs()]).catch((err) => alert(err.message));
+    refreshTimer = setInterval(() => loadSessions().catch(() => {}), 30000);
+    window.addEventListener('beforeunload', () => clearInterval(refreshTimer));
+  </script>
+</body>
+</html>

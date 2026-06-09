@@ -1,0 +1,12 @@
+# FreeRADIUS Custom Dictionary
+# Includes MikroTik and WISPr vendor attributes for bandwidth control
+
+# WISPr attributes (RFC standard)
+ATTRIBUTE WISPr-Bandwidth-Max-Up         16  integer
+ATTRIBUTE WISPr-Bandwidth-Max-Down       17  integer
+
+# MikroTik vendor-specific attributes
+VENDOR Mikrotik 14988
+BEGIN-VENDOR Mikrotik
+ATTRIBUTE Mikrotik-Rate-Limit            15  string
+END-VENDOR Mikrotik

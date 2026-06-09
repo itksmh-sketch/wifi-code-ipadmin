@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Success — ISP Hotspot</title>
+    <link rel="stylesheet" href="/portal/statics/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>Payment successful</h1>
+            <p class="subtitle">Your voucher code is ready</p>
+
+            <div id="statusBox" class="muted">
+                <span class="spinner"></span>
+                Fetching voucher…
+            </div>
+
+            <div id="mainBox" style="display:none">
+                <div class="code-box">
+                    <div id="voucherCode" class="code-text"></div>
+                    <button id="copyBtn" class="btn btn-outline" type="button">Copy code</button>
+                </div>
+
+                <div id="planInfo" class="plan-card" style="margin-top:12px"></div>
+
+                <button id="connectBtn" class="btn btn-primary" type="button" style="margin-top:16px">Connect now</button>
+                <div id="connectError" class="alert alert-error" style="display:none;margin-top:12px"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (function(){
+        var ref = "{{ ref }}";
+        var params = new URLSearchParams(window.location.search);
+        var gateway = params.get("gateway") || "{{ gateway or '10.5.50.1' }}";
+        function qs(id){ return document.getElementById(id); }
+        function fmtSpeed(kbps){ var mbps=(kbps||0)/1000; return (mbps%1===0?mbps.toFixed(0):mbps.toFixed(1))+" Mbps"; }
+        function fmtCap(p){
+            if(!p) return "";
+            var parts=[];
+            if ((p.type==="time"||p.type==="hybrid") && p.duration_minutes){
+                var m=p.duration_minutes;
+                parts.push((m>=60 && m%60===0)?((m/60)+" hrs"):(m+" mins"));
+            }
+            if ((p.type==="data"||p.type==="hybrid") && p.data_limit_mb){
+                var mb=p.data_limit_mb;
+                parts.push((mb>=1024 && mb%1024===0)?((mb/1024)+" GB"):(mb>=1024?((mb/1024).toFixed(1)+" GB"):(mb+" MB")));
+            }
+            return parts.join(" + ");
+        }
+
+        var tries = 0, maxTries = 5;
+        function load(){
+            tries++;
+            fetch("/portal/payment-status?ref="+encodeURIComponent(ref), { headers: { "Accept":"application/json" } })
+                .then(function(r){ return r.json().then(function(j){ return { ok:r.ok, status:r.status, body:j }; }); })
+                .then(function(res){
+                    if(!res.ok){
+                        if(tries<maxTries){ setTimeout(load, 3000); return; }
+                        qs("statusBox").textContent="Contact support";
+                        return;
+                    }
+                    if(res.body.status!=="success" || !res.body.voucher_code){
+                        if(tries<maxTries){ setTimeout(load, 3000); return; }
+                        qs("statusBox").textContent="Contact support";
+                        return;
+                    }
+                    qs("statusBox").style.display="none";
+                    qs("mainBox").style.display="block";
+                    qs("voucherCode").textContent = res.body.voucher_code;
+
+                    var p = res.body.plan;
+                    if(p){
+                        var cap = fmtCap(p);
+                        var speed = fmtSpeed(p.download_speed_kbps)+" down / "+fmtSpeed(p.upload_speed_kbps)+" up";
+                        qs("planInfo").innerHTML =
+                            '<div class="plan-name">'+(p.name||"Plan")+'</div>'+
+                            '<div class="plan-meta">'+speed+'</div>'+
+                            (cap?('<div class="plan-meta">'+cap+'</div>'):'');
+                    } else {
+                        qs("planInfo").style.display="none";
+                    }
+                })
+                .catch(function(){
+                    if(tries<maxTries){ setTimeout(load, 3000); return; }
+                    qs("statusBox").textContent="Contact support";
+                });
+        }
+
+        function fallbackCopy(){
+            var el = qs("voucherCode");
+            var range = document.createRange();
+            range.selectNodeContents(el);
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }
+
+        function submitToMikroTik(routerGateway, username, password, dst) {
+            var form = document.createElement("form");
+            form.method = "POST";
+            form.action = "http://" + routerGateway + "/login";
+
+            var fields = {
+                "username": username,
+                "password": password,
+                "dst": dst,
+                "popup": "false"
+            };
+
+            for (var key in fields) {
+                var input = document.createElement("input");
+                input.type = "hidden";
+                input.name = key;
+                input.value = fields[key];
+                form.appendChild(input);
+            }
+
+            document.body.appendChild(form);
+            form.submit();
+        }
+
+        qs("copyBtn").addEventListener("click", function(){
+            var code = (qs("voucherCode").textContent||"").trim();
+            if(!code) return;
+            if(navigator.clipboard && navigator.clipboard.writeText){
+                navigator.clipboard.writeText(code).catch(fallbackCopy);
+            } else {
+                fallbackCopy();
+            }
+        });
+
+        qs("connectBtn").addEventListener("click", function(){
+            qs("connectError").style.display="none";
+            qs("connectError").textContent="";
+            var code = (qs("voucherCode").textContent||"").trim();
+            var originalUrl = "/";
+            try { originalUrl = sessionStorage.getItem("portal.original_url") || "/"; } catch(e) {}
+            var fd = new FormData();
+            fd.append("code", code);
+            fd.append("url", originalUrl);
+            if(gateway) fd.append("gateway", gateway);
+            fetch("/portal/authenticate", { method:"POST", body: fd, headers: { "Accept":"application/json" } })
+                .then(function(response){
+                    return response.json().catch(function(){ return {}; }).then(function(body){
+                        return { ok: response.ok, body: body };
+                    });
+                })
+                .then(function(result){
+                    if(!result.ok || !result.body.success){
+                        throw new Error(result.body.detail || "Unable to connect. Please try again.");
+                    }
+                    submitToMikroTik(
+                        gateway || "10.5.50.1",
+                        result.body.username,
+                        result.body.password,
+                        originalUrl
+                    );
+                })
+                .catch(function(){
+                    qs("connectError").style.display="flex";
+                    qs("connectError").textContent="Unable to connect. Please try again.";
+                });
+        });
+
+        load();
+    })();
+    </script>
+</body>
+</html>
