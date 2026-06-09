@@ -104,6 +104,7 @@ class Router(Base):
     ip_address = Column(INET, nullable=False)
     nas_identifier = Column(String(255), unique=True, nullable=False)
     nas_secret = Column(Text, nullable=False)
+    nas_secret_plain = Column(String(255), nullable=True)
     is_active = Column(Boolean, server_default="true")
     is_online = Column(Boolean, server_default="false", nullable=False)
     last_seen_at = Column(DateTime(timezone=True), nullable=True)

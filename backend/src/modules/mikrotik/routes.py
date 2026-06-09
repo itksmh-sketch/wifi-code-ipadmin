@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import uuid
 
@@ -32,6 +33,7 @@ from src.modules.mikrotik.types import (
     TempInterfacesRequest,
 )
 from src.utils.encryption import encrypt_secret
+from src.utils.freeradius_reload import reload_freeradius_clients
 
 router = APIRouter(prefix="/admin", tags=["mikrotik-admin"])
 service = MikroTikAPIService()
@@ -112,6 +114,7 @@ async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tena
         ip_address=payload["ip_address"],
         nas_identifier=payload["nas_identifier"],
         nas_secret=encrypt_secret(payload["nas_secret"]),
+        nas_secret_plain=payload["nas_secret"],
         is_active=bool(payload.get("is_active", True)),
     )
     db.add(router_row)
@@ -136,6 +139,7 @@ async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tena
     )
     db.add(log_row)
     await db.commit()
+    asyncio.get_running_loop().run_in_executor(None, reload_freeradius_clients)
     await db.refresh(router_row)
     await db.refresh(log_row)
     provisioner.launch_provision(

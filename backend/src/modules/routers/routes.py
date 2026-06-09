@@ -1,13 +1,17 @@
+import asyncio
+import uuid
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.db.base import get_db
 from src.db.models import Router, Site
-from src.schemas import RouterCreate, RouterUpdate, RouterResponse, ErrorResponse
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
-from src.utils.encryption import encrypt_secret, decrypt_secret
-from typing import List
-import uuid
+from src.schemas import ErrorResponse, RouterCreate, RouterResponse, RouterUpdate
+from src.utils.encryption import decrypt_secret, encrypt_secret
+from src.utils.freeradius_reload import reload_freeradius_clients
 
 router = APIRouter(prefix="/sites", tags=["routers"])
 
@@ -41,6 +45,7 @@ async def create_router(site_id: uuid.UUID, body: RouterCreate, db: AsyncSession
         ip_address=body.ip_address,
         nas_identifier=body.nas_identifier,
         nas_secret=encrypted_secret,
+        nas_secret_plain=body.nas_secret,
         is_active=body.is_active,
     )
     db.add(r)
@@ -50,6 +55,8 @@ async def create_router(site_id: uuid.UUID, body: RouterCreate, db: AsyncSession
     from src.modules.onboarding import mark_checklist
     await mark_checklist(db, tenant.isp_operator_id, "router_added")
     await db.commit()
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, reload_freeradius_clients)
     return r
 
 
@@ -68,10 +75,13 @@ async def update_router(router_id: uuid.UUID, body: RouterUpdate, db: AsyncSessi
         r.nas_identifier = body.nas_identifier
     if body.nas_secret is not None:
         r.nas_secret = encrypt_secret(body.nas_secret)
+        r.nas_secret_plain = body.nas_secret
     if body.is_active is not None:
         r.is_active = body.is_active
 
     await db.commit()
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, reload_freeradius_clients)
     await db.refresh(r)
     try:
         r.nas_secret = decrypt_secret(r.nas_secret)
