@@ -144,6 +144,32 @@ services:
       redis:
         condition: service_started
 
+  # Privileged sidecar that manages WireGuard peers on the host wg0 interface.
+  # Uses host networking so `wg` talks to the real kernel interface, and binds
+  # its HTTP API to 127.0.0.1:8999 only (never exposed externally).
+  wg-manager:
+    image: python:3.11-slim
+    container_name: hotspot-wg-manager
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    environment:
+      WG_INTERFACE: ${WG_INTERFACE:-wg0}
+      WG_MANAGER_HOST: 127.0.0.1
+      WG_MANAGER_PORT: 8999
+      WG_HANDSHAKE_TIMEOUT: 180
+    volumes:
+      - ./scripts/wg_manager.py:/app/wg_manager.py:ro
+      - /etc/wireguard:/etc/wireguard
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        apt-get update && apt-get install -y --no-install-recommends wireguard-tools iproute2
+        exec python3 /app/wg_manager.py
+    restart: unless-stopped
+
   freeradius:
     image: freeradius/freeradius-server:3.2.6
     container_name: hotspot-freeradius

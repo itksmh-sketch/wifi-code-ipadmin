@@ -109,11 +109,33 @@ class Router(Base):
     is_online = Column(Boolean, server_default="false", nullable=False)
     last_seen_at = Column(DateTime(timezone=True), nullable=True)
 
+    # WireGuard VPN tunnel (optional — used when the router is behind NAT)
+    wg_enabled = Column(Boolean, server_default="false", nullable=False)
+    wg_peer_public_key = Column(String(64), unique=True, nullable=True)
+    wg_peer_private_key_encrypted = Column(Text, nullable=True)
+    wg_tunnel_ip = Column(INET, nullable=True)
+    wg_last_handshake_at = Column(DateTime(timezone=True), nullable=True)
+    wg_is_connected = Column(Boolean, server_default="false", nullable=False)
+
     site = relationship("Site", back_populates="routers")
     sessions = relationship("Session", back_populates="router")
     credentials = relationship("RouterCredential", back_populates="router", uselist=False)
     provision_logs = relationship("RouterProvisionLog", back_populates="router")
     metrics = relationship("RouterMetric", back_populates="router")
+    wg_ip_allocation = relationship(
+        "WgIpAllocation", back_populates="router", uselist=False, cascade="all, delete-orphan"
+    )
+
+
+class WgIpAllocation(Base):
+    __tablename__ = "wg_ip_allocations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    router_id = Column(UUID(as_uuid=True), ForeignKey("routers.id", ondelete="CASCADE"), unique=True, nullable=False)
+    tunnel_ip = Column(INET, unique=True, nullable=False)
+    allocated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    router = relationship("Router", back_populates="wg_ip_allocation")
 
 
 class Plan(Base):
