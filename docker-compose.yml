@@ -158,6 +158,9 @@ services:
       WG_MANAGER_HOST: 127.0.0.1
       WG_MANAGER_PORT: 8999
       WG_HANDSHAKE_TIMEOUT: 180
+      WG_CMD_TIMEOUT: 15            # max seconds per wg/wg-quick command (prevents hangs)
+      WG_PERSIST: 1                 # set 0 if `wg-quick save` misbehaves in-container
+      PYTHONUNBUFFERED: 1           # ensure logs flush to `docker compose logs`
     volumes:
       - ./scripts/wg_manager.py:/app/wg_manager.py:ro
       - /etc/wireguard:/etc/wireguard
