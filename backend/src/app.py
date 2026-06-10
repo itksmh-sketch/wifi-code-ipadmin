@@ -34,6 +34,7 @@ from src.modules.mikrotik.routes import router as mikrotik_router
 from src.modules.platform.routes import router as platform_router
 from src.admin_portal.routes import router as admin_portal_router
 from src.reseller_portal.routes import router as reseller_portal_router
+from src.platform_portal.routes import router as platform_portal_router
 from src.modules.applications.routes import public_router as applications_public_router
 from src.modules.applications.routes import platform_router as applications_platform_router
 from src.modules.billing.routes import router as billing_router
@@ -83,6 +84,7 @@ app.include_router(admin_reseller_router, prefix="/api/v1")
 app.include_router(mikrotik_router, prefix="/api/v1")
 app.include_router(platform_router, prefix="/api/v1")
 app.include_router(admin_portal_router)
+app.include_router(platform_portal_router)
 app.include_router(applications_public_router, prefix="/api/v1")
 app.include_router(applications_platform_router, prefix="/api/v1")
 app.include_router(billing_router, prefix="/api/v1")

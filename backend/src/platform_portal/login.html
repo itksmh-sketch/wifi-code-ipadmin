@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Platform Login</title>
+  <link rel="stylesheet" href="/platform/statics/app.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <h1>Platform Admin</h1>
+    <p class="sub">Sign in with your platform owner credentials.</p>
+    <div id="msg" class="notice bad" style="display:none;margin-bottom:16px"></div>
+    <form id="form">
+      <label>Email</label>
+      <input id="email" type="email" required autocomplete="username" placeholder="admin@platform.com">
+      <label>Password</label>
+      <input id="password" type="password" required autocomplete="current-password">
+      <div class="spacer"></div>
+      <button class="btn primary" type="submit" id="submit-btn">Sign In</button>
+    </form>
+  </div>
+</div>
+<script>
+  if (localStorage.getItem('platform_access_token')) {
+    window.location.replace('/platform/operators');
+  }
+
+  document.getElementById('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const msg = document.getElementById('msg');
+    const btn = document.getElementById('submit-btn');
+    msg.style.display = 'none';
+    btn.disabled = true;
+    btn.textContent = 'Signing in…';
+    try {
+      const res = await fetch('/api/v1/platform/auth/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          email: document.getElementById('email').value.trim(),
+          password: document.getElementById('password').value,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        msg.textContent = data.detail || 'Login failed. Check your credentials.';
+        msg.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Sign In';
+        return;
+      }
+      localStorage.setItem('platform_access_token', data.access_token);
+      localStorage.setItem('platform_refresh_token', data.refresh_token);
+      window.location.href = '/platform/operators';
+    } catch {
+      msg.textContent = 'Network error. Please try again.';
+      msg.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Sign In';
+    }
+  });
+</script>
+</body>
+</html>

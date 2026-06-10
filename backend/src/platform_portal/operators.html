@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Operators — Platform Admin</title>
+  <link rel="stylesheet" href="/platform/statics/app.css">
+</head>
+<body>
+<div class="container">
+  <nav class="nav">
+    <span class="brand">Platform <span>Admin</span></span>
+    <div class="links">
+      <a href="/platform/operators/new" class="btn primary">+ New Operator</a>
+      <button class="btn" id="logout-btn">Logout</button>
+    </div>
+  </nav>
+
+  <div id="main" style="display:none">
+    <div class="section-title">Operators</div>
+    <p class="section-sub" id="owner-info">Loading…</p>
+
+    <div class="stats-grid" id="stats">
+      <div class="stat-card"><div class="stat-label">Total Operators</div><div class="stat-value" id="s-total">—</div></div>
+      <div class="stat-card"><div class="stat-label">Pending Review</div><div class="stat-value" id="s-pending">—</div></div>
+      <div class="stat-card"><div class="stat-label">Active</div><div class="stat-value" id="s-active">—</div></div>
+      <div class="stat-card"><div class="stat-label">Overdue / Suspended</div><div class="stat-value" id="s-issue">—</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">All Operators</span>
+        <input id="search" type="search" placeholder="Filter by name or slug…" style="width:220px;padding:8px 12px;font-size:13px">
+      </div>
+      <div id="err-msg" class="notice bad" style="display:none;margin-bottom:12px"></div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Name / Slug</th>
+              <th>Status</th>
+              <th>Billing</th>
+              <th>Admins</th>
+              <th>Revenue (this month)</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div id="empty" class="text-muted" style="display:none;padding:20px 0;text-align:center">No operators found.</div>
+    </div>
+  </div>
+
+  <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
+</div>
+
+<script>
+const token = localStorage.getItem('platform_access_token');
+if (!token) { window.location.replace('/platform/login'); }
+
+document.getElementById('logout-btn').addEventListener('click', () => {
+  localStorage.removeItem('platform_access_token');
+  localStorage.removeItem('platform_refresh_token');
+  window.location.href = '/platform/login';
+});
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: {
+      'Authorization': 'Bearer ' + localStorage.getItem('platform_access_token'),
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('platform_access_token');
+    window.location.replace('/platform/login');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
+function badge(value, type = 'status') {
+  return `<span class="badge ${value}">${value}</span>`;
+}
+
+function fmtMoney(n) {
+  return 'GHS ' + Number(n).toLocaleString('en-GH', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+function fmtDate(s) {
+  if (!s) return '—';
+  return new Date(s).toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'});
+}
+
+let allOperators = [];
+
+function renderTable(rows) {
+  const tbody = document.getElementById('tbody');
+  const empty = document.getElementById('empty');
+  if (!rows.length) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  tbody.innerHTML = rows.map(op => `
+    <tr>
+      <td>
+        <div style="font-weight:600">${escHtml(op.name)}</div>
+        <div class="text-muted">${escHtml(op.slug)}</div>
+        <div class="text-muted">${escHtml(op.contact_email)}</div>
+      </td>
+      <td>${badge(op.status)}</td>
+      <td>${badge(op.billing_status)}</td>
+      <td>${op.admin_count}</td>
+      <td>${fmtMoney(op.monthly_revenue_this_month)}</td>
+      <td>${fmtDate(op.created_at)}</td>
+      <td>
+        <div class="actions">
+          ${op.status === 'pending' ? `<button class="btn sm primary" onclick="setStatus('${op.id}','approved')">Approve</button>` : ''}
+          ${op.status === 'approved' ? `<button class="btn sm danger" onclick="setStatus('${op.id}','suspended')">Suspend</button>` : ''}
+          ${op.status === 'suspended' ? `<button class="btn sm" onclick="setStatus('${op.id}','approved')">Unsuspend</button>` : ''}
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function setStatus(id, status) {
+  try {
+    const res = await api(`/api/v1/platform/operators/${id}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({status}),
+    });
+    if (!res.ok) {
+      const d = await res.json();
+      alert(d.detail || 'Failed to update status');
+      return;
+    }
+    const updated = await res.json();
+    const idx = allOperators.findIndex(o => o.id === id);
+    if (idx !== -1) allOperators[idx] = updated;
+    applyFilter();
+  } catch (e) {
+    alert('Network error');
+  }
+}
+
+function applyFilter() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const rows = q
+    ? allOperators.filter(o => o.name.toLowerCase().includes(q) || o.slug.toLowerCase().includes(q))
+    : allOperators;
+  renderTable(rows);
+  updateStats(allOperators);
+}
+
+function updateStats(ops) {
+  document.getElementById('s-total').textContent = ops.length;
+  document.getElementById('s-pending').textContent = ops.filter(o => o.status === 'pending').length;
+  document.getElementById('s-active').textContent = ops.filter(o => o.status === 'approved').length;
+  document.getElementById('s-issue').textContent = ops.filter(o =>
+    o.status === 'suspended' || o.billing_status === 'past_due'
+  ).length;
+}
+
+document.getElementById('search').addEventListener('input', applyFilter);
+
+async function load() {
+  try {
+    const [meRes, opsRes] = await Promise.all([
+      api('/api/v1/platform/me'),
+      api('/api/v1/platform/operators'),
+    ]);
+    if (!meRes.ok || !opsRes.ok) throw new Error('Failed to load');
+    const me = await meRes.json();
+    const ops = await opsRes.json();
+
+    document.getElementById('owner-info').textContent = `Signed in as ${me.name || me.email}`;
+    allOperators = ops;
+    updateStats(ops);
+    renderTable(ops);
+
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('main').style.display = 'block';
+  } catch (e) {
+    document.getElementById('loading').textContent = 'Failed to load operators. Check your session.';
+  }
+}
+
+load();
+</script>
+</body>
+</html>

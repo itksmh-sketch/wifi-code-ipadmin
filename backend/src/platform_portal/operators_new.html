@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>New Operator — Platform Admin</title>
+  <link rel="stylesheet" href="/platform/statics/app.css">
+</head>
+<body>
+<div class="container">
+  <nav class="nav">
+    <span class="brand">Platform <span>Admin</span></span>
+    <div class="links">
+      <a href="/platform/operators" class="btn">← Back to Operators</a>
+      <button class="btn" id="logout-btn">Logout</button>
+    </div>
+  </nav>
+
+  <div class="section-title">Create New Operator</div>
+  <p class="section-sub">Provisions an operator account and creates their first admin user.</p>
+
+  <div class="card" style="max-width:600px">
+    <div id="msg" class="notice" style="display:none;margin-bottom:16px"></div>
+
+    <form id="form" novalidate>
+      <div style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Business Info</div>
+
+      <label>Business / ISP Name *</label>
+      <input id="name" type="text" required placeholder="e.g. AccraNet ISP" minlength="3">
+
+      <label>Slug * <span style="font-weight:400;color:var(--muted)">(URL-safe identifier, auto-filled)</span></label>
+      <input id="slug" type="text" required placeholder="e.g. accranet-isp" pattern="^[a-z0-9-]+$">
+
+      <div class="field-row">
+        <div>
+          <label>Contact Email *</label>
+          <input id="contact_email" type="email" required placeholder="contact@isp.com">
+        </div>
+        <div>
+          <label>Contact Phone *</label>
+          <input id="contact_phone" type="tel" required placeholder="0244123456">
+        </div>
+      </div>
+
+      <div class="spacer"></div>
+      <div style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Initial Admin Account</div>
+
+      <div class="field-row">
+        <div>
+          <label>Admin Email *</label>
+          <input id="admin_email" type="email" required placeholder="admin@isp.com">
+        </div>
+        <div>
+          <label>Admin Password *</label>
+          <input id="admin_password" type="password" required minlength="8" placeholder="Min 8 characters">
+        </div>
+      </div>
+
+      <div class="spacer"></div>
+      <div style="display:flex;gap:10px">
+        <button class="btn primary" type="submit" id="submit-btn">Create Operator</button>
+        <a href="/platform/operators" class="btn">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  const token = localStorage.getItem('platform_access_token');
+  if (!token) { window.location.replace('/platform/login'); }
+
+  document.getElementById('logout-btn').addEventListener('click', () => {
+    localStorage.removeItem('platform_access_token');
+    localStorage.removeItem('platform_refresh_token');
+    window.location.href = '/platform/login';
+  });
+
+  // Auto-generate slug from name
+  document.getElementById('name').addEventListener('input', e => {
+    const slug = document.getElementById('slug');
+    if (!slug.dataset.edited) {
+      slug.value = e.target.value.toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, '')
+        .trim()
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .slice(0, 50);
+    }
+  });
+  document.getElementById('slug').addEventListener('input', e => {
+    e.target.dataset.edited = '1';
+    e.target.value = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '');
+  });
+
+  function showMsg(text, good = false) {
+    const msg = document.getElementById('msg');
+    msg.textContent = text;
+    msg.className = 'notice ' + (good ? 'good' : 'bad');
+    msg.style.display = 'block';
+    msg.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  }
+
+  document.getElementById('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = document.getElementById('submit-btn');
+
+    const name = document.getElementById('name').value.trim();
+    const slug = document.getElementById('slug').value.trim();
+    const contact_email = document.getElementById('contact_email').value.trim();
+    const contact_phone = document.getElementById('contact_phone').value.trim();
+    const admin_email = document.getElementById('admin_email').value.trim();
+    const admin_password = document.getElementById('admin_password').value;
+
+    if (!name || name.length < 3) { showMsg('Business name must be at least 3 characters.'); return; }
+    if (!slug || !/^[a-z0-9-]+$/.test(slug)) { showMsg('Slug must contain only lowercase letters, numbers, and hyphens.'); return; }
+    if (!contact_email) { showMsg('Contact email is required.'); return; }
+    if (!contact_phone) { showMsg('Contact phone is required.'); return; }
+    if (!admin_email) { showMsg('Admin email is required.'); return; }
+    if (admin_password.length < 8) { showMsg('Admin password must be at least 8 characters.'); return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+
+    try {
+      const res = await fetch('/api/v1/platform/operators', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + localStorage.getItem('platform_access_token'),
+        },
+        body: JSON.stringify({
+          name,
+          slug,
+          contact_email,
+          contact_phone,
+          initial_admin_email: admin_email,
+          initial_admin_password: admin_password,
+        }),
+      });
+
+      if (res.status === 401) {
+        localStorage.removeItem('platform_access_token');
+        window.location.replace('/platform/login');
+        return;
+      }
+
+      const data = await res.json();
+      if (!res.ok) {
+        showMsg(data.detail || 'Failed to create operator. Check the form and try again.');
+        btn.disabled = false;
+        btn.textContent = 'Create Operator';
+        return;
+      }
+
+      showMsg(`Operator "${data.name}" created successfully! Redirecting…`, true);
+      setTimeout(() => { window.location.href = '/platform/operators'; }, 1500);
+    } catch {
+      showMsg('Network error. Please try again.');
+      btn.disabled = false;
+      btn.textContent = 'Create Operator';
+    }
+  });
+</script>
+</body>
+</html>
