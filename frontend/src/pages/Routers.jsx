@@ -154,6 +154,10 @@ function RouterWizard({ onBack, onDone }) {
     const [interfaces, setInterfaces] = useState([]);
     const [connTested, setConnTested] = useState(false);
     const [connResult, setConnResult] = useState('Test the connection before moving on.');
+    // WireGuard status for the router being provisioned. A brand-new router has
+    // no tunnel yet, so this stays null in the add flow; it lights up the Step 2
+    // shortcut when provisioning a router that already has an active tunnel.
+    const [wgStatus, setWgStatus] = useState(null);
     const [provisionLog, setProvisionLog] = useState([]);
     const [provisionDone, setProvisionDone] = useState(null);
     const [state, setState] = useState({
@@ -175,17 +179,40 @@ function RouterWizard({ onBack, onDone }) {
         });
     }
 
+    const tunnelActive = !!(wgStatus && wgStatus.enabled && wgStatus.connected);
+
     function validate() {
         if (step === 1 && (!state.name || !state.site_id || !state.nas_identifier || !state.nas_secret))
             throw new Error('Fill in router name, site, NAS identifier, and NAS secret.');
-        if (step === 2 && (!state.ip_address || !state.api_username || !state.api_password))
+        // An active tunnel guarantees connectivity — the API fields/test are skipped.
+        if (step === 2 && !tunnelActive && (!state.ip_address || !state.api_username || !state.api_password))
             throw new Error('Fill in the API connection fields.');
-        if (step === 3 && (!connTested || !state.hotspot_interface || !state.dns_name))
-            throw new Error('Test the connection successfully, then choose the hotspot interface and DNS name.');
+        if (step === 3 && !connTested && !tunnelActive)
+            throw new Error('Test the connection successfully before choosing the hotspot interface.');
+        if (step === 3 && (!state.hotspot_interface || !state.dns_name))
+            throw new Error('Choose the hotspot interface and DNS name.');
+    }
+
+    async function loadInterfacesViaTunnel() {
+        // Tunnel is up — pull interfaces/templates over the tunnel IP, no API test needed.
+        const ifaces = await apiCall('/admin/routers/temp-interfaces', {
+            method: 'POST',
+            body: JSON.stringify({ host: wgStatus.tunnel_ip, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: false }),
+        });
+        setInterfaces(ifaces || []);
+        const tpls = await apiCall('/admin/config-templates');
+        setTemplates(tpls || []);
+        setConnTested(true);
     }
 
     function next() {
-        try { validate(); setStep(s => Math.min(4, s + 1)); } catch (e) { alert(e.message); }
+        try {
+            validate();
+            if (step === 2 && tunnelActive && interfaces.length === 0) {
+                loadInterfacesViaTunnel().catch(() => {});
+            }
+            setStep(s => Math.min(4, s + 1));
+        } catch (e) { alert(e.message); }
     }
 
     async function testConnection() {
@@ -283,30 +310,54 @@ function RouterWizard({ onBack, onDone }) {
                 {/* Step 2 */}
                 {step === 2 && (
                     <>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-                            <div className="form-group">
-                                <label>Router IP address</label>
-                                <input value={state.ip_address} onChange={e => set('ip_address', e.target.value)} placeholder="192.168.99.1" />
+                        {/* Tunnel active — skip the API connection test entirely */}
+                        {tunnelActive && (
+                            <div style={{ padding: '14px 16px', background: '#ecfdf3', border: '1px solid #abefc6', borderRadius: 12 }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 700, color: '#067647' }}>
+                                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#12b76a', display: 'inline-block' }} />
+                                    VPN tunnel is active — using tunnel IP {wgStatus.tunnel_ip}
+                                </span>
+                                <p style={{ margin: '8px 0 0', color: '#5c677d', fontSize: 14 }}>
+                                    The connection test is skipped — the tunnel guarantees connectivity. Click Next to continue.
+                                </p>
                             </div>
-                            <div className="form-group">
-                                <label>API port</label>
-                                <input type="number" value={state.api_port} onChange={e => set('api_port', e.target.value)} />
+                        )}
+
+                        {/* Tunnel configured but not connected — warn, but allow proceeding */}
+                        {wgStatus && wgStatus.enabled && !wgStatus.connected && (
+                            <div style={{ marginBottom: 12, padding: '12px 16px', background: '#fffaeb', border: '1px solid #fedf89', borderRadius: 12, color: '#b54708', fontSize: 14 }}>
+                                VPN tunnel configured but not connected — you can still proceed but provisioning may fail.
                             </div>
-                            <div className="form-group">
-                                <label>RouterOS username</label>
-                                <input value={state.api_username} onChange={e => set('api_username', e.target.value)} />
-                            </div>
-                            <div className="form-group">
-                                <label>RouterOS password</label>
-                                <input type="password" value={state.api_password} onChange={e => set('api_password', e.target.value)} />
-                            </div>
-                        </div>
-                        <div style={{ marginTop: 12 }}>
-                            <button className="btn" style={{ background: '#f59e0b', color: '#1f2937' }} onClick={() => testConnection().catch(e => setConnResult(e.message))}>
-                                Test connection
-                            </button>
-                            <div style={{ marginTop: 12, padding: '10px 14px', background: '#f8fafc', borderRadius: 10, color: '#5c677d', fontSize: 14 }}>{connResult}</div>
-                        </div>
+                        )}
+
+                        {!tunnelActive && (
+                            <>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                                    <div className="form-group">
+                                        <label>Router IP address</label>
+                                        <input value={state.ip_address} onChange={e => set('ip_address', e.target.value)} placeholder="192.168.99.1" />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>API port</label>
+                                        <input type="number" value={state.api_port} onChange={e => set('api_port', e.target.value)} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>RouterOS username</label>
+                                        <input value={state.api_username} onChange={e => set('api_username', e.target.value)} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>RouterOS password</label>
+                                        <input type="password" value={state.api_password} onChange={e => set('api_password', e.target.value)} />
+                                    </div>
+                                </div>
+                                <div style={{ marginTop: 12 }}>
+                                    <button className="btn" style={{ background: '#f59e0b', color: '#1f2937' }} onClick={() => testConnection().catch(e => setConnResult(e.message))}>
+                                        Test connection
+                                    </button>
+                                    <div style={{ marginTop: 12, padding: '10px 14px', background: '#f8fafc', borderRadius: 10, color: '#5c677d', fontSize: 14 }}>{connResult}</div>
+                                </div>
+                            </>
+                        )}
                     </>
                 )}
 
@@ -376,6 +427,139 @@ function RouterWizard({ onBack, onDone }) {
                     {step < 4 && <button className="btn btn-primary" onClick={next}>Next</button>}
                 </div>
             </div>
+        </div>
+    );
+}
+
+// ─── VPN TUNNEL TAB ───────────────────────────────────────────────────────────
+
+function VpnTunnelTab({ routerId, onChange }) {
+    const [status, setStatus] = useState(null);
+    const [config, setConfig] = useState(null);      // { mikrotik_commands, tunnel_ip, ... }
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState('');
+    const [copied, setCopied] = useState(false);
+    const pollRef = useRef(null);
+
+    const loadStatus = useCallback(async () => {
+        const data = await apiCall(`/admin/routers/${routerId}/wireguard/status`);
+        if (data) setStatus(data);
+    }, [routerId]);
+
+    useEffect(() => {
+        loadStatus();
+        pollRef.current = setInterval(() => loadStatus().catch(() => {}), 15000);
+        return () => clearInterval(pollRef.current);
+    }, [loadStatus]);
+
+    async function setup() {
+        setBusy(true); setError('');
+        const result = await apiCall(`/admin/routers/${routerId}/wireguard/setup`, { method: 'POST', body: '{}' });
+        setBusy(false);
+        if (!result || !result.mikrotik_commands) {
+            setError(result?.detail || 'Setup failed.');
+            return;
+        }
+        setConfig(result);
+        await loadStatus();
+        if (onChange) onChange();
+    }
+
+    async function removeTunnel() {
+        if (!window.confirm('Remove the VPN tunnel for this router? Its peer will be removed from the server.')) return;
+        setBusy(true); setError('');
+        const result = await apiCall(`/admin/routers/${routerId}/wireguard`, { method: 'DELETE' });
+        setBusy(false);
+        if (result && result.detail) { setError(result.detail); return; }
+        setConfig(null);
+        await loadStatus();
+        if (onChange) onChange();
+    }
+
+    function copyAll() {
+        if (!config?.mikrotik_commands) return;
+        navigator.clipboard.writeText(config.mikrotik_commands).then(() => {
+            setCopied(true); setTimeout(() => setCopied(false), 2000);
+        });
+    }
+
+    if (!status) return <div className="card" style={{ padding: 18 }}>Loading tunnel status…</div>;
+
+    const badge = (color, text) => (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 16 }}>
+            <span style={{ width: 12, height: 12, borderRadius: '50%', background: color, display: 'inline-block' }} />
+            {text}
+        </span>
+    );
+
+    const codeBlock = config && (
+        <div style={{ marginTop: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <strong style={{ color: '#14213d' }}>MikroTik commands</strong>
+                <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: 13 }} onClick={copyAll}>
+                    {copied ? '✓ Copied' : 'Copy all commands'}
+                </button>
+            </div>
+            <pre style={{ background: '#0f172a', color: '#e5efff', padding: 14, borderRadius: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 13, lineHeight: 1.5 }}>{config.mikrotik_commands}</pre>
+            <p style={{ color: '#5c677d', fontSize: 14 }}>
+                After pasting into MikroTik, the connection status updates within ~2 minutes (this page also re-checks every 15 seconds).
+            </p>
+        </div>
+    );
+
+    return (
+        <div className="card" style={{ padding: 18 }}>
+            {error && <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 12, background: '#fef3f2', color: '#b42318' }}>{error}</div>}
+
+            {/* Not configured */}
+            {!status.enabled && (
+                <div>
+                    <h4 style={{ margin: '0 0 6px' }}>VPN Tunnel</h4>
+                    <p style={{ color: '#5c677d', marginTop: 0 }}>
+                        Set up a WireGuard tunnel so the platform can reach this router even when it's behind NAT
+                        with a dynamic IP. The router dials the server — no public IP required on the router side.
+                    </p>
+                    <button className="btn btn-primary" onClick={() => setup().catch(e => setError(e.message))} disabled={busy}>
+                        {busy ? 'Generating secure keypair…' : 'Setup VPN Tunnel'}
+                    </button>
+                    {codeBlock}
+                </div>
+            )}
+
+            {/* Configured */}
+            {status.enabled && (
+                <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+                        {status.connected
+                            ? badge('#12b76a', 'Tunnel Active')
+                            : badge('#f04438', 'Tunnel Offline')}
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            {config
+                                ? <button className="btn" style={{ background: '#e5e7eb' }} onClick={() => setConfig(null)}>Hide config</button>
+                                : <button className="btn" style={{ background: '#e5e7eb' }} onClick={() => setup().catch(e => setError(e.message))} disabled={busy}>View MikroTik config</button>}
+                            <button className="btn" style={{ background: '#fef3f2', color: '#b42318' }} onClick={() => removeTunnel().catch(e => setError(e.message))} disabled={busy}>Remove Tunnel</button>
+                        </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 14, marginTop: 16 }}>
+                        {[
+                            ['Tunnel IP', status.tunnel_ip || '—'],
+                            ['Last handshake', fmt(status.last_handshake_at)],
+                            ['Data transferred', `↑ ${fmtBytes(status.transfer_tx)}  ↓ ${fmtBytes(status.transfer_rx)}`],
+                        ].map(([label, value]) => (
+                            <div key={label} style={{ padding: 14, border: '1px solid #d7deea', borderRadius: 12, background: '#fafcff' }}>
+                                <div style={{ color: '#5c677d', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.05em' }}>{label}</div>
+                                <div style={{ fontSize: 17, fontWeight: 700, marginTop: 6 }}>{value}</div>
+                            </div>
+                        ))}
+                    </div>
+                    {!status.connected && (
+                        <p style={{ color: '#b42318', fontSize: 14, marginTop: 12 }}>
+                            Tunnel is configured but the router hasn't connected yet. Paste the MikroTik config below into the router, or check that it can reach the VPN server on UDP 51820.
+                        </p>
+                    )}
+                    {codeBlock}
+                </div>
+            )}
         </div>
     );
 }
@@ -516,7 +700,7 @@ function RouterDetail({ routerId, onBack }) {
     if (!router) return <p>Loading router…</p>;
 
     const info = router.system_info || {};
-    const TABS = ['overview', 'metrics', 'sessions', 'logs'];
+    const TABS = ['overview', 'metrics', 'sessions', 'logs', 'vpn'];
 
     return (
         <div>
@@ -544,7 +728,7 @@ function RouterDetail({ routerId, onBack }) {
             {/* Tabs */}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
                 {TABS.map(t => (
-                    <button key={t} onClick={() => setTab(t)} style={{ border: `1px solid ${t === tab ? '#0d6e5f' : '#d7deea'}`, background: t === tab ? '#0d6e5f' : '#fff', color: t === tab ? '#fff' : '#14213d', borderRadius: 999, padding: '8px 16px', cursor: 'pointer', fontWeight: 600, textTransform: 'capitalize' }}>{t === 'logs' ? 'Provision log' : t === 'sessions' ? 'Active sessions' : t.charAt(0).toUpperCase() + t.slice(1)}</button>
+                    <button key={t} onClick={() => setTab(t)} style={{ border: `1px solid ${t === tab ? '#0d6e5f' : '#d7deea'}`, background: t === tab ? '#0d6e5f' : '#fff', color: t === tab ? '#fff' : '#14213d', borderRadius: 999, padding: '8px 16px', cursor: 'pointer', fontWeight: 600, textTransform: 'capitalize' }}>{t === 'logs' ? 'Provision log' : t === 'sessions' ? 'Active sessions' : t === 'vpn' ? 'VPN Tunnel' : t.charAt(0).toUpperCase() + t.slice(1)}</button>
                 ))}
             </div>
 
@@ -647,6 +831,11 @@ function RouterDetail({ routerId, onBack }) {
                 </div>
             )}
 
+            {/* VPN Tunnel */}
+            {tab === 'vpn' && (
+                <VpnTunnelTab routerId={routerId} onChange={loadOverview} />
+            )}
+
             {/* Edit modal */}
             <Modal open={editOpen} onClose={() => setEditOpen(false)} title="Edit router" wide>
                 <p style={{ color: '#5c677d', marginTop: 0 }}>Leave RouterOS password blank to keep the current credentials.</p>
@@ -682,6 +871,17 @@ function RouterDetail({ routerId, onBack }) {
             {/* Reprovision modal */}
             <Modal open={reprovisionOpen} onClose={() => setReprovisionOpen(false)} title="Reprovision router" wide>
                 <p style={{ color: '#5c677d', marginTop: 0 }}>Use this after editing credentials or changing RouterOS settings. Progress appears in the Provision log tab.</p>
+                {router.wireguard?.enabled && router.wireguard?.connected && (
+                    <div style={{ marginBottom: 14, padding: '12px 16px', background: '#ecfdf3', border: '1px solid #abefc6', borderRadius: 12, color: '#067647', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#12b76a', display: 'inline-block' }} />
+                        VPN tunnel active — provisioning will use tunnel IP {router.wireguard.tunnel_ip}
+                    </div>
+                )}
+                {router.wireguard?.enabled && !router.wireguard?.connected && (
+                    <div style={{ marginBottom: 14, padding: '12px 16px', background: '#fffaeb', border: '1px solid #fedf89', borderRadius: 12, color: '#b54708', fontSize: 14 }}>
+                        VPN tunnel configured but not connected — provisioning may fail.
+                    </div>
+                )}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
                     <div className="form-group">
                         <label>Captive portal DNS name</label>

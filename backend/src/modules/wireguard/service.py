@@ -140,12 +140,14 @@ class WireGuardService:
 
     # ----- MikroTik config builder ---------------------------------------
 
-    def build_mikrotik_commands(self, router_private_key: str, tunnel_ip: str) -> str:
+    def build_mikrotik_commands(self, router_private_key: str, tunnel_ip: str, endpoint: str | None = None) -> str:
         """Return ready-to-paste MikroTik RouterOS commands for the operator.
 
+        ``endpoint`` is the platform-level WG_SERVER_ENDPOINT (read from the
+        platform_settings table by the caller); falls back to the .env default.
         Never includes the server's private key — only its public key.
         """
-        endpoint = settings.wg_server_endpoint
+        endpoint = endpoint or settings.wg_server_endpoint
         if ":" in endpoint:
             endpoint_addr, endpoint_port = endpoint.rsplit(":", 1)
         else:

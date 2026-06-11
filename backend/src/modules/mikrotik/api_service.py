@@ -375,9 +375,15 @@ class MikroTikAPIService:
             if row is None:
                 raise RouterCredentialsMissingError("Router credentials are required before provisioning")
             router, credentials = row
+            # Prefer the WireGuard tunnel IP when the tunnel is up — the router
+            # may be behind NAT and unreachable at its direct IP.
+            if router.wg_enabled and router.wg_is_connected and router.wg_tunnel_ip:
+                host = str(router.wg_tunnel_ip)
+            else:
+                host = str(router.ip_address)
             return RouterAccess(
                 router_id=str(router.id),
-                host=str(router.ip_address),
+                host=host,
                 api_port=int(credentials.api_port),
                 api_username=credentials.api_username,
                 api_password=decrypt_secret(credentials.api_password_encrypted),

@@ -26,6 +26,11 @@ async def platform_operators_page():
     return FileResponse(_DIR / "operators.html")
 
 
+@router.get("/platform/settings", include_in_schema=False)
+async def platform_settings_page():
+    return FileResponse(_DIR / "settings.html")
+
+
 @router.get("/platform", include_in_schema=False)
 async def platform_root_redirect():
     from fastapi.responses import RedirectResponse

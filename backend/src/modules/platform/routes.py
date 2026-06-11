@@ -426,3 +426,40 @@ async def waive_invoice(
     db.add(event)
     await db.commit()
     return {"message": "Invoice waived", "invoice_id": str(invoice.id)}
+
+
+# --- Platform settings (platform owner only) ---
+
+@router.get("/settings")
+async def get_platform_settings(
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Return all platform-level settings as a flat key/value object.
+
+    Keys: wg_server_endpoint, platform_app_url, webhook_base_url. Values come
+    from the platform_settings table, falling back to the .env/config default.
+    """
+    from src.modules.platform.settings_service import get_all_settings
+    return await get_all_settings(db)
+
+
+@router.put("/settings")
+async def update_platform_settings(
+    updates: dict[str, str],
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Update one or more platform settings. Only known safe keys are allowed."""
+    from src.modules.platform.settings_service import PLATFORM_SETTING_KEYS, get_all_settings, set_setting
+
+    unknown = set(updates) - set(PLATFORM_SETTING_KEYS)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown setting key(s): {', '.join(sorted(unknown))}",
+        )
+    for key, value in updates.items():
+        await set_setting(db, key, str(value if value is not None else ""))
+    await db.commit()
+    return await get_all_settings(db)

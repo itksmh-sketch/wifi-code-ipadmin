@@ -127,6 +127,19 @@ class Router(Base):
     )
 
 
+class PlatformSetting(Base):
+    """Platform-owner-managed key/value settings, seeded from .env on first run.
+
+    Editable at runtime (no restart) — e.g. WG_SERVER_ENDPOINT, PLATFORM_APP_URL,
+    WEBHOOK_BASE_URL. See [[platform-settings-requirement]].
+    """
+    __tablename__ = "platform_settings"
+
+    key = Column(String(128), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class WgIpAllocation(Base):
     __tablename__ = "wg_ip_allocations"
 

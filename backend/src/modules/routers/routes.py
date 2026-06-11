@@ -96,5 +96,13 @@ async def delete_router(router_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     r = result.scalar_one_or_none()
     if not r:
         raise HTTPException(status_code=404, detail="Router not found")
+    # Remove the WireGuard peer from the interface before deleting the router.
+    # The wg_ip_allocations row is removed by the ON DELETE CASCADE.
+    if r.wg_peer_public_key:
+        from src.modules.wireguard.service import WireGuardError, WireGuardService
+        try:
+            await WireGuardService().remove_peer(r.wg_peer_public_key)
+        except WireGuardError:
+            pass  # best-effort; never block router deletion on the sidecar
     await db.delete(r)
     await db.commit()

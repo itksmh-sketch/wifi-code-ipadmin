@@ -207,6 +207,12 @@ async def admin_router_detail(router_id: uuid.UUID, db: AsyncSession = Depends(g
         "last_seen_at": router_row.last_seen_at.isoformat() if router_row.last_seen_at else None,
         "connection_status": credentials.connection_status if credentials else "unknown",
         "last_connected_at": credentials.last_connected_at.isoformat() if credentials and credentials.last_connected_at else None,
+        "wireguard": {
+            "enabled": bool(router_row.wg_enabled),
+            "connected": bool(router_row.wg_is_connected),
+            "tunnel_ip": str(router_row.wg_tunnel_ip) if router_row.wg_tunnel_ip else None,
+            "last_handshake_at": router_row.wg_last_handshake_at.isoformat() if router_row.wg_last_handshake_at else None,
+        },
         "credentials": {
             "api_username": credentials.api_username if credentials else "",
             "api_port": int(credentials.api_port) if credentials else 8728,
