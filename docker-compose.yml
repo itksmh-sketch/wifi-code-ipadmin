@@ -25,6 +25,10 @@ services:
   backend:
     build: ./backend
     container_name: hotspot-backend
+    # Host networking so the backend shares the host loopback with wg-manager
+    # (reaches it at 127.0.0.1:8999). DB/Redis are reached via 127.0.0.1 + their
+    # published host ports, since Docker service-name DNS is unavailable here.
+    network_mode: host
     working_dir: /app
     command:
       - sh
@@ -37,8 +41,8 @@ services:
         fi
         exec uvicorn src.app:app --host 0.0.0.0 --port 8000 --reload
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hotspot_user}:${POSTGRES_PASSWORD:-hotspot_pass}@pgbouncer:5432/${POSTGRES_DB:-hotspot_db}
-      SYNC_DATABASE_URL: postgresql://${POSTGRES_USER:-hotspot_user}:${POSTGRES_PASSWORD:-hotspot_pass}@pgbouncer:5432/${POSTGRES_DB:-hotspot_db}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hotspot_user}:${POSTGRES_PASSWORD:-hotspot_pass}@127.0.0.1:6432/${POSTGRES_DB:-hotspot_db}
+      SYNC_DATABASE_URL: postgresql://${POSTGRES_USER:-hotspot_user}:${POSTGRES_PASSWORD:-hotspot_pass}@127.0.0.1:6432/${POSTGRES_DB:-hotspot_db}
       JWT_SECRET: ${JWT_SECRET:-change_me_in_production}
       JWT_EXPIRATION_MINUTES: ${JWT_EXPIRATION_MINUTES:-60}
       RADIUS_COA_SECRET: ${RADIUS_COA_SECRET:-radius_secret_123}
@@ -47,7 +51,7 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@isp.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       RUN_SEED: ${RUN_SEED:-false}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      REDIS_URL: ${REDIS_URL:-redis://127.0.0.1:6379}
       MTN_MOMO_BASE_URL: ${MTN_MOMO_BASE_URL:-}
       MTN_MOMO_COLLECTION_SUBSCRIPTION_KEY: ${MTN_MOMO_COLLECTION_SUBSCRIPTION_KEY:-}
       MTN_MOMO_API_USER: ${MTN_MOMO_API_USER:-}
@@ -76,8 +80,43 @@ services:
       RADIUS_PUBLIC_HOST: ${RADIUS_PUBLIC_HOST:-}
       MIKROTIK_API_TIMEOUT: ${MIKROTIK_API_TIMEOUT:-10}
       MIKROTIK_CMD_TIMEOUT: ${MIKROTIK_CMD_TIMEOUT:-30}
-    ports:
-      - "8000:8000"
+      # Reseller / platform-owner auth
+      RESELLER_JWT_SECRET: ${RESELLER_JWT_SECRET:-change_me_reseller_in_production}
+      RESELLER_JWT_EXPIRATION_MINUTES: ${RESELLER_JWT_EXPIRATION_MINUTES:-60}
+      PLATFORM_OWNER_JWT_SECRET: ${PLATFORM_OWNER_JWT_SECRET:-change_me_platform_owner_in_production}
+      PLATFORM_OWNER_JWT_EXPIRATION_MINUTES: ${PLATFORM_OWNER_JWT_EXPIRATION_MINUTES:-60}
+      PLATFORM_OWNER_EMAIL: ${PLATFORM_OWNER_EMAIL:-owner@yourdomain.com}
+      PLATFORM_OWNER_PASSWORD: ${PLATFORM_OWNER_PASSWORD:-change-me-strong-password}
+      # Public URLs
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
+      PORTAL_PUBLIC_BASE_URL: ${PORTAL_PUBLIC_BASE_URL:-}
+      PLATFORM_APP_URL: ${PLATFORM_APP_URL:-http://localhost:8000}
+      # Email
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-noreply@yourplatform.com}
+      SENDGRID_FROM_NAME: ${SENDGRID_FROM_NAME:-YourISP Platform}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
+      MAILGUN_FROM_EMAIL: ${MAILGUN_FROM_EMAIL:-}
+      PLATFORM_SUPPORT_EMAIL: ${PLATFORM_SUPPORT_EMAIL:-support@yourplatform.com}
+      # Platform billing
+      PLATFORM_BILLING_PAYSTACK_PUBLIC_KEY: ${PLATFORM_BILLING_PAYSTACK_PUBLIC_KEY:-}
+      PLATFORM_BILLING_PAYSTACK_SECRET_KEY: ${PLATFORM_BILLING_PAYSTACK_SECRET_KEY:-}
+      PLATFORM_BILLING_PAYSTACK_WEBHOOK_SECRET: ${PLATFORM_BILLING_PAYSTACK_WEBHOOK_SECRET:-}
+      DEFAULT_MONTHLY_FEE_GHS: ${DEFAULT_MONTHLY_FEE_GHS:-200.00}
+      TRIAL_DAYS: ${TRIAL_DAYS:-14}
+      GRACE_PERIOD_DAYS: ${GRACE_PERIOD_DAYS:-14}
+      # WireGuard VPN tunnel
+      WG_SERVER_PUBLIC_KEY: ${WG_SERVER_PUBLIC_KEY:-}
+      WG_SERVER_PRIVATE_KEY: ${WG_SERVER_PRIVATE_KEY:-}
+      WG_SERVER_ENDPOINT: ${WG_SERVER_ENDPOINT:-34.122.11.114:51820}
+      WG_TUNNEL_NETWORK: ${WG_TUNNEL_NETWORK:-10.100.0.0/24}
+      WG_SERVER_TUNNEL_IP: ${WG_SERVER_TUNNEL_IP:-10.100.0.1}
+      WG_INTERFACE: ${WG_INTERFACE:-wg0}
+      WG_MANAGER_URL: ${WG_MANAGER_URL:-http://127.0.0.1:8999}
+    # No `ports:` — host networking ignores port mappings; uvicorn binds
+    # 0.0.0.0:8000 directly on the host (Nginx proxies to 127.0.0.1:8000).
     volumes:
       - ./backend:/app
       - ./frontend/admin:/frontend/admin
@@ -94,6 +133,9 @@ services:
   worker:
     build: ./backend
     container_name: hotspot-worker
+    # Host networking so the worker can reach wg-manager at 127.0.0.1:8999
+    # (tunnel-status job). DB/Redis via 127.0.0.1 + published host ports.
+    network_mode: host
     working_dir: /app
     command:
       - sh
@@ -102,10 +144,10 @@ services:
         set -e
         exec arq src.jobs.worker.WorkerSettings
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hotspot_user}:${POSTGRES_PASSWORD:-hotspot_pass}@pgbouncer:5432/${POSTGRES_DB:-hotspot_db}
-      SYNC_DATABASE_URL: postgresql://${POSTGRES_USER:-hotspot_user}:${POSTGRES_PASSWORD:-hotspot_pass}@pgbouncer:5432/${POSTGRES_DB:-hotspot_db}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hotspot_user}:${POSTGRES_PASSWORD:-hotspot_pass}@127.0.0.1:6432/${POSTGRES_DB:-hotspot_db}
+      SYNC_DATABASE_URL: postgresql://${POSTGRES_USER:-hotspot_user}:${POSTGRES_PASSWORD:-hotspot_pass}@127.0.0.1:6432/${POSTGRES_DB:-hotspot_db}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-NlvUlJ_LybSPZa-4oH0BjQHNM1yuNAw2Nn1CnyZ9Z8Q=}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      REDIS_URL: ${REDIS_URL:-redis://127.0.0.1:6379}
       MTN_MOMO_BASE_URL: ${MTN_MOMO_BASE_URL:-}
       MTN_MOMO_COLLECTION_SUBSCRIPTION_KEY: ${MTN_MOMO_COLLECTION_SUBSCRIPTION_KEY:-}
       MTN_MOMO_API_USER: ${MTN_MOMO_API_USER:-}
@@ -134,6 +176,41 @@ services:
       RADIUS_PUBLIC_HOST: ${RADIUS_PUBLIC_HOST:-}
       MIKROTIK_API_TIMEOUT: ${MIKROTIK_API_TIMEOUT:-10}
       MIKROTIK_CMD_TIMEOUT: ${MIKROTIK_CMD_TIMEOUT:-30}
+      # Reseller / platform-owner auth
+      RESELLER_JWT_SECRET: ${RESELLER_JWT_SECRET:-change_me_reseller_in_production}
+      RESELLER_JWT_EXPIRATION_MINUTES: ${RESELLER_JWT_EXPIRATION_MINUTES:-60}
+      PLATFORM_OWNER_JWT_SECRET: ${PLATFORM_OWNER_JWT_SECRET:-change_me_platform_owner_in_production}
+      PLATFORM_OWNER_JWT_EXPIRATION_MINUTES: ${PLATFORM_OWNER_JWT_EXPIRATION_MINUTES:-60}
+      PLATFORM_OWNER_EMAIL: ${PLATFORM_OWNER_EMAIL:-owner@yourdomain.com}
+      PLATFORM_OWNER_PASSWORD: ${PLATFORM_OWNER_PASSWORD:-change-me-strong-password}
+      # Public URLs
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL:-}
+      PORTAL_PUBLIC_BASE_URL: ${PORTAL_PUBLIC_BASE_URL:-}
+      PLATFORM_APP_URL: ${PLATFORM_APP_URL:-http://localhost:8000}
+      # Email
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-noreply@yourplatform.com}
+      SENDGRID_FROM_NAME: ${SENDGRID_FROM_NAME:-YourISP Platform}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
+      MAILGUN_FROM_EMAIL: ${MAILGUN_FROM_EMAIL:-}
+      PLATFORM_SUPPORT_EMAIL: ${PLATFORM_SUPPORT_EMAIL:-support@yourplatform.com}
+      # Platform billing
+      PLATFORM_BILLING_PAYSTACK_PUBLIC_KEY: ${PLATFORM_BILLING_PAYSTACK_PUBLIC_KEY:-}
+      PLATFORM_BILLING_PAYSTACK_SECRET_KEY: ${PLATFORM_BILLING_PAYSTACK_SECRET_KEY:-}
+      PLATFORM_BILLING_PAYSTACK_WEBHOOK_SECRET: ${PLATFORM_BILLING_PAYSTACK_WEBHOOK_SECRET:-}
+      DEFAULT_MONTHLY_FEE_GHS: ${DEFAULT_MONTHLY_FEE_GHS:-200.00}
+      TRIAL_DAYS: ${TRIAL_DAYS:-14}
+      GRACE_PERIOD_DAYS: ${GRACE_PERIOD_DAYS:-14}
+      # WireGuard VPN tunnel
+      WG_SERVER_PUBLIC_KEY: ${WG_SERVER_PUBLIC_KEY:-}
+      WG_SERVER_PRIVATE_KEY: ${WG_SERVER_PRIVATE_KEY:-}
+      WG_SERVER_ENDPOINT: ${WG_SERVER_ENDPOINT:-34.122.11.114:51820}
+      WG_TUNNEL_NETWORK: ${WG_TUNNEL_NETWORK:-10.100.0.0/24}
+      WG_SERVER_TUNNEL_IP: ${WG_SERVER_TUNNEL_IP:-10.100.0.1}
+      WG_INTERFACE: ${WG_INTERFACE:-wg0}
+      WG_MANAGER_URL: ${WG_MANAGER_URL:-http://127.0.0.1:8999}
     volumes:
       - ./backend:/app
     depends_on:
