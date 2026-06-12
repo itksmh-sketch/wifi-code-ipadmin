@@ -31,6 +31,7 @@ from src.modules.sms.dependencies import get_sms_service
 from src.modules.resellers.routes import router as reseller_router
 from src.modules.resellers.admin_routes import router as admin_reseller_router
 from src.modules.mikrotik.routes import router as mikrotik_router
+from src.modules.mikrotik.setup_routes import router as router_setup_router
 from src.modules.wireguard.routes import router as wireguard_router, peers_router as wireguard_peers_router
 from src.modules.platform.routes import router as platform_router
 from src.admin_portal.routes import router as admin_portal_router
@@ -83,6 +84,7 @@ app.include_router(reseller_portal_router)
 app.include_router(reseller_router, prefix="/api/v1")
 app.include_router(admin_reseller_router, prefix="/api/v1")
 app.include_router(mikrotik_router, prefix="/api/v1")
+app.include_router(router_setup_router, prefix="/api/v1")
 app.include_router(wireguard_router, prefix="/api/v1")
 app.include_router(wireguard_peers_router, prefix="/api/v1")
 app.include_router(platform_router, prefix="/api/v1")

@@ -312,6 +312,20 @@ class MikroTikAPIService:
         result, commands = await self._run_router_operation(router_id, self._sync_reboot_router)
         return ProvisionResult(success=True, message=result, commands_executed=commands)
 
+    async def run_operation(
+        self,
+        router_id: str,
+        operation: Callable[[SyncCommandRunner, dict[str, Any]], Any],
+        *,
+        data: dict[str, Any] | None = None,
+        timeout: int | None = None,
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        """Public entry point for running an arbitrary sync operation against a
+        router over its preferred connection (WireGuard tunnel or direct IP).
+        Returns (operation_result, executed_commands). Used by the setup wizard
+        service so it does not have to re-implement the connection plumbing."""
+        return await self._run_router_operation(router_id, operation, data=data, timeout=timeout)
+
     async def _run_router_operation(
         self,
         router_id: str,

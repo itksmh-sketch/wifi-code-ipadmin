@@ -122,6 +122,9 @@ class Router(Base):
     credentials = relationship("RouterCredential", back_populates="router", uselist=False)
     provision_logs = relationship("RouterProvisionLog", back_populates="router")
     metrics = relationship("RouterMetric", back_populates="router")
+    setup_status = relationship(
+        "RouterSetupStatus", back_populates="router", uselist=False, cascade="all, delete-orphan"
+    )
     wg_ip_allocation = relationship(
         "WgIpAllocation", back_populates="router", uselist=False, cascade="all, delete-orphan"
     )
@@ -263,7 +266,20 @@ class RouterProvisionLog(Base):
     router_id = Column(UUID(as_uuid=True), ForeignKey("routers.id"), nullable=False)
     triggered_by = Column(String(255), nullable=False)
     action = Column(
-        ENUM("provision", "update_radius", "update_hotspot", "apply_template", "reboot", "diagnostics", name="router_provision_action", create_type=False),
+        ENUM(
+            "provision",
+            "update_radius",
+            "update_hotspot",
+            "apply_template",
+            "reboot",
+            "diagnostics",
+            "setup_network",
+            "setup_hotspot",
+            "setup_radius",
+            "setup_nat",
+            name="router_provision_action",
+            create_type=False,
+        ),
         nullable=False,
     )
     status = Column(
@@ -278,6 +294,32 @@ class RouterProvisionLog(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     router = relationship("Router", back_populates="provision_logs")
+
+
+class RouterSetupStatus(Base):
+    """Per-router setup wizard state — persists what each section last applied so
+    the UI can show status (configured/partial/etc.) even when the router is offline.
+    One row per router; created lazily on first detect/apply."""
+
+    __tablename__ = "router_setup_status"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    router_id = Column(UUID(as_uuid=True), ForeignKey("routers.id", ondelete="CASCADE"), unique=True, nullable=False)
+    network_status = Column(String(20), nullable=False, server_default="unconfigured")
+    network_applied_at = Column(DateTime(timezone=True), nullable=True)
+    network_config = Column(JSONB, nullable=True)
+    hotspot_status = Column(String(20), nullable=False, server_default="unconfigured")
+    hotspot_applied_at = Column(DateTime(timezone=True), nullable=True)
+    hotspot_config = Column(JSONB, nullable=True)
+    radius_status = Column(String(20), nullable=False, server_default="unconfigured")
+    radius_applied_at = Column(DateTime(timezone=True), nullable=True)
+    radius_config = Column(JSONB, nullable=True)
+    nat_status = Column(String(20), nullable=False, server_default="unconfigured")
+    nat_applied_at = Column(DateTime(timezone=True), nullable=True)
+    nat_config = Column(JSONB, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    router = relationship("Router", back_populates="setup_status")
 
 
 class RouterMetric(Base):

@@ -49,14 +49,17 @@ async def create_router(site_id: uuid.UUID, body: RouterCreate, db: AsyncSession
         is_active=body.is_active,
     )
     db.add(r)
-    await db.commit()
-    await db.refresh(r)
-    r.nas_secret = body.nas_secret  # return plaintext on creation
+    await db.flush()
     from src.modules.onboarding import mark_checklist
     await mark_checklist(db, tenant.isp_operator_id, "router_added")
     await db.commit()
+    await db.refresh(r)
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, reload_freeradius_clients)
+    # Detach before mutating: the plaintext below is for the response only and
+    # must never be flushed back over the encrypted nas_secret column.
+    db.expunge(r)
+    r.nas_secret = body.nas_secret  # return plaintext on creation (response only)
     return r
 
 
@@ -83,6 +86,9 @@ async def update_router(router_id: uuid.UUID, body: RouterUpdate, db: AsyncSessi
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, reload_freeradius_clients)
     await db.refresh(r)
+    # Detach before mutating for the response so the decrypted plaintext is
+    # never flushed back over the encrypted nas_secret column.
+    db.expunge(r)
     try:
         r.nas_secret = decrypt_secret(r.nas_secret)
     except Exception:

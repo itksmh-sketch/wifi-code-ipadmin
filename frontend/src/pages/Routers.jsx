@@ -566,6 +566,484 @@ function VpnTunnelTab({ routerId, onChange }) {
 
 // ─── ROUTER DETAIL ────────────────────────────────────────────────────────────
 
+// ─── ROUTER SETUP WIZARD ──────────────────────────────────────────────────────
+
+const SUBNET_OPTIONS = [
+    { prefix: 24, label: '/24 — 254 hosts (most common)' },
+    { prefix: 25, label: '/25 — 126 hosts' },
+    { prefix: 26, label: '/26 — 62 hosts' },
+    { prefix: 27, label: '/27 — 30 hosts' },
+    { prefix: 28, label: '/28 — 14 hosts' },
+    { prefix: 23, label: '/23 — 510 hosts' },
+    { prefix: 22, label: '/22 — 1022 hosts' },
+];
+const LEASE_OPTIONS = ['1h', '4h', '8h', '24h'];
+
+function hostsInSubnet(prefix) {
+    return Math.pow(2, 32 - prefix) - 2;
+}
+function ipToInt(ip) {
+    const parts = String(ip).split('.');
+    if (parts.length !== 4) return null;
+    let n = 0;
+    for (const p of parts) {
+        const v = Number(p);
+        if (!Number.isInteger(v) || v < 0 || v > 255) return null;
+        n = (n * 256) + v;
+    }
+    return n >>> 0;
+}
+function intToIp(n) {
+    return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+}
+// Mirrors the server's plan_subnet: pool runs gateway+1 .. broadcast-1.
+function subnetPlan(gateway, prefix) {
+    const gw = ipToInt(gateway);
+    if (gw === null) return null;
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    const network = (gw & mask) >>> 0;
+    const broadcast = (network | (~mask >>> 0)) >>> 0;
+    if (gw === network || gw === broadcast) return null;
+    return {
+        network: intToIp(network),
+        broadcast: intToIp(broadcast),
+        poolStart: intToIp(Math.min(gw + 1, broadcast - 1)),
+        poolEnd: intToIp(broadcast - 1),
+        hotspotNetwork: `${intToIp(network)}/${prefix}`,
+    };
+}
+
+const BADGE = {
+    configured: { bg: '#ecfdf3', fg: '#067647', dot: '🟢', label: 'Configured' },
+    partial: { bg: '#fffaeb', fg: '#b54708', dot: '🟡', label: 'Partial' },
+    unconfigured: { bg: '#f2f4f7', fg: '#5c677d', dot: '⚪', label: 'Not configured' },
+    error: { bg: '#fef3f2', fg: '#b42318', dot: '🔴', label: 'Error' },
+    applying: { bg: '#eff8ff', fg: '#175cd3', dot: '🔄', label: 'Applying…' },
+};
+function StatusBadge({ status }) {
+    const b = BADGE[status] || BADGE.unconfigured;
+    return (
+        <span style={{ background: b.bg, color: b.fg, borderRadius: 999, padding: '4px 12px', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap' }}>
+            {b.dot} {b.label}
+        </span>
+    );
+}
+
+function TerminalPanel({ lines }) {
+    const text = (lines || []).join('\n');
+    return (
+        <details style={{ marginTop: 12 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 13, color: '#5c677d', fontWeight: 600 }}>Terminal commands</summary>
+            <div style={{ marginTop: 8 }}>
+                <pre style={{ background: '#0f172a', color: '#e5efff', padding: 12, borderRadius: 10, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>{text || '# Fill in the form above to generate commands'}</pre>
+                <button className="btn" style={{ background: '#e5e7eb', marginTop: 8, fontSize: 13, padding: '6px 12px' }} onClick={() => navigator.clipboard?.writeText(text)} disabled={!text}>Copy all commands</button>
+            </div>
+        </details>
+    );
+}
+
+function ApplyLog({ commands, error }) {
+    if (error) {
+        return <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 10, background: '#fef3f2', color: '#b42318', fontSize: 13 }}>{error}</div>;
+    }
+    if (!commands || commands.length === 0) return null;
+    return (
+        <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#5c677d', marginBottom: 6 }}>Command log</div>
+            <div style={{ background: '#0f172a', borderRadius: 10, padding: 10, maxHeight: 220, overflowY: 'auto' }}>
+                {commands.map((c, i) => {
+                    const st = c.status || 'success';
+                    const color = st === 'failed' ? '#fda4af' : st === 'success' ? '#86efac' : '#fcd34d';
+                    return (
+                        <div key={i} style={{ fontSize: 12, color: '#e5efff', fontFamily: 'monospace', padding: '2px 0' }}>
+                            <span style={{ color }}>{st === 'failed' ? '✗' : st === 'success' ? '✓' : '…'}</span>{' '}
+                            {c.command || ''} {c.path || ''}{c.error ? ` — ${c.error}` : ''}
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
+function SectionCard({ index, title, status, expanded, onToggle, children }) {
+    return (
+        <div className="card" style={{ marginBottom: 14, overflow: 'hidden' }}>
+            <div onClick={onToggle} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 18px', cursor: 'pointer', background: '#fafcff' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontWeight: 700, fontSize: 16 }}>
+                    <span style={{ color: '#5c677d' }}>{expanded ? '▼' : '▶'}</span>
+                    {index}. {title}
+                </div>
+                <StatusBadge status={status} />
+            </div>
+            {expanded && <div style={{ padding: '4px 18px 18px' }}>{children}</div>}
+        </div>
+    );
+}
+
+function Field({ label, children, hint }) {
+    return (
+        <div className="form-group">
+            <label>{label}</label>
+            {children}
+            {hint && <p style={{ color: '#5c677d', fontSize: 13, margin: '4px 0 0' }}>{hint}</p>}
+        </div>
+    );
+}
+
+function OfflineNote({ online }) {
+    if (online) return null;
+    return (
+        <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 10, background: '#fffaeb', border: '1px solid #fedf89', color: '#b54708', fontSize: 13 }}>
+            Router must be connected via VPN tunnel or direct IP to apply settings.
+        </div>
+    );
+}
+
+function ActionRow({ online, detecting, applying, onDetect, onApply, applyLabel, extra }) {
+    return (
+        <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+            <button className="btn" style={{ background: '#e5e7eb' }} onClick={onDetect} disabled={detecting || applying}>
+                {detecting ? 'Detecting…' : 'Detect current config'}
+            </button>
+            {extra}
+            <button className="btn btn-primary" style={{ marginLeft: 'auto' }} onClick={onApply} disabled={!online || applying || detecting} title={online ? '' : 'Router must be connected to apply'}>
+                {applying ? 'Applying…' : (applyLabel || 'Apply')}
+            </button>
+        </div>
+    );
+}
+
+// Generic per-section state hook for detect/apply lifecycle.
+function useSection(routerId, section, onApplied) {
+    const [detecting, setDetecting] = useState(false);
+    const [applying, setApplying] = useState(false);
+    const [log, setLog] = useState(null);
+    const [error, setError] = useState('');
+    const [detected, setDetected] = useState(null);
+
+    const detect = useCallback(async (onData) => {
+        setDetecting(true); setError('');
+        try {
+            const res = await apiCall(`/admin/routers/${routerId}/setup/${section}/detect`);
+            if (res?.detail) { setError(res.detail); }
+            else { setDetected(res); onData?.(res); }
+        } catch (e) { setError(e.message); }
+        finally { setDetecting(false); }
+    }, [routerId, section]);
+
+    const apply = useCallback(async (body) => {
+        setApplying(true); setError(''); setLog(null);
+        try {
+            const res = await apiCall(`/admin/routers/${routerId}/setup/${section}/apply`, { method: 'POST', body: JSON.stringify(body) });
+            if (res?.success) { setLog(res.commands_executed || []); onApplied?.(); }
+            else { setError(res?.detail || 'Apply failed.'); }
+        } catch (e) { setError(e.message); }
+        finally { setApplying(false); }
+    }, [routerId, section, onApplied]);
+
+    return { detecting, applying, log, error, detected, detect, apply };
+}
+
+function NetworkSection({ routerId, online, status, cfg, ifaces, expanded, onToggle, onApplied }) {
+    const s = useSection(routerId, 'network', onApplied);
+    const [form, setForm] = useState({
+        bridge_name: cfg?.bridge_name || 'bridge-hotspot',
+        interfaces: cfg?.interfaces || [],
+        gateway_ip: cfg?.gateway_ip || '192.168.10.1',
+        prefix: cfg?.prefix || 24,
+        pool_start: cfg?.pool_start || '',
+        pool_end: cfg?.pool_end || '',
+        dns: cfg?.dns || '8.8.8.8',
+        lease_time: cfg?.lease_time || '1h',
+    });
+    const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+    const plan = subnetPlan(form.gateway_ip, Number(form.prefix));
+    const poolStart = form.pool_start || plan?.poolStart || '';
+    const poolEnd = form.pool_end || plan?.poolEnd || '';
+    const interfaceList = ifaces;
+
+    const terminal = plan ? [
+        `/interface/bridge/add name=${form.bridge_name} comment="hotspot-bridge"`,
+        ...form.interfaces.map(i => `/interface/bridge/port/add bridge=${form.bridge_name} interface=${i}`),
+        `/ip/address/add address=${form.gateway_ip}/${form.prefix} interface=${form.bridge_name}`,
+        `/ip/pool/add name=hs-pool ranges=${poolStart}-${poolEnd}`,
+        `/ip/dhcp-server/add name=dhcp-hotspot interface=${form.bridge_name} address-pool=hs-pool disabled=no`,
+        `/ip/dhcp-server/network/add address=${plan.network}/${form.prefix} gateway=${form.gateway_ip} dns-server=${form.dns}`,
+    ] : [];
+
+    const toggleIface = (name) => set('interfaces', form.interfaces.includes(name) ? form.interfaces.filter(i => i !== name) : [...form.interfaces, name]);
+
+    return (
+        <SectionCard index={1} title="Network" status={s.applying ? 'applying' : status} expanded={expanded} onToggle={onToggle}>
+            <OfflineNote online={online} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                <Field label="Bridge name"><input value={form.bridge_name} onChange={e => set('bridge_name', e.target.value)} /></Field>
+                <Field label="Gateway IP"><input value={form.gateway_ip} onChange={e => set('gateway_ip', e.target.value)} placeholder="192.168.10.1" /></Field>
+                <Field label="Subnet size" hint={`This subnet supports up to ${hostsInSubnet(Number(form.prefix))} hotspot clients`}>
+                    <select value={form.prefix} onChange={e => set('prefix', Number(e.target.value))}>
+                        {SUBNET_OPTIONS.map(o => <option key={o.prefix} value={o.prefix}>{o.label}</option>)}
+                    </select>
+                </Field>
+                <Field label="DNS server"><input value={form.dns} onChange={e => set('dns', e.target.value)} /></Field>
+                <Field label="Pool start" hint="Auto-calculated; editable"><input value={poolStart} onChange={e => set('pool_start', e.target.value)} /></Field>
+                <Field label="Pool end" hint="Auto-calculated; editable"><input value={poolEnd} onChange={e => set('pool_end', e.target.value)} /></Field>
+                <Field label="Lease time">
+                    <select value={form.lease_time} onChange={e => set('lease_time', e.target.value)}>
+                        {LEASE_OPTIONS.map(l => <option key={l} value={l}>{l}</option>)}
+                    </select>
+                </Field>
+            </div>
+            <Field label="LAN interfaces to bridge" hint="Do not include the WAN interface (the one with your internet uplink).">
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {interfaceList.length === 0 && <span style={{ color: '#9ca3af', fontSize: 13 }}>Click “Detect current config” to load interfaces, or type names below.</span>}
+                    {interfaceList.map(i => {
+                        const name = i.name || i;
+                        return (
+                            <label key={name} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid #d7deea', borderRadius: 8, padding: '6px 10px', fontSize: 13 }}>
+                                <input type="checkbox" checked={form.interfaces.includes(name)} onChange={() => toggleIface(name)} />
+                                {name}{i.type ? ` (${i.type})` : ''}
+                            </label>
+                        );
+                    })}
+                </div>
+                <input style={{ marginTop: 8 }} placeholder="Add interface names comma-separated, e.g. ether2,ether3" onBlur={e => { const v = e.target.value.trim(); if (v) { set('interfaces', Array.from(new Set([...form.interfaces, ...v.split(',').map(x => x.trim()).filter(Boolean)]))); e.target.value = ''; } }} />
+            </Field>
+            <ActionRow online={online} detecting={s.detecting} applying={s.applying}
+                onDetect={() => s.detect(res => {
+                    const d = res?.detected || {};
+                    const addr = (d.addresses || []).find(a => a.interface === form.bridge_name);
+                    if (addr?.address) {
+                        const [ip, pfx] = addr.address.split('/');
+                        setForm(f => ({ ...f, gateway_ip: ip || f.gateway_ip, prefix: Number(pfx) || f.prefix }));
+                    }
+                    const members = (d.bridge_ports || []).filter(p => p.bridge === form.bridge_name).map(p => p.interface);
+                    if (members.length) set('interfaces', members);
+                })}
+                onApply={() => s.apply({ bridge_name: form.bridge_name, interfaces: form.interfaces, gateway_ip: form.gateway_ip, prefix: Number(form.prefix), pool_start: poolStart, pool_end: poolEnd, dns: form.dns, lease_time: form.lease_time })}
+                applyLabel="Apply network" />
+            <ApplyLog commands={s.log} error={s.error} />
+            <TerminalPanel lines={terminal} />
+        </SectionCard>
+    );
+}
+
+function HotspotSection({ routerId, online, status, cfg, networkReady, bridges, expanded, onToggle, onApplied }) {
+    const s = useSection(routerId, 'hotspot', onApplied);
+    const [form, setForm] = useState({
+        bridge_name: cfg?.bridge_name || 'bridge-hotspot',
+        dns_name: cfg?.dns_name || '',
+        cookie: cfg?.login_by ? cfg.login_by.includes('cookie') : true,
+        session_timeout: cfg?.session_timeout ?? 0,
+        idle_timeout: cfg?.idle_timeout ?? 0,
+        addresses_per_mac: cfg?.addresses_per_mac ?? 2,
+    });
+    const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+    const login_by = ['http-pap', ...(form.cookie ? ['cookie'] : [])];
+    const bridgeList = bridges.length ? bridges : (s.detected?.detected?.bridges || []);
+    const terminal = [
+        `/ip/hotspot/add name=hotspot1 interface=${form.bridge_name} address-pool=hs-pool disabled=no`,
+        `/ip/hotspot/profile/set [find name=hsprof1] login-by=${login_by.join(',')} use-radius=yes nas-port-type=wireless-802.11 dns-name=${form.dns_name}`,
+        `/ip/hotspot/user/profile/set [find name=default] session-timeout=${form.session_timeout} idle-timeout=${form.idle_timeout || 'none'} shared-users=${form.addresses_per_mac}`,
+    ];
+    return (
+        <SectionCard index={2} title="Hotspot" status={s.applying ? 'applying' : status} expanded={expanded} onToggle={onToggle}>
+            <OfflineNote online={online} />
+            {!networkReady && (
+                <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 10, background: '#fffaeb', border: '1px solid #fedf89', color: '#b54708', fontSize: 13 }}>
+                    Network setup must be completed before configuring the hotspot.
+                </div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                <Field label="Hotspot interface (bridge)">
+                    <select value={form.bridge_name} onChange={e => set('bridge_name', e.target.value)}>
+                        <option value="bridge-hotspot">bridge-hotspot</option>
+                        {bridgeList.map(b => { const n = b.name || b; return n !== 'bridge-hotspot' ? <option key={n} value={n}>{n}</option> : null; })}
+                    </select>
+                </Field>
+                <Field label="DNS name" hint="Shown in the browser when clients are redirected to login">
+                    <input value={form.dns_name} onChange={e => set('dns_name', e.target.value)} placeholder="hotspot.youroperator.local" />
+                </Field>
+                <Field label="Session timeout (minutes)" hint="0 = use the RADIUS value (recommended)"><input type="number" min="0" value={form.session_timeout} onChange={e => set('session_timeout', Number(e.target.value))} /></Field>
+                <Field label="Idle timeout (minutes)" hint="0 = disabled"><input type="number" min="0" value={form.idle_timeout} onChange={e => set('idle_timeout', Number(e.target.value))} /></Field>
+                <Field label="Addresses per MAC"><input type="number" min="1" value={form.addresses_per_mac} onChange={e => set('addresses_per_mac', Number(e.target.value))} /></Field>
+            </div>
+            <Field label="Login methods">
+                <div style={{ display: 'flex', gap: 16 }}>
+                    <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked readOnly /> HTTP PAP (required)</label>
+                    <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={form.cookie} onChange={e => set('cookie', e.target.checked)} /> Cookie</label>
+                </div>
+            </Field>
+            <ActionRow online={online && networkReady} detecting={s.detecting} applying={s.applying}
+                onDetect={() => s.detect(res => {
+                    const prof = (res?.detected?.profiles || [])[0];
+                    if (prof?.dns_name) set('dns_name', prof.dns_name);
+                })}
+                onApply={() => s.apply({ bridge_name: form.bridge_name, dns_name: form.dns_name, login_by, session_timeout: Number(form.session_timeout), idle_timeout: Number(form.idle_timeout), addresses_per_mac: Number(form.addresses_per_mac) })}
+                applyLabel="Apply hotspot" />
+            <ApplyLog commands={s.log} error={s.error} />
+            <TerminalPanel lines={terminal} />
+        </SectionCard>
+    );
+}
+
+function RadiusSection({ routerId, online, status, cfg, expanded, onToggle, onApplied }) {
+    const s = useSection(routerId, 'radius', onApplied);
+    const [timeout, setTimeoutMs] = useState(cfg?.timeout || 3000);
+    const [secret, setSecret] = useState({ masked: '●●●●●●●●', hint: '' });
+    const [showHint, setShowHint] = useState(false);
+    const [radiusHost, setRadiusHost] = useState(cfg?.radius_host || '');
+
+    useEffect(() => {
+        apiCall(`/admin/routers/${routerId}/nas-secret`).then(d => { if (d && !d.detail) setSecret(d); }).catch(() => {});
+    }, [routerId]);
+
+    const terminal = [
+        `/radius/add service=hotspot address=${radiusHost || '<platform-radius-host>'} secret=<your-router-secret> authentication-port=1812 accounting-port=1813 timeout=${Math.floor(timeout / 1000)}s`,
+        `/ip/hotspot/profile/set [find name=hsprof1] use-radius=yes`,
+    ];
+    return (
+        <SectionCard index={3} title="RADIUS" status={s.applying ? 'applying' : status} expanded={expanded} onToggle={onToggle}>
+            <OfflineNote online={online} />
+            <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 10, background: '#eff8ff', color: '#175cd3', fontSize: 13 }}>
+                These settings are pre-configured for your platform. The shared secret is unique to this router — do not share it.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                <Field label="Server address" hint="Platform RADIUS host (from platform settings)"><input value={radiusHost} onChange={e => setRadiusHost(e.target.value)} placeholder="set by platform / detect" readOnly /></Field>
+                <Field label="Authentication port"><input value="1812" readOnly /></Field>
+                <Field label="Accounting port"><input value="1813" readOnly /></Field>
+                <Field label="Service"><input value="hotspot" readOnly /></Field>
+                <Field label="Shared secret">
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input value={showHint ? (secret.hint || secret.masked) : secret.masked} readOnly style={{ flex: 1 }} />
+                        <button className="btn" style={{ background: '#e5e7eb', fontSize: 13, padding: '6px 12px' }} onClick={() => setShowHint(v => !v)}>{showHint ? 'Hide' : 'Show'}</button>
+                    </div>
+                </Field>
+                <Field label="Timeout (ms)"><input type="number" min="100" value={timeout} onChange={e => setTimeoutMs(Number(e.target.value))} /></Field>
+            </div>
+            <ActionRow online={online} detecting={s.detecting} applying={s.applying}
+                onDetect={() => s.detect(res => {
+                    if (res?.radius_host) setRadiusHost(res.radius_host);
+                })}
+                onApply={() => s.apply({ timeout: Number(timeout) })}
+                applyLabel="Apply RADIUS" />
+            {s.detected?.other_addresses?.length > 0 && (
+                <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: '#fffaeb', color: '#b54708', fontSize: 13 }}>
+                    A RADIUS server already points to {s.detected.other_addresses.join(', ')}. Applying adds a new entry alongside it.
+                </div>
+            )}
+            <ApplyLog commands={s.log} error={s.error} />
+            <TerminalPanel lines={terminal} />
+        </SectionCard>
+    );
+}
+
+function NatSection({ routerId, online, status, cfg, hotspotNetwork, ifaces, expanded, onToggle, onApplied }) {
+    const s = useSection(routerId, 'nat', onApplied);
+    const [form, setForm] = useState({
+        wan_interface: cfg?.wan_interface || '',
+        enable_nat: cfg?.enable_nat ?? true,
+        established: (cfg?.firewall_options || ['established', 'invalid', 'icmp']).includes('established'),
+        invalid: (cfg?.firewall_options || ['established', 'invalid', 'icmp']).includes('invalid'),
+        icmp: (cfg?.firewall_options || ['established', 'invalid', 'icmp']).includes('icmp'),
+    });
+    const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+    const network = cfg?.hotspot_network || hotspotNetwork || '';
+    const wanList = ifaces.length ? ifaces : (s.detected?.detected?.interfaces || []);
+    const firewall_options = [form.established && 'established', form.invalid && 'invalid', form.icmp && 'icmp'].filter(Boolean);
+    const terminal = [
+        form.enable_nat && `/ip/firewall/nat/add chain=srcnat src-address=${network || '<hotspot-network>'} out-interface=${form.wan_interface || '<wan>'} action=masquerade comment="hotspot-nat"`,
+        form.established && '/ip/firewall/filter/add chain=forward connection-state=established,related action=accept comment="allow-established"',
+        form.invalid && '/ip/firewall/filter/add chain=forward connection-state=invalid action=drop comment="drop-invalid"',
+        form.icmp && '/ip/firewall/filter/add chain=input protocol=icmp action=accept comment="allow-icmp"',
+    ].filter(Boolean);
+    const duplicate = s.detected?.duplicate_masquerade;
+    return (
+        <SectionCard index={4} title="NAT & Firewall" status={s.applying ? 'applying' : status} expanded={expanded} onToggle={onToggle}>
+            <OfflineNote online={online} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                <Field label="WAN interface" hint="The interface connected to your internet provider">
+                    <select value={form.wan_interface} onChange={e => set('wan_interface', e.target.value)}>
+                        <option value="">Select interface</option>
+                        {wanList.map(i => { const n = i.name || i; return <option key={n} value={n}>{n}{i.type ? ` (${i.type})` : ''}</option>; })}
+                    </select>
+                </Field>
+                <Field label="Hotspot source network"><input value={network} readOnly placeholder="from Network setup" /></Field>
+            </div>
+            <Field label="Internet access">
+                <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={form.enable_nat} onChange={e => set('enable_nat', e.target.checked)} /> Enable internet access for hotspot clients (NAT masquerade)</label>
+            </Field>
+            <details>
+                <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#5c677d' }}>Basic firewall protection</summary>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                    <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={form.established} onChange={e => set('established', e.target.checked)} /> Allow established/related connections</label>
+                    <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={form.invalid} onChange={e => set('invalid', e.target.checked)} /> Drop invalid packets</label>
+                    <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={form.icmp} onChange={e => set('icmp', e.target.checked)} /> Allow ICMP (ping)</label>
+                </div>
+            </details>
+            {duplicate && (
+                <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: '#fffaeb', color: '#b54708', fontSize: 13 }}>
+                    A duplicate masquerade rule was detected. Use “Remove duplicates” to clean up.
+                </div>
+            )}
+            <ActionRow online={online} detecting={s.detecting} applying={s.applying}
+                onDetect={() => s.detect(res => { const w = res?.detected?.suggested_wan; if (w) set('wan_interface', w); })}
+                onApply={() => s.apply({ wan_interface: form.wan_interface, hotspot_network: network || null, enable_nat: form.enable_nat, firewall_options })}
+                applyLabel="Apply NAT"
+                extra={duplicate ? <button className="btn" style={{ background: '#fef3f2', color: '#b42318' }} onClick={() => s.apply({ wan_interface: form.wan_interface, hotspot_network: network || null, enable_nat: form.enable_nat, firewall_options, remove_duplicates: true })} disabled={!online || s.applying}>Remove duplicates</button> : null} />
+            <ApplyLog commands={s.log} error={s.error} />
+            <TerminalPanel lines={terminal} />
+        </SectionCard>
+    );
+}
+
+function SetupProgress({ complete, total }) {
+    const filled = Math.round((complete / total) * 10);
+    return (
+        <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, color: '#5c677d', marginBottom: 6, fontWeight: 600 }}>Setup progress: {complete}/{total} sections complete</div>
+            <div style={{ fontFamily: 'monospace', fontSize: 18, color: '#0d6e5f', letterSpacing: 2 }}>{'█'.repeat(filled)}{'░'.repeat(10 - filled)}</div>
+        </div>
+    );
+}
+
+function RouterSetupTab({ routerId }) {
+    const [status, setStatus] = useState(null);
+    const [ifaces, setIfaces] = useState([]);
+    const [expanded, setExpanded] = useState({ network: true, hotspot: false, radius: false, nat: false });
+
+    const loadStatus = useCallback(async () => {
+        const data = await apiCall(`/admin/routers/${routerId}/setup/status`);
+        if (data && !data.detail) setStatus(data);
+    }, [routerId]);
+
+    useEffect(() => {
+        loadStatus();
+        apiCall(`/admin/routers/${routerId}/interfaces`).then(d => { if (Array.isArray(d)) setIfaces(d); }).catch(() => {});
+    }, [routerId, loadStatus]);
+
+    if (!status) return <p>Loading setup status…</p>;
+    const toggle = (k) => setExpanded(e => ({ ...e, [k]: !e[k] }));
+    const online = status.online;
+    const networkReady = status.network?.status === 'configured';
+    const hotspotNetwork = status.network?.config?.hotspot_network;
+
+    return (
+        <div>
+            <SetupProgress complete={status.sections_complete} total={status.total_sections || 4} />
+            {!online && (
+                <div style={{ marginBottom: 16, padding: '12px 16px', borderRadius: 12, background: '#fef3f2', border: '1px solid #fda4af', color: '#b42318', fontSize: 14 }}>
+                    This router is offline. Detect and Apply require a live connection (VPN tunnel or direct IP). Forms remain editable.
+                </div>
+            )}
+            <NetworkSection routerId={routerId} online={online} status={status.network?.status} cfg={status.network?.config} ifaces={ifaces} expanded={expanded.network} onToggle={() => toggle('network')} onApplied={loadStatus} />
+            <HotspotSection routerId={routerId} online={online} status={status.hotspot?.status} cfg={status.hotspot?.config} networkReady={networkReady} bridges={[]} expanded={expanded.hotspot} onToggle={() => toggle('hotspot')} onApplied={loadStatus} />
+            <RadiusSection routerId={routerId} online={online} status={status.radius?.status} cfg={status.radius?.config} expanded={expanded.radius} onToggle={() => toggle('radius')} onApplied={loadStatus} />
+            <NatSection routerId={routerId} online={online} status={status.nat?.status} cfg={status.nat?.config} hotspotNetwork={hotspotNetwork} ifaces={ifaces} expanded={expanded.nat} onToggle={() => toggle('nat')} onApplied={loadStatus} />
+        </div>
+    );
+}
+
 function RouterDetail({ routerId, onBack }) {
     const [router, setRouter] = useState(null);
     const [tab, setTab] = useState('overview');
@@ -585,6 +1063,7 @@ function RouterDetail({ routerId, onBack }) {
     const [rpDns, setRpDns] = useState('');
     const [rpIface, setRpIface] = useState('');
     const [rpTemplate, setRpTemplate] = useState('');
+    const [setupSummary, setSetupSummary] = useState(null);
     const cpuRef = useRef(null);
     const sessRef = useRef(null);
     const txRef = useRef(null);
@@ -622,11 +1101,16 @@ function RouterDetail({ routerId, onBack }) {
         if (data) setLogs(data);
     }, [routerId]);
 
+    const loadSetupSummary = useCallback(async () => {
+        const data = await apiCall(`/admin/routers/${routerId}/setup/status`);
+        if (data && !data.detail) setSetupSummary(data);
+    }, [routerId]);
+
     useEffect(() => {
-        Promise.all([loadOverview(), loadMetrics(), loadSessions(), loadLogs()]);
+        Promise.all([loadOverview(), loadMetrics(), loadSessions(), loadLogs(), loadSetupSummary()]);
         refreshRef.current = setInterval(() => loadSessions().catch(() => {}), 30000);
         return () => clearInterval(refreshRef.current);
-    }, [loadOverview, loadMetrics, loadSessions, loadLogs]);
+    }, [loadOverview, loadMetrics, loadSessions, loadLogs, loadSetupSummary]);
 
     useEffect(() => {
         if (tab === 'metrics' && metrics.length > 0) {
@@ -700,7 +1184,7 @@ function RouterDetail({ routerId, onBack }) {
     if (!router) return <p>Loading router…</p>;
 
     const info = router.system_info || {};
-    const TABS = ['overview', 'metrics', 'sessions', 'logs', 'vpn'];
+    const TABS = ['overview', 'setup', 'metrics', 'sessions', 'logs', 'vpn'];
 
     return (
         <div>
@@ -716,6 +1200,16 @@ function RouterDetail({ routerId, onBack }) {
                 <div>
                     <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700 }}>{router.name}</h1>
                     <p style={{ margin: '4px 0 0', color: '#5c677d' }}>{router.site_name} — {router.ip_address} — {router.nas_identifier}</p>
+                    {setupSummary && (
+                        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#5c677d' }}>
+                            <span style={{ fontWeight: 600 }}>Setup progress: {setupSummary.sections_complete}/{setupSummary.total_sections || 4}</span>
+                            <span style={{ fontFamily: 'monospace', color: '#0d6e5f', letterSpacing: 1 }}>
+                                {'█'.repeat(Math.round((setupSummary.sections_complete / (setupSummary.total_sections || 4)) * 10))}
+                                {'░'.repeat(10 - Math.round((setupSummary.sections_complete / (setupSummary.total_sections || 4)) * 10))}
+                            </span>
+                            <button onClick={() => setTab('setup')} style={{ background: 'none', border: 'none', color: '#0d6e5f', cursor: 'pointer', fontWeight: 600, padding: 0 }}>Open setup →</button>
+                        </div>
+                    )}
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button className="btn" style={{ background: '#e5e7eb' }} onClick={() => setEditOpen(true)}>Edit</button>
@@ -829,6 +1323,11 @@ function RouterDetail({ routerId, onBack }) {
                         </table>
                     </div>
                 </div>
+            )}
+
+            {/* Setup wizard */}
+            {tab === 'setup' && (
+                <RouterSetupTab routerId={routerId} />
             )}
 
             {/* VPN Tunnel */}
