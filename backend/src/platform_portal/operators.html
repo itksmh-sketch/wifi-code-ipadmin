@@ -28,6 +28,32 @@
       <div class="stat-card"><div class="stat-label">Overdue / Suspended</div><div class="stat-value" id="s-issue">—</div></div>
     </div>
 
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-header">
+        <span class="card-title">Operator Applications</span>
+        <span class="text-muted" id="apps-count"></span>
+      </div>
+      <div id="apps-err" class="notice bad" style="display:none;margin-bottom:12px"></div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>ISP / Contact</th>
+              <th>Email</th>
+              <th>Phone</th>
+              <th>Region</th>
+              <th>Sites</th>
+              <th>Status</th>
+              <th>Submitted</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="apps-tbody"></tbody>
+        </table>
+      </div>
+      <div id="apps-empty" class="text-muted" style="display:none;padding:20px 0;text-align:center">No applications yet.</div>
+    </div>
+
     <div class="card">
       <div class="card-header">
         <span class="card-title">All Operators</span>
@@ -55,6 +81,45 @@
   </div>
 
   <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
+</div>
+
+<!-- Modals -->
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:50;align-items:center;justify-content:center;padding:20px">
+  <!-- Approve -->
+  <div id="modal-approve" class="card" style="display:none;max-width:420px;width:100%;padding:24px">
+    <div class="card-title" style="margin-bottom:6px">Approve application</div>
+    <p class="text-muted" id="approve-sub" style="margin:0 0 14px"></p>
+    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Monthly fee (GHS)</label>
+    <input id="approve-fee" type="number" min="0" step="0.01" value="200.00" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:16px">
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closeModals()">Cancel</button>
+      <button class="btn primary" id="approve-submit">Approve operator</button>
+    </div>
+  </div>
+  <!-- Reject -->
+  <div id="modal-reject" class="card" style="display:none;max-width:420px;width:100%;padding:24px">
+    <div class="card-title" style="margin-bottom:6px">Reject application</div>
+    <p class="text-muted" id="reject-sub" style="margin:0 0 14px"></p>
+    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Reason for rejection</label>
+    <textarea id="reject-reason" rows="3" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:16px" placeholder="Shared with the applicant"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closeModals()">Cancel</button>
+      <button class="btn danger" id="reject-submit">Reject application</button>
+    </div>
+  </div>
+  <!-- Temp password -->
+  <div id="modal-password" class="card" style="display:none;max-width:460px;width:100%;padding:24px">
+    <div class="card-title" style="margin-bottom:6px">Operator approved</div>
+    <p class="text-muted" style="margin:0 0 14px">Share this password securely with the operator. It will not be shown again.</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+      <input id="temp-password" readonly style="flex:1;padding:9px 12px;font-size:14px;font-family:monospace;background:#f8fafc">
+      <button class="btn" id="copy-password">Copy</button>
+    </div>
+    <p class="text-muted" id="password-meta" style="margin:0 0 16px;font-size:13px"></p>
+    <div style="display:flex;justify-content:flex-end">
+      <button class="btn primary" onclick="closeModals()">Done</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -175,6 +240,135 @@ function updateStats(ops) {
 
 document.getElementById('search').addEventListener('input', applyFilter);
 
+// ── Applications ────────────────────────────────────────────────────────────
+let allApps = [];
+
+async function loadApplications() {
+  // The API returns a plain array of applications (not { applications: [] }).
+  const res = await api('/api/v1/platform/applications');
+  if (!res.ok) {
+    document.getElementById('apps-err').style.display = 'block';
+    document.getElementById('apps-err').textContent = 'Failed to load applications.';
+    return;
+  }
+  allApps = await res.json();
+  renderApps();
+}
+
+function renderApps() {
+  const tbody = document.getElementById('apps-tbody');
+  const empty = document.getElementById('apps-empty');
+  const pending = allApps.filter(a => a.status === 'pending').length;
+  document.getElementById('apps-count').textContent = `${pending} pending · ${allApps.length} total`;
+  if (!allApps.length) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  tbody.innerHTML = allApps.map(a => `
+    <tr>
+      <td>
+        <div style="font-weight:600">${escHtml(a.isp_name)}</div>
+        <div class="text-muted">${escHtml(a.contact_name)}</div>
+      </td>
+      <td>${escHtml(a.email)}</td>
+      <td>${escHtml(a.phone)}</td>
+      <td>${escHtml(a.region)}</td>
+      <td>${a.expected_sites ?? '—'}</td>
+      <td>${badge(a.status)}</td>
+      <td>${fmtDate(a.created_at)}</td>
+      <td>
+        <div class="actions">
+          ${a.status === 'pending'
+            ? `<button class="btn sm primary" onclick="openApprove('${a.id}')">Approve</button>
+               <button class="btn sm danger" onclick="openReject('${a.id}')">Reject</button>`
+            : (a.status === 'rejected' && a.rejection_reason ? `<span class="text-muted" title="${escHtml(a.rejection_reason)}">Rejected</span>` : '')}
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ── Modals ──────────────────────────────────────────────────────────────────
+let currentAppId = null;
+
+function showOverlay(which) {
+  document.getElementById('modal-overlay').style.display = 'flex';
+  ['modal-approve', 'modal-reject', 'modal-password'].forEach(id => {
+    document.getElementById(id).style.display = id === which ? 'block' : 'none';
+  });
+}
+function closeModals() {
+  document.getElementById('modal-overlay').style.display = 'none';
+  currentAppId = null;
+}
+
+function openApprove(id) {
+  currentAppId = id;
+  const app = allApps.find(a => a.id === id);
+  document.getElementById('approve-sub').textContent = app ? `${app.isp_name} — ${app.email}` : '';
+  document.getElementById('approve-fee').value = '200.00';
+  showOverlay('modal-approve');
+}
+
+function openReject(id) {
+  currentAppId = id;
+  const app = allApps.find(a => a.id === id);
+  document.getElementById('reject-sub').textContent = app ? `${app.isp_name} — ${app.email}` : '';
+  document.getElementById('reject-reason').value = '';
+  showOverlay('modal-reject');
+}
+
+document.getElementById('approve-submit').addEventListener('click', async () => {
+  if (!currentAppId) return;
+  const fee = Number(document.getElementById('approve-fee').value);
+  const res = await api(`/api/v1/platform/applications/${currentAppId}/approve`, {
+    method: 'PUT',
+    body: JSON.stringify({ monthly_fee_ghs: fee }),
+  });
+  const data = await res.json();
+  if (!res.ok) { alert(data.detail || 'Failed to approve'); return; }
+  document.getElementById('temp-password').value = data.temp_password || '';
+  document.getElementById('password-meta').textContent =
+    `Operator: ${data.slug} · admin: ${data.admin_email}`;
+  showOverlay('modal-password');
+  await Promise.all([loadApplications(), reloadOperators()]);
+});
+
+document.getElementById('reject-submit').addEventListener('click', async () => {
+  if (!currentAppId) return;
+  const reason = document.getElementById('reject-reason').value.trim();
+  if (!reason) { alert('Enter a rejection reason.'); return; }
+  const res = await api(`/api/v1/platform/applications/${currentAppId}/reject`, {
+    method: 'PUT',
+    body: JSON.stringify({ rejection_reason: reason }),
+  });
+  const data = await res.json();
+  if (!res.ok) { alert(data.detail || 'Failed to reject'); return; }
+  // Remove the rejected application from the pending list.
+  allApps = allApps.filter(a => a.id !== currentAppId);
+  renderApps();
+  closeModals();
+});
+
+document.getElementById('copy-password').addEventListener('click', () => {
+  const el = document.getElementById('temp-password');
+  navigator.clipboard?.writeText(el.value);
+  const btn = document.getElementById('copy-password');
+  btn.textContent = 'Copied';
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+});
+
+document.getElementById('modal-overlay').addEventListener('click', (e) => {
+  if (e.target.id === 'modal-overlay') closeModals();
+});
+
+async function reloadOperators() {
+  const res = await api('/api/v1/platform/operators');
+  if (res.ok) { allOperators = await res.json(); applyFilter(); }
+}
+
 async function load() {
   try {
     const [meRes, opsRes] = await Promise.all([
@@ -192,6 +386,8 @@ async function load() {
 
     document.getElementById('loading').style.display = 'none';
     document.getElementById('main').style.display = 'block';
+
+    await loadApplications();
   } catch (e) {
     document.getElementById('loading').textContent = 'Failed to load operators. Check your session.';
   }

@@ -45,6 +45,9 @@ def send_disconnect_request(router_ip: str, router_secret: str, attributes: dict
     """
     import os
 
+    if not router_ip or str(router_ip) == "None":
+        return {"status": "error", "message": "Router has no reachable IP address"}
+
     identifier = os.urandom(1)[0]
     final_packet = _build_disconnect_packet(identifier, router_secret, attributes)
 

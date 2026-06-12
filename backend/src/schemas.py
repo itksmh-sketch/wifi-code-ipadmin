@@ -125,7 +125,7 @@ class RouterResponse(BaseModel):
     id: uuid.UUID
     site_id: uuid.UUID
     name: str
-    ip_address: SafeStrIP
+    ip_address: Optional[SafeStrIP] = None
     nas_identifier: str
     is_active: bool
     is_online: bool = False

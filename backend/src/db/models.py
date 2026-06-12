@@ -101,7 +101,7 @@ class Router(Base):
     isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id"), nullable=False)
     site_id = Column(UUID(as_uuid=True), ForeignKey("sites.id"), nullable=False)
     name = Column(String(255), nullable=False)
-    ip_address = Column(INET, nullable=False)
+    ip_address = Column(INET, nullable=True)
     nas_identifier = Column(String(255), unique=True, nullable=False)
     nas_secret = Column(Text, nullable=False)
     nas_secret_plain = Column(String(255), nullable=True)

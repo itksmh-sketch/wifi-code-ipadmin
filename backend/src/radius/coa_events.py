@@ -41,6 +41,10 @@ async def send_disconnect_with_event(
     try:
         if session is None or not session.ip_address:
             raise ValueError("missing_active_session_ip_address")
+        if not router.ip_address:
+            # CoA/Disconnect is sent directly to the NAS at its IP; a tunnel-only
+            # router with no direct IP cannot be reached this way.
+            raise ValueError("router_has_no_ip_address")
 
         decrypted_secret = decrypt_secret(router.nas_secret)
         result = send_disconnect_request(

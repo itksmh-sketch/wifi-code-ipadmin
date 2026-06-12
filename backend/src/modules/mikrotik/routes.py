@@ -95,23 +95,31 @@ async def admin_sites(db: AsyncSession = Depends(get_db), tenant: TenantContext 
 
 @router.post("/routers/onboard")
 async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
-    required = ["site_id", "name", "nas_identifier", "nas_secret", "ip_address", "api_username", "api_password", "dns_name"]
+    # API credentials are now optional — an operator can register a router before
+    # it is reachable (e.g. behind NAT) and set up a WireGuard tunnel afterwards.
+    # Only the basic identity fields are required.
+    required = ["site_id", "name", "nas_identifier", "nas_secret"]
     missing = [key for key in required if not payload.get(key)]
     if missing:
         raise HTTPException(status_code=422, detail=f"Missing required fields: {', '.join(missing)}")
-    if not _get_verified_connection(payload["ip_address"], int(payload.get("api_port", 8728)), payload["api_username"]):
-        raise HTTPException(status_code=422, detail="API connection must be tested successfully before onboarding")
 
     site = (
         await db.execute(select(Site).where(Site.id == payload["site_id"], Site.isp_operator_id == tenant.isp_operator_id))
     ).scalar_one_or_none()
     if site is None:
         raise HTTPException(status_code=404, detail="Site not found")
+
+    # Direct API credentials are present only when a host + username + password
+    # were supplied. The connection test is no longer mandatory.
+    has_credentials = bool(payload.get("ip_address") and payload.get("api_username") and payload.get("api_password"))
+
     router_row = Router(
         isp_operator_id=tenant.isp_operator_id,
         site_id=payload["site_id"],
         name=payload["name"],
-        ip_address=payload["ip_address"],
+        # ip_address is nullable — leave it None until a direct IP or WireGuard
+        # tunnel is configured. Connectivity then comes from the tunnel IP.
+        ip_address=payload.get("ip_address") or None,
         nas_identifier=payload["nas_identifier"],
         nas_secret=encrypt_secret(payload["nas_secret"]),
         nas_secret_plain=payload["nas_secret"],
@@ -119,37 +127,54 @@ async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tena
     )
     db.add(router_row)
     await db.flush()
-    db.add(
-        RouterCredential(
-            router_id=router_row.id,
-            api_username=payload["api_username"],
-            api_password_encrypted=encrypt_secret(payload["api_password"]),
-            api_port=int(payload.get("api_port", 8728)),
-            use_ssl=bool(payload.get("use_ssl", False)),
-            connection_status="unknown",
+
+    if has_credentials:
+        db.add(
+            RouterCredential(
+                router_id=router_row.id,
+                api_username=payload["api_username"],
+                api_password_encrypted=encrypt_secret(payload["api_password"]),
+                api_port=int(payload.get("api_port", 8728)),
+                use_ssl=bool(payload.get("use_ssl", False)),
+                connection_status="unknown",
+            )
         )
+
+    # Provision now only if we can actually reach the router: credentials were
+    # supplied, or an active tunnel is already up. Otherwise just save the router
+    # so the operator can finish via the VPN Tunnel / Setup tabs later.
+    can_provision = bool(payload.get("dns_name")) and (
+        has_credentials or bool(router_row.wg_enabled and router_row.wg_is_connected)
     )
-    log_row = RouterProvisionLog(
-        router_id=router_row.id,
-        triggered_by=str(tenant.user_id),
-        action="provision",
-        status="running",
-        started_at=datetime.now(timezone.utc),
-        commands_executed=[],
-    )
-    db.add(log_row)
+
+    log_row = None
+    if can_provision:
+        log_row = RouterProvisionLog(
+            router_id=router_row.id,
+            triggered_by=str(tenant.user_id),
+            action="provision",
+            status="running",
+            started_at=datetime.now(timezone.utc),
+            commands_executed=[],
+        )
+        db.add(log_row)
+
     await db.commit()
     asyncio.get_running_loop().run_in_executor(None, reload_freeradius_clients)
     await db.refresh(router_row)
-    await db.refresh(log_row)
-    provisioner.launch_provision(
-        router_id=str(router_row.id),
-        log_id=str(log_row.id),
-        dns_name=payload["dns_name"],
-        hotspot_interface=payload.get("hotspot_interface"),
-        template_id=payload.get("template_id"),
-    )
-    return {"router_id": str(router_row.id), "log_id": str(log_row.id)}
+
+    if log_row is not None:
+        await db.refresh(log_row)
+        provisioner.launch_provision(
+            router_id=str(router_row.id),
+            log_id=str(log_row.id),
+            dns_name=payload["dns_name"],
+            hotspot_interface=payload.get("hotspot_interface"),
+            template_id=payload.get("template_id"),
+        )
+        return {"router_id": str(router_row.id), "log_id": str(log_row.id)}
+
+    return {"router_id": str(router_row.id), "log_id": None}
 
 
 @router.get("/routers")
@@ -168,7 +193,7 @@ async def admin_router_list(db: AsyncSession = Depends(get_db), tenant: TenantCo
             "site_id": str(router_row.site_id),
             "site_name": site.name,
             "name": router_row.name,
-            "ip_address": str(router_row.ip_address),
+            "ip_address": str(router_row.ip_address) if router_row.ip_address else None,
             "nas_identifier": router_row.nas_identifier,
             "is_active": bool(router_row.is_active),
             "is_online": bool(router_row.is_online),
@@ -200,7 +225,7 @@ async def admin_router_detail(router_id: uuid.UUID, db: AsyncSession = Depends(g
         "site_id": str(router_row.site_id),
         "site_name": site.name,
         "name": router_row.name,
-        "ip_address": str(router_row.ip_address),
+        "ip_address": str(router_row.ip_address) if router_row.ip_address else None,
         "nas_identifier": router_row.nas_identifier,
         "is_active": bool(router_row.is_active),
         "is_online": bool(router_row.is_online),

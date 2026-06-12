@@ -119,7 +119,7 @@ function RouterList({ onAdd, onSelect }) {
                                         <span style={{ color: '#0d6e5f', fontWeight: 600, textDecoration: 'underline' }}>{r.name}</span>
                                     </td>
                                     <td>{r.site_name}</td>
-                                    <td><code>{r.ip_address}</code></td>
+                                    <td><code>{r.ip_address || 'VPN only'}</code></td>
                                     <td><code>{r.nas_identifier}</code></td>
                                     <td>
                                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -154,15 +154,19 @@ function RouterWizard({ onBack, onDone }) {
     const [interfaces, setInterfaces] = useState([]);
     const [connTested, setConnTested] = useState(false);
     const [connResult, setConnResult] = useState('Test the connection before moving on.');
+    // Step 2 connection method: 'direct' (test API over IP) or 'tunnel' (connect
+    // over an active WireGuard tunnel). Step 2 is purely about establishing the
+    // connection — Steps 3 and 4 are identical once it succeeds.
+    const [connMethod, setConnMethod] = useState('direct');
     // WireGuard status for the router being provisioned. A brand-new router has
     // no tunnel yet, so this stays null in the add flow; it lights up the Step 2
-    // shortcut when provisioning a router that already has an active tunnel.
+    // tunnel option when provisioning a router that already has an active tunnel.
     const [wgStatus, setWgStatus] = useState(null);
     const [provisionLog, setProvisionLog] = useState([]);
     const [provisionDone, setProvisionDone] = useState(null);
     const [state, setState] = useState({
         name: '', site_id: '', nas_identifier: '', nas_secret: randomSecret(),
-        ip_address: '', api_port: 8728, api_username: 'admin', api_password: '',
+        ip_address: '', api_port: 8728, api_username: 'admin', api_password: '', use_ssl: false,
         hotspot_interface: '', dns_name: '', template_id: '',
     });
     const pollRef = useRef(null);
@@ -181,23 +185,40 @@ function RouterWizard({ onBack, onDone }) {
 
     const tunnelActive = !!(wgStatus && wgStatus.enabled && wgStatus.connected);
 
+    // When a tunnel becomes active, default Step 2 to the tunnel option.
+    useEffect(() => { if (tunnelActive) setConnMethod('tunnel'); }, [tunnelActive]);
+
     function validate() {
         if (step === 1 && (!state.name || !state.site_id || !state.nas_identifier || !state.nas_secret))
             throw new Error('Fill in router name, site, NAS identifier, and NAS secret.');
-        // An active tunnel guarantees connectivity — the API fields/test are skipped.
-        if (step === 2 && !tunnelActive && (!state.ip_address || !state.api_username || !state.api_password))
+        // Step 2 is about establishing the connection. Direct needs its fields;
+        // either method must pass a connection test (which loads interfaces)
+        // before continuing.
+        if (step === 2 && connMethod === 'direct' && (!state.ip_address || !state.api_username || !state.api_password))
             throw new Error('Fill in the API connection fields.');
-        if (step === 3 && !connTested && !tunnelActive)
-            throw new Error('Test the connection successfully before choosing the hotspot interface.');
+        if (step === 2 && !connTested)
+            throw new Error('Test the connection successfully before continuing.');
         if (step === 3 && (!state.hotspot_interface || !state.dns_name))
             throw new Error('Choose the hotspot interface and DNS name.');
     }
 
-    async function loadInterfacesViaTunnel() {
-        // Tunnel is up — pull interfaces/templates over the tunnel IP, no API test needed.
+    // Test the RouterOS API over the active WireGuard tunnel IP and load interfaces.
+    async function testViaTunnel() {
+        if (!tunnelActive) return;
+        setConnResult('Testing API via tunnel…');
+        setConnTested(false);
+        const result = await apiCall('/admin/routers/test-connection', {
+            method: 'POST',
+            body: JSON.stringify({ host: wgStatus.tunnel_ip, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: state.use_ssl }),
+        });
+        if (!result || !result.success) {
+            setConnResult('Tunnel API test failed: ' + (result?.error || 'Unknown error'));
+            return;
+        }
+        setConnResult(`Connected via tunnel: ${result.board_name || 'MikroTik'} running RouterOS ${result.ros_version || 'unknown'}`);
         const ifaces = await apiCall('/admin/routers/temp-interfaces', {
             method: 'POST',
-            body: JSON.stringify({ host: wgStatus.tunnel_ip, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: false }),
+            body: JSON.stringify({ host: wgStatus.tunnel_ip, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: state.use_ssl }),
         });
         setInterfaces(ifaces || []);
         const tpls = await apiCall('/admin/config-templates');
@@ -205,12 +226,23 @@ function RouterWizard({ onBack, onDone }) {
         setConnTested(true);
     }
 
+    // Option B with no tunnel yet — save the basic router record and leave the
+    // wizard so the operator can set up the tunnel from the router detail page.
+    async function saveWithoutProvisioning() {
+        const result = await apiCall('/admin/routers/onboard', {
+            method: 'POST',
+            body: JSON.stringify({ name: state.name, site_id: state.site_id, nas_identifier: state.nas_identifier, nas_secret: state.nas_secret }),
+        });
+        if (!result || !result.router_id) {
+            alert(result?.detail || 'Failed to save router.');
+            return;
+        }
+        onDone(result.router_id);
+    }
+
     function next() {
         try {
             validate();
-            if (step === 2 && tunnelActive && interfaces.length === 0) {
-                loadInterfacesViaTunnel().catch(() => {});
-            }
             setStep(s => Math.min(4, s + 1));
         } catch (e) { alert(e.message); }
     }
@@ -220,7 +252,7 @@ function RouterWizard({ onBack, onDone }) {
         setConnTested(false);
         const result = await apiCall('/admin/routers/test-connection', {
             method: 'POST',
-            body: JSON.stringify({ host: state.ip_address, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: false }),
+            body: JSON.stringify({ host: state.ip_address, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: state.use_ssl }),
         });
         if (!result || !result.success) {
             setConnResult('Connection failed: ' + (result?.error || 'Unknown error'));
@@ -229,7 +261,7 @@ function RouterWizard({ onBack, onDone }) {
         setConnResult(`Connected: ${result.board_name || 'MikroTik'} running RouterOS ${result.ros_version || 'unknown'}`);
         const ifaces = await apiCall('/admin/routers/temp-interfaces', {
             method: 'POST',
-            body: JSON.stringify({ host: state.ip_address, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: false }),
+            body: JSON.stringify({ host: state.ip_address, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: state.use_ssl }),
         });
         setInterfaces(ifaces || []);
         const tpls = await apiCall('/admin/config-templates');
@@ -307,30 +339,23 @@ function RouterWizard({ onBack, onDone }) {
                     </div>
                 )}
 
-                {/* Step 2 */}
+                {/* Step 2 — Connection method (two cards) */}
                 {step === 2 && (
                     <>
-                        {/* Tunnel active — skip the API connection test entirely */}
-                        {tunnelActive && (
-                            <div style={{ padding: '14px 16px', background: '#ecfdf3', border: '1px solid #abefc6', borderRadius: 12 }}>
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 700, color: '#067647' }}>
-                                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#12b76a', display: 'inline-block' }} />
-                                    VPN tunnel is active — using tunnel IP {wgStatus.tunnel_ip}
-                                </span>
-                                <p style={{ margin: '8px 0 0', color: '#5c677d', fontSize: 14 }}>
-                                    The connection test is skipped — the tunnel guarantees connectivity. Click Next to continue.
-                                </p>
+                        <p style={{ color: '#5c677d', marginTop: 0, marginBottom: 14 }}>How should the platform reach this router? Choose a method and establish the connection.</p>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 18 }}>
+                            <div onClick={() => setConnMethod('direct')} style={{ padding: '16px', borderRadius: 14, cursor: 'pointer', border: `2px solid ${connMethod === 'direct' ? '#0d6e5f' : '#d7deea'}`, background: connMethod === 'direct' ? '#f6fffb' : '#fff' }}>
+                                <div style={{ fontWeight: 700, fontSize: 15 }}>Direct IP connection</div>
+                                <div style={{ color: '#5c677d', fontSize: 13, marginTop: 4 }}>The router is reachable now over its LAN/WAN IP.</div>
                             </div>
-                        )}
-
-                        {/* Tunnel configured but not connected — warn, but allow proceeding */}
-                        {wgStatus && wgStatus.enabled && !wgStatus.connected && (
-                            <div style={{ marginBottom: 12, padding: '12px 16px', background: '#fffaeb', border: '1px solid #fedf89', borderRadius: 12, color: '#b54708', fontSize: 14 }}>
-                                VPN tunnel configured but not connected — you can still proceed but provisioning may fail.
+                            <div onClick={() => setConnMethod('tunnel')} style={{ padding: '16px', borderRadius: 14, cursor: 'pointer', border: `2px solid ${connMethod === 'tunnel' ? '#0d6e5f' : '#d7deea'}`, background: connMethod === 'tunnel' ? '#f6fffb' : '#fff' }}>
+                                <div style={{ fontWeight: 700, fontSize: 15 }}>VPN tunnel connection</div>
+                                <div style={{ color: '#5c677d', fontSize: 13, marginTop: 4 }}>Connect over a WireGuard tunnel (for routers behind NAT).</div>
                             </div>
-                        )}
+                        </div>
 
-                        {!tunnelActive && (
+                        {/* Direct IP */}
+                        {connMethod === 'direct' && (
                             <>
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                                     <div className="form-group">
@@ -349,6 +374,13 @@ function RouterWizard({ onBack, onDone }) {
                                         <label>RouterOS password</label>
                                         <input type="password" value={state.api_password} onChange={e => set('api_password', e.target.value)} />
                                     </div>
+                                    <div className="form-group">
+                                        <label>Use SSL</label>
+                                        <select value={state.use_ssl ? 'true' : 'false'} onChange={e => set('use_ssl', e.target.value === 'true')}>
+                                            <option value="false">No</option>
+                                            <option value="true">Yes</option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <div style={{ marginTop: 12 }}>
                                     <button className="btn" style={{ background: '#f59e0b', color: '#1f2937' }} onClick={() => testConnection().catch(e => setConnResult(e.message))}>
@@ -357,6 +389,32 @@ function RouterWizard({ onBack, onDone }) {
                                     <div style={{ marginTop: 12, padding: '10px 14px', background: '#f8fafc', borderRadius: 10, color: '#5c677d', fontSize: 14 }}>{connResult}</div>
                                 </div>
                             </>
+                        )}
+
+                        {/* VPN tunnel */}
+                        {connMethod === 'tunnel' && (
+                            tunnelActive ? (
+                                <div style={{ padding: '16px', background: '#ecfdf3', border: '1px solid #abefc6', borderRadius: 12 }}>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 700, color: '#067647' }}>
+                                        <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#12b76a', display: 'inline-block' }} />
+                                        Tunnel active — {wgStatus.tunnel_ip}
+                                    </span>
+                                    <p style={{ margin: '8px 0 12px', color: '#5c677d', fontSize: 14 }}>Test the RouterOS API through the tunnel to load interfaces.</p>
+                                    <button className="btn" style={{ background: '#f59e0b', color: '#1f2937' }} onClick={() => testViaTunnel().catch(e => setConnResult(e.message))}>
+                                        Test API via tunnel
+                                    </button>
+                                    <div style={{ marginTop: 12, padding: '10px 14px', background: '#f8fafc', borderRadius: 10, color: '#5c677d', fontSize: 14 }}>{connResult}</div>
+                                </div>
+                            ) : (
+                                <div style={{ padding: '16px', background: '#eff8ff', border: '1px solid #b2ddff', borderRadius: 12, color: '#175cd3', fontSize: 14 }}>
+                                    You need to set up the VPN tunnel first before using this option. Save the router first, then set up the tunnel from the router detail page.
+                                    <div style={{ marginTop: 12 }}>
+                                        <button className="btn btn-primary" onClick={() => saveWithoutProvisioning().catch(e => alert(e.message))}>
+                                            Save router without provisioning
+                                        </button>
+                                    </div>
+                                </div>
+                            )
                         )}
                     </>
                 )}
@@ -1199,7 +1257,7 @@ function RouterDetail({ routerId, onBack }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
                 <div>
                     <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700 }}>{router.name}</h1>
-                    <p style={{ margin: '4px 0 0', color: '#5c677d' }}>{router.site_name} — {router.ip_address} — {router.nas_identifier}</p>
+                    <p style={{ margin: '4px 0 0', color: '#5c677d' }}>{router.site_name} — {router.ip_address || 'VPN only'} — {router.nas_identifier}</p>
                     {setupSummary && (
                         <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#5c677d' }}>
                             <span style={{ fontWeight: 600 }}>Setup progress: {setupSummary.sections_complete}/{setupSummary.total_sections || 4}</span>
