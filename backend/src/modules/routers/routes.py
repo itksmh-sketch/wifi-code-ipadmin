@@ -42,7 +42,8 @@ async def create_router(site_id: uuid.UUID, body: RouterCreate, db: AsyncSession
         isp_operator_id=tenant.isp_operator_id,
         site_id=site_id,
         name=body.name,
-        ip_address=body.ip_address,
+        # Coerce "" → None so an empty IP is stored as NULL, not rejected by INET.
+        ip_address=body.ip_address or None,
         nas_identifier=body.nas_identifier,
         nas_secret=encrypted_secret,
         nas_secret_plain=body.nas_secret,
@@ -73,7 +74,8 @@ async def update_router(router_id: uuid.UUID, body: RouterUpdate, db: AsyncSessi
     if body.name is not None:
         r.name = body.name
     if body.ip_address is not None:
-        r.ip_address = body.ip_address
+        # Coerce "" → None so clearing the IP stores NULL instead of failing INET.
+        r.ip_address = body.ip_address or None
     if body.nas_identifier is not None:
         r.nas_identifier = body.nas_identifier
     if body.nas_secret is not None:
