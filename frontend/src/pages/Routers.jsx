@@ -73,10 +73,15 @@ function RouterList({ onAdd, onSelect }) {
 
     const load = useCallback(async () => {
         setLoading(true);
-        const data = await apiCall('/admin/routers');
-        if (data) setRouters(data);
-        else setError('Failed to load routers.');
-        setLoading(false);
+        setError('');
+        try {
+            const data = await apiCall('/admin/routers');
+            setRouters(data || []);
+        } catch (e) {
+            setError(e.message || 'Failed to load routers.');
+        } finally {
+            setLoading(false);
+        }
     }, []);
 
     useEffect(() => { load(); }, [load]);
@@ -175,7 +180,7 @@ function RouterWizard({ onBack, onDone }) {
     const pollRef = useRef(null);
 
     useEffect(() => {
-        apiCall('/admin/sites').then(data => { if (data) setSites(data); });
+        apiCall('/admin/sites').then(data => { if (data) setSites(data); }).catch(() => {});
     }, []);
 
     function set(key, value) {
@@ -235,7 +240,7 @@ function RouterWizard({ onBack, onDone }) {
     // once the router completes its first handshake.
     useEffect(() => {
         if (step !== 2 || !routerId) return undefined;
-        loadWgStatus();
+        loadWgStatus().catch(() => {});
         const timer = setInterval(() => loadWgStatus().catch(() => {}), 5000);
         return () => clearInterval(timer);
     }, [step, routerId, loadWgStatus]);
@@ -284,6 +289,9 @@ function RouterWizard({ onBack, onDone }) {
                 } else {
                     pollRef.current = setTimeout(poll, 2000);
                 }
+            }).catch(() => {
+                // Transient error while polling — keep trying rather than wedging.
+                pollRef.current = setTimeout(poll, 2000);
             });
         }
         poll();
@@ -511,33 +519,42 @@ function VpnTunnelTab({ routerId, onChange }) {
     }, [routerId]);
 
     useEffect(() => {
-        loadStatus();
+        loadStatus().catch(() => {});
         pollRef.current = setInterval(() => loadStatus().catch(() => {}), 15000);
         return () => clearInterval(pollRef.current);
     }, [loadStatus]);
 
     async function setup() {
         setBusy(true); setError('');
-        const result = await apiCall(`/admin/routers/${routerId}/wireguard/setup`, { method: 'POST', body: '{}' });
-        setBusy(false);
-        if (!result || !result.mikrotik_commands) {
-            setError(result?.detail || 'Setup failed.');
-            return;
+        try {
+            const result = await apiCall(`/admin/routers/${routerId}/wireguard/setup`, { method: 'POST', body: '{}' });
+            if (!result || !result.mikrotik_commands) {
+                setError('Setup failed.');
+                return;
+            }
+            setConfig(result);
+            await loadStatus();
+            if (onChange) onChange();
+        } catch (e) {
+            setError(e.message || 'Setup failed.');
+        } finally {
+            setBusy(false);
         }
-        setConfig(result);
-        await loadStatus();
-        if (onChange) onChange();
     }
 
     async function removeTunnel() {
         if (!window.confirm('Remove the VPN tunnel for this router? Its peer will be removed from the server.')) return;
         setBusy(true); setError('');
-        const result = await apiCall(`/admin/routers/${routerId}/wireguard`, { method: 'DELETE' });
-        setBusy(false);
-        if (result && result.detail) { setError(result.detail); return; }
-        setConfig(null);
-        await loadStatus();
-        if (onChange) onChange();
+        try {
+            await apiCall(`/admin/routers/${routerId}/wireguard`, { method: 'DELETE' });
+            setConfig(null);
+            await loadStatus();
+            if (onChange) onChange();
+        } catch (e) {
+            setError(e.message || 'Could not remove the tunnel.');
+        } finally {
+            setBusy(false);
+        }
     }
 
     function copyAll() {
@@ -1082,7 +1099,7 @@ function RouterSetupTab({ routerId }) {
     }, [routerId]);
 
     useEffect(() => {
-        loadStatus();
+        loadStatus().catch(() => {});
         apiCall(`/admin/routers/${routerId}/interfaces`).then(d => { if (Array.isArray(d)) setIfaces(d); }).catch(() => {});
     }, [routerId, loadStatus]);
 
@@ -1171,7 +1188,7 @@ function RouterDetail({ routerId, onBack }) {
     }, [routerId]);
 
     useEffect(() => {
-        Promise.all([loadOverview(), loadMetrics(), loadSessions(), loadLogs(), loadSetupSummary()]);
+        Promise.all([loadOverview(), loadMetrics(), loadSessions(), loadLogs(), loadSetupSummary()]).catch(() => {});
         refreshRef.current = setInterval(() => loadSessions().catch(() => {}), 30000);
         return () => clearInterval(refreshRef.current);
     }, [loadOverview, loadMetrics, loadSessions, loadLogs, loadSetupSummary]);
@@ -1223,10 +1240,14 @@ function RouterDetail({ routerId, onBack }) {
 
     async function doReboot() {
         if (rebootConfirm !== 'REBOOT') { alert('Type REBOOT to confirm.'); return; }
-        await apiCall(`/admin/routers/${routerId}/reboot`, { method: 'POST', body: JSON.stringify({ confirm: true }) });
-        setRebootOpen(false);
-        setRebootConfirm('');
-        setBanner('Reboot command queued.');
+        try {
+            await apiCall(`/admin/routers/${routerId}/reboot`, { method: 'POST', body: JSON.stringify({ confirm: true }) });
+            setRebootOpen(false);
+            setRebootConfirm('');
+            setBanner('Reboot command queued.');
+        } catch (e) {
+            alert(e.message);
+        }
     }
 
     async function disconnectUser(activeId, username) {
@@ -1240,9 +1261,14 @@ function RouterDetail({ routerId, onBack }) {
     async function runDiagnostics() {
         setDiagLoading(true);
         setDiagnostics(null);
-        const data = await apiCall(`/admin/routers/${routerId}/diagnostics`);
-        setDiagnostics(data);
-        setDiagLoading(false);
+        try {
+            const data = await apiCall(`/admin/routers/${routerId}/diagnostics`);
+            setDiagnostics(data);
+        } catch (e) {
+            alert(e.message);
+        } finally {
+            setDiagLoading(false);
+        }
     }
 
     if (!router) return <p>Loading router…</p>;

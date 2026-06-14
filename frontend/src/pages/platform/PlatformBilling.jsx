@@ -7,8 +7,8 @@ export default function PlatformBilling() {
     const [loading, setLoading] = useState(false);
 
     const load = () => {
-        platformApiCall('/platform/billing/summary').then(d => d && setSummary(d));
-        platformApiCall('/platform/billing/operators').then(d => d && setOperators(d));
+        platformApiCall('/platform/billing/summary').then(d => d && setSummary(d)).catch(() => {});
+        platformApiCall('/platform/billing/operators').then(d => d && setOperators(d)).catch(() => {});
     };
     useEffect(() => { load(); }, []);
 

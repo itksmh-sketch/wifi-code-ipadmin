@@ -25,8 +25,36 @@ export function useAuth() {
     return useContext(AuthContext);
 }
 
-export function apiCall(endpoint, options = {}) {
-    const token = localStorage.getItem('access_token');
+// Thrown for any non-2xx response (other than the 401 redirect case). Carries
+// the HTTP status and the parsed error body so call sites can inspect them.
+// `.message` defaults to the backend's `detail`/`message` field when present,
+// so a bare `catch(e => alert(e.message))` shows something useful.
+function messageFromBody(status, body) {
+    if (typeof body === 'string' && body) return body;
+    if (body && typeof body === 'object') {
+        const detail = body.detail ?? body.message;
+        if (typeof detail === 'string') return detail;
+        // FastAPI/Pydantic request validation returns `detail` as an array of
+        // { loc, msg, ... } — flatten it into a readable sentence.
+        if (Array.isArray(detail)) {
+            const parts = detail.map((d) => (d && typeof d === 'object' ? d.msg : String(d))).filter(Boolean);
+            if (parts.length) return parts.join('; ');
+        }
+    }
+    return `Request failed with status ${status}`;
+}
+
+export class ApiError extends Error {
+    constructor(status, body) {
+        super(messageFromBody(status, body));
+        this.name = 'ApiError';
+        this.status = status;
+        this.body = body;
+    }
+}
+
+async function request(endpoint, options, { tokenKey, loginPath }) {
+    const token = localStorage.getItem(tokenKey);
     const headers = {
         'Content-Type': 'application/json',
         ...options.headers,
@@ -34,41 +62,35 @@ export function apiCall(endpoint, options = {}) {
     if (token) {
         headers['Authorization'] = `Bearer ${token}`;
     }
-    return fetch(`${API_BASE}${endpoint}`, {
-        ...options,
-        headers,
-    }).then(async (res) => {
-        if (res.status === 401) {
-            localStorage.removeItem('access_token');
-            window.location.href = '/admin/login';
-            return null;
-        }
-        if (res.status === 204) return null;
-        return res.json();
-    });
+    const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+
+    if (res.status === 401) {
+        // Session expired/invalid — drop the token and bounce to login. We still
+        // throw so callers don't proceed with a null/garbage value mid-redirect.
+        localStorage.removeItem(tokenKey);
+        window.location.href = loginPath;
+        throw new ApiError(401, null);
+    }
+    if (res.status === 204) return null;
+
+    // Parse the body once (tolerating empty / non-JSON responses), then decide
+    // success vs. failure. Previously any non-2xx body was returned as if it were
+    // valid data — masking 4xx/5xx errors at the call site.
+    const text = await res.text();
+    let body = null;
+    if (text) {
+        try { body = JSON.parse(text); } catch { body = text; }
+    }
+    if (!res.ok) throw new ApiError(res.status, body);
+    return body;
+}
+
+export function apiCall(endpoint, options = {}) {
+    return request(endpoint, options, { tokenKey: 'access_token', loginPath: '/admin/login' });
 }
 
 export function platformApiCall(endpoint, options = {}) {
-    const token = localStorage.getItem('platform_access_token');
-    const headers = {
-        'Content-Type': 'application/json',
-        ...options.headers,
-    };
-    if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-    }
-    return fetch(`${API_BASE}${endpoint}`, {
-        ...options,
-        headers,
-    }).then(async (res) => {
-        if (res.status === 401) {
-            localStorage.removeItem('platform_access_token');
-            window.location.href = '/admin/platform/login';
-            return null;
-        }
-        if (res.status === 204) return null;
-        return res.json();
-    });
+    return request(endpoint, options, { tokenKey: 'platform_access_token', loginPath: '/admin/platform/login' });
 }
 
 function ProtectedRoute({ children }) {

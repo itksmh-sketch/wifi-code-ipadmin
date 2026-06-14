@@ -9,20 +9,25 @@ export default function Billing() {
     const [error, setError] = useState('');
 
     useEffect(() => {
-        apiCall('/billing/status').then(d => d && setStatus(d));
-        apiCall('/billing/invoices').then(d => d && setInvoices(d));
-        apiCall('/billing/onboarding-checklist').then(d => d && setChecklist(d));
+        apiCall('/billing/status').then(d => d && setStatus(d)).catch(() => {});
+        apiCall('/billing/invoices').then(d => d && setInvoices(d)).catch(() => {});
+        apiCall('/billing/onboarding-checklist').then(d => d && setChecklist(d)).catch(() => {});
     }, []);
 
     const handlePay = async (invoiceId) => {
         setPayLoading(true);
         setError('');
-        const res = await apiCall(`/billing/invoices/${invoiceId}/pay`, { method: 'POST' });
-        setPayLoading(false);
-        if (res?.redirect_url) {
-            window.location.href = res.redirect_url;
-        } else {
-            setError(res?.detail || 'Could not initiate payment');
+        try {
+            const res = await apiCall(`/billing/invoices/${invoiceId}/pay`, { method: 'POST' });
+            if (res?.redirect_url) {
+                window.location.href = res.redirect_url;
+            } else {
+                setError('Could not initiate payment');
+            }
+        } catch (e) {
+            setError(e.message || 'Could not initiate payment');
+        } finally {
+            setPayLoading(false);
         }
     };
 

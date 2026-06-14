@@ -9,28 +9,38 @@ export default function PlatformApplications() {
     const [result, setResult] = useState(null);
     const [loading, setLoading] = useState(false);
 
-    const load = () => platformApiCall('/platform/applications').then(d => d && setApps(d));
+    const load = () => platformApiCall('/platform/applications').then(d => d && setApps(d)).catch(() => {});
     useEffect(() => { load(); }, []);
 
     const approve = async (id) => {
         setLoading(true); setResult(null);
-        const res = await platformApiCall(`/platform/applications/${id}/approve`, {
-            method: 'PUT',
-            body: JSON.stringify({ monthly_fee_ghs: parseFloat(feeInput) }),
-        });
-        setLoading(false);
-        if (res) { setResult(res); load(); setSelected(null); }
+        try {
+            const res = await platformApiCall(`/platform/applications/${id}/approve`, {
+                method: 'PUT',
+                body: JSON.stringify({ monthly_fee_ghs: parseFloat(feeInput) }),
+            });
+            setResult(res); load(); setSelected(null);
+        } catch (e) {
+            alert(e.message);
+        } finally {
+            setLoading(false);
+        }
     };
 
     const reject = async (id) => {
         if (!rejectReason.trim()) return alert('Please enter a rejection reason');
         setLoading(true); setResult(null);
-        const res = await platformApiCall(`/platform/applications/${id}/reject`, {
-            method: 'PUT',
-            body: JSON.stringify({ rejection_reason: rejectReason }),
-        });
-        setLoading(false);
-        if (res) { setResult(res); load(); setSelected(null); setRejectReason(''); }
+        try {
+            const res = await platformApiCall(`/platform/applications/${id}/reject`, {
+                method: 'PUT',
+                body: JSON.stringify({ rejection_reason: rejectReason }),
+            });
+            setResult(res); load(); setSelected(null); setRejectReason('');
+        } catch (e) {
+            alert(e.message);
+        } finally {
+            setLoading(false);
+        }
     };
 
     const statusColor = { pending: '#fbbf24', approved: '#22c55e', rejected: '#ef4444' };

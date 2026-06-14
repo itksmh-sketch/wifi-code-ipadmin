@@ -11,38 +11,38 @@ export default function PlatformOperatorDetail() {
     const [error, setError] = useState('');
 
     const load = () => {
-        platformApiCall(`/platform/operators/${id}`).then(setOperator);
-        platformApiCall(`/platform/operators/${id}/admins`).then((data) => setAdmins(Array.isArray(data) ? data : []));
+        platformApiCall(`/platform/operators/${id}`).then(setOperator).catch(() => {});
+        platformApiCall(`/platform/operators/${id}/admins`).then((data) => setAdmins(Array.isArray(data) ? data : [])).catch(() => setAdmins([]));
     };
 
     useEffect(load, [id]);
 
     const setStatus = async (status) => {
         setError('');
-        const data = await platformApiCall(`/platform/operators/${id}/status`, {
-            method: 'PUT',
-            body: JSON.stringify({ status }),
-        });
-        if (data?.detail) {
-            setError(data.detail);
-            return;
+        try {
+            const data = await platformApiCall(`/platform/operators/${id}/status`, {
+                method: 'PUT',
+                body: JSON.stringify({ status }),
+            });
+            setOperator(data);
+        } catch (e) {
+            setError(e.message);
         }
-        setOperator(data);
     };
 
     const createAdmin = async (event) => {
         event.preventDefault();
         setError('');
-        const data = await platformApiCall(`/platform/operators/${id}/admins`, {
-            method: 'POST',
-            body: JSON.stringify(adminForm),
-        });
-        if (data?.detail) {
-            setError(data.detail);
-            return;
+        try {
+            await platformApiCall(`/platform/operators/${id}/admins`, {
+                method: 'POST',
+                body: JSON.stringify(adminForm),
+            });
+            setAdminForm({ email: '', password: '', role: 'admin' });
+            load();
+        } catch (e) {
+            setError(e.message);
         }
-        setAdminForm({ email: '', password: '', role: 'admin' });
-        load();
     };
 
     if (!operator) {

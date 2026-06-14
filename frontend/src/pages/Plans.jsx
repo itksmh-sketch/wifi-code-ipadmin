@@ -11,7 +11,10 @@ export default function Plans() {
     const [loading, setLoading] = useState(true);
 
     const fetchPlans = () => {
-        apiCall('/plans').then(p => { setPlans(p || []); setLoading(false); });
+        apiCall('/plans')
+            .then(p => setPlans(p || []))
+            .catch(e => alert(e.message))
+            .finally(() => setLoading(false));
     };
 
     useEffect(() => { fetchPlans(); }, []);
@@ -25,17 +28,23 @@ export default function Plans() {
             upload_speed_kbps: parseInt(form.upload_speed_kbps),
             price_ghs: parseFloat(form.price_ghs),
         };
-        const res = await apiCall('/plans', { method: 'POST', body: JSON.stringify(body) });
-        if (res) {
+        try {
+            await apiCall('/plans', { method: 'POST', body: JSON.stringify(body) });
             setForm({ name: '', type: 'time', duration_minutes: '', data_limit_mb: '', download_speed_kbps: 1024, upload_speed_kbps: 512, price_ghs: 0, is_active: true });
             setShowForm(false);
             fetchPlans();
+        } catch (e) {
+            alert(e.message);
         }
     };
 
     const togglePlan = async (plan) => {
-        await apiCall(`/plans/${plan.id}`, { method: 'PUT', body: JSON.stringify({ is_active: !plan.is_active }) });
-        fetchPlans();
+        try {
+            await apiCall(`/plans/${plan.id}`, { method: 'PUT', body: JSON.stringify({ is_active: !plan.is_active }) });
+            fetchPlans();
+        } catch (e) {
+            alert(e.message);
+        }
     };
 
     if (loading) return <p>Loading...</p>;

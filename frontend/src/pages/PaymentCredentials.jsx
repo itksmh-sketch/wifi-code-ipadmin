@@ -20,10 +20,10 @@ export default function PaymentCredentials() {
 
     const loadCredentials = () => {
         setLoading(true);
-        apiCall('/payment-credentials').then((data) => {
-            setCredentials(data);
-            setLoading(false);
-        });
+        apiCall('/payment-credentials')
+            .then((data) => setCredentials(data))
+            .catch((e) => { setCredentials(null); setError(e.message); })
+            .finally(() => setLoading(false));
     };
 
     useEffect(() => {
@@ -39,36 +39,38 @@ export default function PaymentCredentials() {
         setSaving(true);
         setMessage('');
         setError('');
-        const data = await apiCall('/payment-credentials', {
-            method: 'PUT',
-            body: JSON.stringify({
-                ...form,
-                webhook_secret: form.webhook_secret || null,
-            }),
-        });
-        setSaving(false);
-        if (data?.detail) {
-            setError(data.detail);
-            return;
+        try {
+            const data = await apiCall('/payment-credentials', {
+                method: 'PUT',
+                body: JSON.stringify({
+                    ...form,
+                    webhook_secret: form.webhook_secret || null,
+                }),
+            });
+            setCredentials(data);
+            setForm(emptyForm);
+            setMessage('Payment credentials saved.');
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setSaving(false);
         }
-        setCredentials(data);
-        setForm(emptyForm);
-        setMessage('Payment credentials saved.');
     };
 
     const handleTest = async () => {
         setTesting(true);
         setMessage('');
         setError('');
-        const data = await apiCall('/payment-credentials/test', { method: 'POST' });
-        setTesting(false);
-        if (data?.detail) {
-            setError(data.detail);
+        try {
+            const data = await apiCall('/payment-credentials/test', { method: 'POST' });
+            setCredentials(data);
+            setMessage('Connection verified.');
+        } catch (err) {
+            setError(err.message);
             loadCredentials();
-            return;
+        } finally {
+            setTesting(false);
         }
-        setCredentials(data);
-        setMessage('Connection verified.');
     };
 
     if (loading) return <p>Loading...</p>;

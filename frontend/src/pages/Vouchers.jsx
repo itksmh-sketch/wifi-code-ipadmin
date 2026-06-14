@@ -16,15 +16,17 @@ export default function Vouchers() {
         if (filters.status) params.set('status', filters.status);
         if (filters.plan_id) params.set('plan_id', filters.plan_id);
         if (filters.batch_id) params.set('batch_id', filters.batch_id);
-        apiCall(`/vouchers?${params}`).then(data => {
-            setVouchers(data?.vouchers || []);
-            setTotal(data?.total || 0);
-            setLoading(false);
-        });
+        apiCall(`/vouchers?${params}`)
+            .then(data => {
+                setVouchers(data?.vouchers || []);
+                setTotal(data?.total || 0);
+            })
+            .catch(e => alert(e.message))
+            .finally(() => setLoading(false));
     };
 
     useEffect(() => {
-        apiCall('/plans').then(p => setPlans(p || []));
+        apiCall('/plans').then(p => setPlans(p || [])).catch(() => setPlans([]));
         fetchVouchers();
     }, []);
 
@@ -34,22 +36,32 @@ export default function Vouchers() {
             quantity: parseInt(form.quantity),
             device_policy: form.device_policy,
         };
-        const res = await apiCall('/vouchers/generate', { method: 'POST', body: JSON.stringify(body) });
-        if (res) {
+        try {
+            const res = await apiCall('/vouchers/generate', { method: 'POST', body: JSON.stringify(body) });
             setGeneratedVouchers(res);
             setShowForm(false);
             fetchVouchers();
+        } catch (e) {
+            alert(e.message);
         }
     };
 
     const disableVoucher = async (id) => {
-        await apiCall(`/vouchers/${id}/disable`, { method: 'PUT' });
-        fetchVouchers();
+        try {
+            await apiCall(`/vouchers/${id}/disable`, { method: 'PUT' });
+            fetchVouchers();
+        } catch (e) {
+            alert(e.message);
+        }
     };
 
     const reactivateVoucher = async (id) => {
-        await apiCall(`/vouchers/${id}/reactivate`, { method: 'PUT' });
-        fetchVouchers();
+        try {
+            await apiCall(`/vouchers/${id}/reactivate`, { method: 'PUT' });
+            fetchVouchers();
+        } catch (e) {
+            alert(e.message);
+        }
     };
 
     const statusBadge = (status) => {

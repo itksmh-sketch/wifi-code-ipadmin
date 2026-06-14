@@ -8,10 +8,10 @@ export default function PlatformOperators() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        platformApiCall('/platform/operators').then((data) => {
-            setOperators(Array.isArray(data) ? data : []);
-            setLoading(false);
-        });
+        platformApiCall('/platform/operators')
+            .then((data) => setOperators(Array.isArray(data) ? data : []))
+            .catch(() => setOperators([]))
+            .finally(() => setLoading(false));
     }, []);
 
     return (

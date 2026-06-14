@@ -6,10 +6,10 @@ export default function Dashboard() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        apiCall('/dashboard').then((data) => {
-            setStats(data);
-            setLoading(false);
-        });
+        apiCall('/dashboard')
+            .then((data) => setStats(data))
+            .catch(() => setStats(null))
+            .finally(() => setLoading(false));
     }, []);
 
     if (loading) return <p>Loading...</p>;

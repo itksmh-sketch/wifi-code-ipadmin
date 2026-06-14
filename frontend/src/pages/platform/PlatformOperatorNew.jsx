@@ -22,16 +22,17 @@ export default function PlatformOperatorNew() {
         event.preventDefault();
         setSaving(true);
         setError('');
-        const data = await platformApiCall('/platform/operators', {
-            method: 'POST',
-            body: JSON.stringify({ ...form, contact_phone: form.contact_phone || null }),
-        });
-        setSaving(false);
-        if (data?.detail) {
-            setError(data.detail);
-            return;
+        try {
+            const data = await platformApiCall('/platform/operators', {
+                method: 'POST',
+                body: JSON.stringify({ ...form, contact_phone: form.contact_phone || null }),
+            });
+            navigate(`/platform/operators/${data.id}`);
+        } catch (e) {
+            setError(e.message);
+        } finally {
+            setSaving(false);
         }
-        navigate(`/platform/operators/${data.id}`);
     };
 
     return (

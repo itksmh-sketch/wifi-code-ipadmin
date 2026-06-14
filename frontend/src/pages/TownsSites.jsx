@@ -21,41 +21,51 @@ export default function TownsSites() {
     const fetchData = async () => {
         setLoading(true);
         setLoadError('');
-        const t = await apiCall('/towns');
-        const normalizedTowns = normalizeList(t);
-
-        if (!Array.isArray(t)) {
-            setLoadError(t?.detail || t?.message || 'Loading towns or service temporarily unavailable...');
-        }
-
-        setTowns(normalizedTowns);
-        if (normalizedTowns.length > 0) {
-            const siteMap = {};
-            for (const town of normalizedTowns) {
-                const s = await apiCall(`/towns/${town.id}/sites`);
-                siteMap[town.id] = normalizeList(s);
+        try {
+            const t = await apiCall('/towns');
+            const normalizedTowns = normalizeList(t);
+            setTowns(normalizedTowns);
+            if (normalizedTowns.length > 0) {
+                const siteMap = {};
+                for (const town of normalizedTowns) {
+                    const s = await apiCall(`/towns/${town.id}/sites`);
+                    siteMap[town.id] = normalizeList(s);
+                }
+                setSites(siteMap);
+            } else {
+                setSites({});
             }
-            setSites(siteMap);
-        } else {
+        } catch (e) {
+            setLoadError(e.message || 'Loading towns or service temporarily unavailable...');
+            setTowns([]);
             setSites({});
+        } finally {
+            setLoading(false);
         }
-        setLoading(false);
     };
 
     useEffect(() => { fetchData(); }, []);
 
     const createTown = async () => {
-        await apiCall('/towns', { method: 'POST', body: JSON.stringify(newTown) });
-        setNewTown({ name: '', region: '' });
-        setShowTownForm(false);
-        fetchData();
+        try {
+            await apiCall('/towns', { method: 'POST', body: JSON.stringify(newTown) });
+            setNewTown({ name: '', region: '' });
+            setShowTownForm(false);
+            fetchData();
+        } catch (e) {
+            alert(e.message);
+        }
     };
 
     const createSite = async (townId) => {
-        await apiCall(`/towns/${townId}/sites`, { method: 'POST', body: JSON.stringify(newSite) });
-        setNewSite({ name: '', address: '' });
-        setShowSiteForm(null);
-        fetchData();
+        try {
+            await apiCall(`/towns/${townId}/sites`, { method: 'POST', body: JSON.stringify(newSite) });
+            setNewSite({ name: '', address: '' });
+            setShowSiteForm(null);
+            fetchData();
+        } catch (e) {
+            alert(e.message);
+        }
     };
 
     if (loading) return <p>Loading...</p>;
