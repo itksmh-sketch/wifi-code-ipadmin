@@ -389,17 +389,15 @@ class MikroTikAPIService:
             if row is None:
                 raise RouterCredentialsMissingError("Router credentials are required before provisioning")
             router, credentials = row
-            # Prefer the WireGuard tunnel IP when the tunnel is up — the router
-            # may be behind NAT and unreachable at its direct IP. The direct IP
-            # is optional (nullable), so a router with neither tunnel nor IP has
-            # no reachable address.
-            if router.wg_enabled and router.wg_is_connected and router.wg_tunnel_ip:
+            # Tunnel-only: the platform reaches every router over its WireGuard
+            # tunnel IP. ip_address is kept only as a display/label field and is
+            # never used for the RouterOS API connection. A router with no tunnel
+            # assigned cannot be provisioned or diagnosed until one is set up.
+            if router.wg_enabled and router.wg_tunnel_ip:
                 host = str(router.wg_tunnel_ip)
-            elif router.ip_address:
-                host = str(router.ip_address)
             else:
                 raise RouterCredentialsMissingError(
-                    "Router has no reachable address — set up a VPN tunnel or a direct IP first"
+                    "Router has no VPN tunnel — set up the WireGuard tunnel first"
                 )
             return RouterAccess(
                 router_id=str(router.id),

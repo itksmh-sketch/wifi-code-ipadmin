@@ -109,16 +109,13 @@ async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tena
     if site is None:
         raise HTTPException(status_code=404, detail="Site not found")
 
-    # Direct API credentials are present only when a host + username + password
-    # were supplied. The connection test is no longer mandatory.
-    has_credentials = bool(payload.get("ip_address") and payload.get("api_username") and payload.get("api_password"))
-
     router_row = Router(
         isp_operator_id=tenant.isp_operator_id,
         site_id=payload["site_id"],
         name=payload["name"],
-        # ip_address is nullable — leave it None until a direct IP or WireGuard
-        # tunnel is configured. Connectivity then comes from the tunnel IP.
+        # ip_address is an optional display/label field only. Connectivity always
+        # comes from the WireGuard tunnel set up in the next wizard step — the
+        # RouterOS API is never reached over this address.
         ip_address=payload.get("ip_address") or None,
         nas_identifier=payload["nas_identifier"],
         nas_secret=encrypt_secret(payload["nas_secret"]),
@@ -126,54 +123,14 @@ async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tena
         is_active=bool(payload.get("is_active", True)),
     )
     db.add(router_row)
-    await db.flush()
-
-    if has_credentials:
-        db.add(
-            RouterCredential(
-                router_id=router_row.id,
-                api_username=payload["api_username"],
-                api_password_encrypted=encrypt_secret(payload["api_password"]),
-                api_port=int(payload.get("api_port", 8728)),
-                use_ssl=bool(payload.get("use_ssl", False)),
-                connection_status="unknown",
-            )
-        )
-
-    # Provision now only if we can actually reach the router: credentials were
-    # supplied, or an active tunnel is already up. Otherwise just save the router
-    # so the operator can finish via the VPN Tunnel / Setup tabs later.
-    can_provision = bool(payload.get("dns_name")) and (
-        has_credentials or bool(router_row.wg_enabled and router_row.wg_is_connected)
-    )
-
-    log_row = None
-    if can_provision:
-        log_row = RouterProvisionLog(
-            router_id=router_row.id,
-            triggered_by=str(tenant.user_id),
-            action="provision",
-            status="running",
-            started_at=datetime.now(timezone.utc),
-            commands_executed=[],
-        )
-        db.add(log_row)
-
     await db.commit()
     asyncio.get_running_loop().run_in_executor(None, reload_freeradius_clients)
     await db.refresh(router_row)
 
-    if log_row is not None:
-        await db.refresh(log_row)
-        provisioner.launch_provision(
-            router_id=str(router_row.id),
-            log_id=str(log_row.id),
-            dns_name=payload["dns_name"],
-            hotspot_interface=payload.get("hotspot_interface"),
-            template_id=payload.get("template_id"),
-        )
-        return {"router_id": str(router_row.id), "log_id": str(log_row.id)}
-
+    # VPN-only onboarding: a brand-new router is only reachable once its WireGuard
+    # tunnel is up, so credentials and provisioning are handled by the later
+    # wizard steps via the dedicated /credentials and /provision endpoints (which
+    # connect over the tunnel). Onboard just persists the basic router record.
     return {"router_id": str(router_row.id), "log_id": None}
 
 
@@ -279,15 +236,22 @@ async def create_router_credentials(router_id: uuid.UUID, body: RouterCredential
 
 @router.put("/routers/{router_id}/credentials", response_model=RouterCredentialsResponse)
 async def update_router_credentials(router_id: uuid.UUID, body: RouterCredentialsRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+    # Upsert: a router onboarded via the VPN flow has no RouterCredential row yet,
+    # so the edit modal must be able to *create* the credentials here, not only
+    # update them. (Previously this 404'd, and the frontend's apiCall swallows
+    # non-2xx responses — so the save appeared to succeed while provisioning kept
+    # failing with "Router credentials are required".)
+    router_row = (
+        await db.execute(select(Router).where(Router.id == router_id, Router.isp_operator_id == tenant.isp_operator_id))
+    ).scalar_one_or_none()
+    if router_row is None:
+        raise HTTPException(status_code=404, detail="Router not found")
     credentials = (
-        await db.execute(
-            select(RouterCredential)
-            .join(Router, Router.id == RouterCredential.router_id)
-            .where(RouterCredential.router_id == router_id, Router.isp_operator_id == tenant.isp_operator_id)
-        )
+        await db.execute(select(RouterCredential).where(RouterCredential.router_id == router_id))
     ).scalar_one_or_none()
     if credentials is None:
-        raise HTTPException(status_code=404, detail="Router credentials not found")
+        credentials = RouterCredential(router_id=router_id, connection_status="unknown")
+        db.add(credentials)
     credentials.api_username = body.api_username
     credentials.api_password_encrypted = encrypt_secret(body.api_password)
     credentials.api_port = body.api_port

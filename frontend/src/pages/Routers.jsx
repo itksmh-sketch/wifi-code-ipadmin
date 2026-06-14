@@ -145,23 +145,26 @@ function RouterList({ onAdd, onSelect }) {
 
 // ─── PROVISIONING WIZARD ─────────────────────────────────────────────────────
 
-const WIZARD_STEPS = ['1. Basic info', '2. API connection', '3. Hotspot config', '4. Provision'];
+const WIZARD_STEPS = ['1. Basic info', '2. Connect via VPN', '3. Credentials & hotspot', '4. Provision'];
 
 function RouterWizard({ onBack, onDone }) {
     const [step, setStep] = useState(1);
     const [sites, setSites] = useState([]);
     const [templates, setTemplates] = useState([]);
     const [interfaces, setInterfaces] = useState([]);
-    const [connTested, setConnTested] = useState(false);
-    const [connResult, setConnResult] = useState('Test the connection before moving on.');
-    // Step 2 connection method: 'direct' (test API over IP) or 'tunnel' (connect
-    // over an active WireGuard tunnel). Step 2 is purely about establishing the
-    // connection — Steps 3 and 4 are identical once it succeeds.
-    const [connMethod, setConnMethod] = useState('direct');
-    // WireGuard status for the router being provisioned. A brand-new router has
-    // no tunnel yet, so this stays null in the add flow; it lights up the Step 2
-    // tunnel option when provisioning a router that already has an active tunnel.
-    const [wgStatus, setWgStatus] = useState(null);
+    // The router record is created at the end of Step 1 so the VPN tunnel and
+    // credentials configured in later steps have a router to attach to.
+    const [routerId, setRouterId] = useState(null);
+    const [busy, setBusy] = useState(false);
+    // Step 2 — WireGuard tunnel (the only supported connection method).
+    const [wgStatus, setWgStatus] = useState(null);   // { enabled, connected, tunnel_ip }
+    const [wgConfig, setWgConfig] = useState(null);   // { mikrotik_commands, tunnel_ip }
+    const [wgMsg, setWgMsg] = useState('');
+    const [copied, setCopied] = useState(false);
+    // Step 3 — credentials + hotspot config, reached over the tunnel.
+    const [credSaved, setCredSaved] = useState(false);
+    const [connResult, setConnResult] = useState('Save the RouterOS credentials to load interfaces over the tunnel.');
+    // Step 4 — provisioning.
     const [provisionLog, setProvisionLog] = useState([]);
     const [provisionDone, setProvisionDone] = useState(null);
     const [state, setState] = useState({
@@ -183,110 +186,99 @@ function RouterWizard({ onBack, onDone }) {
         });
     }
 
-    const tunnelActive = !!(wgStatus && wgStatus.enabled && wgStatus.connected);
+    const tunnelConnected = !!(wgStatus && wgStatus.connected);
 
-    // When a tunnel becomes active, default Step 2 to the tunnel option.
-    useEffect(() => { if (tunnelActive) setConnMethod('tunnel'); }, [tunnelActive]);
-
-    function validate() {
-        if (step === 1 && (!state.name || !state.site_id || !state.nas_identifier || !state.nas_secret))
-            throw new Error('Fill in router name, site, NAS identifier, and NAS secret.');
-        // Step 2 is about establishing the connection. Direct needs its fields;
-        // either method must pass a connection test (which loads interfaces)
-        // before continuing.
-        if (step === 2 && connMethod === 'direct' && (!state.ip_address || !state.api_username || !state.api_password))
-            throw new Error('Fill in the API connection fields.');
-        if (step === 2 && !connTested)
-            throw new Error('Test the connection successfully before continuing.');
-        if (step === 3 && (!state.hotspot_interface || !state.dns_name))
-            throw new Error('Choose the hotspot interface and DNS name.');
-    }
-
-    // Test the RouterOS API over the active WireGuard tunnel IP and load interfaces.
-    async function testViaTunnel() {
-        if (!tunnelActive) return;
-        setConnResult('Testing API via tunnel…');
-        setConnTested(false);
-        const result = await apiCall('/admin/routers/test-connection', {
-            method: 'POST',
-            body: JSON.stringify({ host: wgStatus.tunnel_ip, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: state.use_ssl }),
-        });
-        if (!result || !result.success) {
-            setConnResult('Tunnel API test failed: ' + (result?.error || 'Unknown error'));
-            return;
-        }
-        setConnResult(`Connected via tunnel: ${result.board_name || 'MikroTik'} running RouterOS ${result.ros_version || 'unknown'}`);
-        const ifaces = await apiCall('/admin/routers/temp-interfaces', {
-            method: 'POST',
-            body: JSON.stringify({ host: wgStatus.tunnel_ip, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: state.use_ssl }),
-        });
-        setInterfaces(ifaces || []);
-        const tpls = await apiCall('/admin/config-templates');
-        setTemplates(tpls || []);
-        setConnTested(true);
-    }
-
-    // Option B with no tunnel yet — save the basic router record and leave the
-    // wizard so the operator can set up the tunnel from the router detail page.
-    async function saveWithoutProvisioning() {
+    // ── Step 1 → create the router record ────────────────────────────────────
+    async function createRouter() {
+        if (routerId) return routerId; // already created (e.g. navigating back & forth)
         const result = await apiCall('/admin/routers/onboard', {
             method: 'POST',
             body: JSON.stringify({ name: state.name, site_id: state.site_id, nas_identifier: state.nas_identifier, nas_secret: state.nas_secret }),
         });
-        if (!result || !result.router_id) {
-            alert(result?.detail || 'Failed to save router.');
-            return;
-        }
-        onDone(result.router_id);
+        if (!result || !result.router_id) throw new Error(result?.detail || 'Failed to create the router.');
+        setRouterId(result.router_id);
+        return result.router_id;
     }
 
-    function next() {
+    // ── Step 2 — WireGuard tunnel (only supported connection method) ──────────
+    const loadWgStatus = useCallback(async () => {
+        if (!routerId) return null;
+        const data = await apiCall(`/admin/routers/${routerId}/wireguard/status`);
+        if (data) setWgStatus(data);
+        return data;
+    }, [routerId]);
+
+    async function generateVpnConfig() {
+        setBusy(true); setWgMsg('');
         try {
-            validate();
-            setStep(s => Math.min(4, s + 1));
-        } catch (e) { alert(e.message); }
+            const result = await apiCall(`/admin/routers/${routerId}/wireguard/setup`, { method: 'POST', body: '{}' });
+            if (!result || !result.mikrotik_commands) { setWgMsg(result?.detail || 'Could not generate the VPN config.'); return; }
+            setWgConfig(result);
+            await loadWgStatus();
+        } finally { setBusy(false); }
     }
 
-    async function testConnection() {
-        setConnResult('Testing…');
-        setConnTested(false);
-        const result = await apiCall('/admin/routers/test-connection', {
-            method: 'POST',
-            body: JSON.stringify({ host: state.ip_address, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: state.use_ssl }),
+    async function verifyConnection() {
+        setWgMsg('Checking for a tunnel handshake…');
+        const data = await loadWgStatus();
+        setWgMsg(data && data.connected
+            ? `VPN connected — tunnel IP ${data.tunnel_ip}.`
+            : 'No handshake yet — paste the config into the router, then try again in a moment.');
+    }
+
+    function copyCommands() {
+        if (!wgConfig?.mikrotik_commands) return;
+        navigator.clipboard.writeText(wgConfig.mikrotik_commands).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+    }
+
+    // While on Step 2, poll the tunnel status so "Continue" unlocks on its own
+    // once the router completes its first handshake.
+    useEffect(() => {
+        if (step !== 2 || !routerId) return undefined;
+        loadWgStatus();
+        const timer = setInterval(() => loadWgStatus().catch(() => {}), 5000);
+        return () => clearInterval(timer);
+    }, [step, routerId, loadWgStatus]);
+
+    // ── Step 3 — credentials + hotspot, all over the tunnel ──────────────────
+    async function saveCredsAndLoadInterfaces() {
+        setConnResult('Saving credentials and connecting over the tunnel…');
+        setCredSaved(false);
+        await apiCall(`/admin/routers/${routerId}/credentials`, {
+            method: 'PUT',
+            body: JSON.stringify({ api_username: state.api_username, api_password: state.api_password, api_port: Number(state.api_port), use_ssl: state.use_ssl }),
         });
-        if (!result || !result.success) {
-            setConnResult('Connection failed: ' + (result?.error || 'Unknown error'));
+        const ifaces = await apiCall(`/admin/routers/${routerId}/interfaces`);
+        if (!Array.isArray(ifaces)) {
+            setConnResult('Saved credentials, but could not read interfaces over the tunnel: ' + (ifaces?.detail || 'check the RouterOS username/password.'));
             return;
         }
-        setConnResult(`Connected: ${result.board_name || 'MikroTik'} running RouterOS ${result.ros_version || 'unknown'}`);
-        const ifaces = await apiCall('/admin/routers/temp-interfaces', {
-            method: 'POST',
-            body: JSON.stringify({ host: state.ip_address, port: state.api_port, username: state.api_username, password: state.api_password, use_ssl: state.use_ssl }),
-        });
-        setInterfaces(ifaces || []);
+        setInterfaces(ifaces);
         const tpls = await apiCall('/admin/config-templates');
         setTemplates(tpls || []);
-        setConnTested(true);
+        setConnResult(`Credentials saved — loaded ${ifaces.length} interface(s) over the tunnel.`);
+        setCredSaved(true);
     }
 
+    // ── Step 4 — provision over the tunnel ───────────────────────────────────
     async function startProvision() {
         setProvisionLog([]);
         setProvisionDone(null);
-        const result = await apiCall('/admin/routers/onboard', {
+        const result = await apiCall(`/admin/routers/${routerId}/provision`, {
             method: 'POST',
-            body: JSON.stringify({ ...state, api_port: Number(state.api_port), template_id: state.template_id || null }),
+            body: JSON.stringify({ hotspot_interface: state.hotspot_interface, dns_name: state.dns_name, template_id: state.template_id || null }),
         });
-        if (!result || !result.router_id) {
-            setProvisionDone({ ok: false, message: result?.detail || 'Onboard failed.' });
+        if (!result || !result.log_id) {
+            setProvisionDone({ ok: false, message: result?.detail || 'Provisioning failed to start.' });
             return;
         }
-        const { router_id, log_id } = result;
+        const logId = result.log_id;
         function poll() {
-            apiCall(`/admin/routers/${router_id}/provision-status/${log_id}`).then(body => {
+            apiCall(`/admin/routers/${routerId}/provision-status/${logId}`).then(body => {
                 if (!body) return;
                 setProvisionLog(body.commands_executed || []);
                 if (body.status === 'success') {
-                    setProvisionDone({ ok: true, router_id, message: 'Provisioning complete.' });
+                    setProvisionDone({ ok: true, router_id: routerId, message: 'Provisioning complete.' });
                 } else if (body.status === 'failed') {
                     setProvisionDone({ ok: false, message: 'Provisioning failed: ' + (body.error_message || 'Unknown error') });
                 } else {
@@ -297,9 +289,28 @@ function RouterWizard({ onBack, onDone }) {
         poll();
     }
 
+    async function next() {
+        try {
+            if (step === 1) {
+                if (!state.name || !state.site_id || !state.nas_identifier || !state.nas_secret)
+                    throw new Error('Fill in router name, site, NAS identifier, and NAS secret.');
+                setBusy(true);
+                try { await createRouter(); } finally { setBusy(false); }
+                setStep(2);
+            } else if (step === 2) {
+                if (!tunnelConnected) throw new Error('The VPN tunnel must be connected before continuing.');
+                setStep(3);
+            } else if (step === 3) {
+                if (!credSaved) throw new Error('Save the RouterOS credentials and load interfaces first.');
+                if (!state.hotspot_interface || !state.dns_name) throw new Error('Choose the hotspot interface and DNS name.');
+                setStep(4);
+            }
+        } catch (e) { alert(e.message); }
+    }
+
     useEffect(() => () => clearTimeout(pollRef.current), []);
 
-    const summary = `Router: ${state.name || '-'} | NAS: ${state.nas_identifier || '-'} | IP: ${state.ip_address || '-'} | Interface: ${state.hotspot_interface || '-'} | DNS: ${state.dns_name || '-'}`;
+    const summary = `Router: ${state.name || '-'} | NAS: ${state.nas_identifier || '-'} | Tunnel: ${wgStatus?.tunnel_ip || '-'} | Interface: ${state.hotspot_interface || '-'} | DNS: ${state.dns_name || '-'}`;
 
     return (
         <div>
@@ -339,112 +350,107 @@ function RouterWizard({ onBack, onDone }) {
                     </div>
                 )}
 
-                {/* Step 2 — Connection method (two cards) */}
+                {/* Step 2 — Connect via VPN (the only supported method) */}
                 {step === 2 && (
                     <>
-                        <p style={{ color: '#5c677d', marginTop: 0, marginBottom: 14 }}>How should the platform reach this router? Choose a method and establish the connection.</p>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 18 }}>
-                            <div onClick={() => setConnMethod('direct')} style={{ padding: '16px', borderRadius: 14, cursor: 'pointer', border: `2px solid ${connMethod === 'direct' ? '#0d6e5f' : '#d7deea'}`, background: connMethod === 'direct' ? '#f6fffb' : '#fff' }}>
-                                <div style={{ fontWeight: 700, fontSize: 15 }}>Direct IP connection</div>
-                                <div style={{ color: '#5c677d', fontSize: 13, marginTop: 4 }}>The router is reachable now over its LAN/WAN IP.</div>
+                        <p style={{ color: '#5c677d', marginTop: 0, marginBottom: 14 }}>
+                            Connect this router to the platform over a WireGuard VPN tunnel. This is the only supported
+                            connection method — the platform reaches the router through the tunnel, even behind NAT.
+                        </p>
+                        {tunnelConnected ? (
+                            <div style={{ padding: '16px', background: '#ecfdf3', border: '1px solid #abefc6', borderRadius: 12 }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 700, color: '#067647' }}>
+                                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#12b76a', display: 'inline-block' }} />
+                                    VPN connected — {wgStatus.tunnel_ip}
+                                </span>
+                                <p style={{ margin: '8px 0 0', color: '#5c677d', fontSize: 14 }}>The tunnel has a recent handshake. Click Next to continue.</p>
                             </div>
-                            <div onClick={() => setConnMethod('tunnel')} style={{ padding: '16px', borderRadius: 14, cursor: 'pointer', border: `2px solid ${connMethod === 'tunnel' ? '#0d6e5f' : '#d7deea'}`, background: connMethod === 'tunnel' ? '#f6fffb' : '#fff' }}>
-                                <div style={{ fontWeight: 700, fontSize: 15 }}>VPN tunnel connection</div>
-                                <div style={{ color: '#5c677d', fontSize: 13, marginTop: 4 }}>Connect over a WireGuard tunnel (for routers behind NAT).</div>
-                            </div>
-                        </div>
-
-                        {/* Direct IP */}
-                        {connMethod === 'direct' && (
+                        ) : (
                             <>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-                                    <div className="form-group">
-                                        <label>Router IP address</label>
-                                        <input value={state.ip_address} onChange={e => set('ip_address', e.target.value)} placeholder="192.168.99.1" />
+                                <button className="btn btn-primary" onClick={() => generateVpnConfig().catch(e => setWgMsg(e.message))} disabled={busy}>
+                                    {busy ? 'Generating secure keypair…' : (wgConfig || (wgStatus && wgStatus.enabled)) ? 'Regenerate VPN config' : 'Generate VPN config'}
+                                </button>
+                                {wgConfig && (
+                                    <div style={{ marginTop: 16 }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                            <strong style={{ color: '#14213d' }}>MikroTik commands — paste into the router</strong>
+                                            <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: 13 }} onClick={copyCommands}>{copied ? '✓ Copied' : 'Copy all commands'}</button>
+                                        </div>
+                                        <pre style={{ background: '#0f172a', color: '#e5efff', padding: 14, borderRadius: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 13, lineHeight: 1.5 }}>{wgConfig.mikrotik_commands}</pre>
+                                        <p style={{ color: '#5c677d', fontSize: 14, margin: '4px 0 0' }}>Tunnel IP: <code>{wgConfig.tunnel_ip}</code>. After pasting, the handshake appears within ~2 minutes (this page re-checks every 5 seconds).</p>
                                     </div>
-                                    <div className="form-group">
-                                        <label>API port</label>
-                                        <input type="number" value={state.api_port} onChange={e => set('api_port', e.target.value)} />
-                                    </div>
-                                    <div className="form-group">
-                                        <label>RouterOS username</label>
-                                        <input value={state.api_username} onChange={e => set('api_username', e.target.value)} />
-                                    </div>
-                                    <div className="form-group">
-                                        <label>RouterOS password</label>
-                                        <input type="password" value={state.api_password} onChange={e => set('api_password', e.target.value)} />
-                                    </div>
-                                    <div className="form-group">
-                                        <label>Use SSL</label>
-                                        <select value={state.use_ssl ? 'true' : 'false'} onChange={e => set('use_ssl', e.target.value === 'true')}>
-                                            <option value="false">No</option>
-                                            <option value="true">Yes</option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <div style={{ marginTop: 12 }}>
-                                    <button className="btn" style={{ background: '#f59e0b', color: '#1f2937' }} onClick={() => testConnection().catch(e => setConnResult(e.message))}>
-                                        Test connection
-                                    </button>
-                                    <div style={{ marginTop: 12, padding: '10px 14px', background: '#f8fafc', borderRadius: 10, color: '#5c677d', fontSize: 14 }}>{connResult}</div>
-                                </div>
-                            </>
-                        )}
-
-                        {/* VPN tunnel */}
-                        {connMethod === 'tunnel' && (
-                            tunnelActive ? (
-                                <div style={{ padding: '16px', background: '#ecfdf3', border: '1px solid #abefc6', borderRadius: 12 }}>
-                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 700, color: '#067647' }}>
-                                        <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#12b76a', display: 'inline-block' }} />
-                                        Tunnel active — {wgStatus.tunnel_ip}
-                                    </span>
-                                    <p style={{ margin: '8px 0 12px', color: '#5c677d', fontSize: 14 }}>Test the RouterOS API through the tunnel to load interfaces.</p>
-                                    <button className="btn" style={{ background: '#f59e0b', color: '#1f2937' }} onClick={() => testViaTunnel().catch(e => setConnResult(e.message))}>
-                                        Test API via tunnel
-                                    </button>
-                                    <div style={{ marginTop: 12, padding: '10px 14px', background: '#f8fafc', borderRadius: 10, color: '#5c677d', fontSize: 14 }}>{connResult}</div>
-                                </div>
-                            ) : (
-                                <div style={{ padding: '16px', background: '#eff8ff', border: '1px solid #b2ddff', borderRadius: 12, color: '#175cd3', fontSize: 14 }}>
-                                    You need to set up the VPN tunnel first before using this option. Save the router first, then set up the tunnel from the router detail page.
+                                )}
+                                {(wgConfig || (wgStatus && wgStatus.enabled)) && (
                                     <div style={{ marginTop: 12 }}>
-                                        <button className="btn btn-primary" onClick={() => saveWithoutProvisioning().catch(e => alert(e.message))}>
-                                            Save router without provisioning
-                                        </button>
+                                        <button className="btn" style={{ background: '#f59e0b', color: '#1f2937' }} onClick={() => verifyConnection().catch(e => setWgMsg(e.message))}>Verify connection</button>
                                     </div>
-                                </div>
-                            )
+                                )}
+                                {wgMsg && <div style={{ marginTop: 12, padding: '10px 14px', background: '#f8fafc', borderRadius: 10, color: '#5c677d', fontSize: 14 }}>{wgMsg}</div>}
+                            </>
                         )}
                     </>
                 )}
 
-                {/* Step 3 */}
+                {/* Step 3 — Credentials + hotspot config, over the tunnel */}
                 {step === 3 && (
                     <>
+                        <p style={{ color: '#5c677d', marginTop: 0, marginBottom: 14 }}>
+                            These RouterOS API credentials are used to reach the router over the VPN tunnel{wgStatus?.tunnel_ip ? ` (${wgStatus.tunnel_ip})` : ''}.
+                        </p>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                             <div className="form-group">
-                                <label>Hotspot interface</label>
-                                <select value={state.hotspot_interface} onChange={e => set('hotspot_interface', e.target.value)}>
-                                    <option value="">Select interface</option>
-                                    {interfaces.map(i => <option key={i.name} value={i.name}>{i.name}</option>)}
-                                </select>
+                                <label>RouterOS username</label>
+                                <input value={state.api_username} onChange={e => set('api_username', e.target.value)} />
                             </div>
                             <div className="form-group">
-                                <label>Captive portal DNS name</label>
-                                <input value={state.dns_name} onChange={e => set('dns_name', e.target.value)} placeholder="hotspot.yourisp.com" />
+                                <label>RouterOS password</label>
+                                <input type="password" value={state.api_password} onChange={e => set('api_password', e.target.value)} />
                             </div>
                             <div className="form-group">
-                                <label>Config template</label>
-                                <select value={state.template_id} onChange={e => set('template_id', e.target.value)}>
-                                    <option value="">No template</option>
-                                    {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                <label>API port</label>
+                                <input type="number" value={state.api_port} onChange={e => set('api_port', e.target.value)} />
+                            </div>
+                            <div className="form-group">
+                                <label>Use SSL</label>
+                                <select value={state.use_ssl ? 'true' : 'false'} onChange={e => set('use_ssl', e.target.value === 'true')}>
+                                    <option value="false">No</option>
+                                    <option value="true">Yes</option>
                                 </select>
                             </div>
                         </div>
-                        <div style={{ marginTop: 14, padding: '12px 14px', background: '#f8fafc', border: '1px dashed #d7deea', borderRadius: 12, fontSize: 14, color: '#5c677d' }}>
-                            <strong style={{ color: '#14213d' }}>Provision summary</strong><br />{summary}
+                        <div style={{ marginTop: 12 }}>
+                            <button className="btn" style={{ background: '#f59e0b', color: '#1f2937' }} onClick={() => saveCredsAndLoadInterfaces().catch(e => setConnResult(e.message))}>
+                                Save credentials &amp; load interfaces
+                            </button>
+                            <div style={{ marginTop: 12, padding: '10px 14px', background: '#f8fafc', borderRadius: 10, color: '#5c677d', fontSize: 14 }}>{connResult}</div>
                         </div>
+                        {credSaved && (
+                            <>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
+                                    <div className="form-group">
+                                        <label>Hotspot interface</label>
+                                        <select value={state.hotspot_interface} onChange={e => set('hotspot_interface', e.target.value)}>
+                                            <option value="">Select interface</option>
+                                            {interfaces.map(i => <option key={i.name} value={i.name}>{i.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Captive portal DNS name</label>
+                                        <input value={state.dns_name} onChange={e => set('dns_name', e.target.value)} placeholder="hotspot.yourisp.com" />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Config template</label>
+                                        <select value={state.template_id} onChange={e => set('template_id', e.target.value)}>
+                                            <option value="">No template</option>
+                                            {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div style={{ marginTop: 14, padding: '12px 14px', background: '#f8fafc', border: '1px dashed #d7deea', borderRadius: 12, fontSize: 14, color: '#5c677d' }}>
+                                    <strong style={{ color: '#14213d' }}>Provision summary</strong><br />{summary}
+                                </div>
+                            </>
+                        )}
                     </>
                 )}
 
