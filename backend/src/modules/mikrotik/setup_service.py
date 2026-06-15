@@ -266,7 +266,14 @@ def _op_apply_hotspot(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
     if profile and profile.get(".id"):
         runner.execute("/ip/hotspot/profile", "set", params={**profile_params, ".id": profile[".id"]})
     else:
-        runner.execute("/ip/hotspot/profile", "set", params={**profile_params, "name": "hsprof1"})
+        # No matching profile exists yet (fresh router). /ip/hotspot/profile/set is
+        # item-based and needs a .id, so create the profile instead of trying to
+        # set one by name, then point the hotspot server at it — otherwise the
+        # server keeps using the built-in "default" profile and these RADIUS/login
+        # settings never take effect.
+        runner.execute("/ip/hotspot/profile", "add", params={**profile_params, "name": profile_name})
+        if server.get(".id"):
+            runner.execute("/ip/hotspot", "set", params={".id": server[".id"], "profile": profile_name})
 
     # 3. Default user profile — session/idle timeouts and devices-per-credential.
     #    (RouterOS keeps these on the user profile, not the server profile.)

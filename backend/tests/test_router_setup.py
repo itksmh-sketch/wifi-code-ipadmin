@@ -10,7 +10,7 @@ from test_multi_tenant_security import _request
 from test_multi_tenancy import _create_network, _create_operator_pair
 
 from src.modules.mikrotik import setup_service as svc
-from src.modules.mikrotik.api_service import MikroTikOperationError, _sanitize_mapping
+from src.modules.mikrotik.api_service import MikroTikAPIService, MikroTikOperationError, _sanitize_mapping
 
 
 # ─── Fake RouterOS runner ───────────────────────────────────────────────────
@@ -148,6 +148,87 @@ def test_hotspot_apply_creates_server_and_enables_radius():
     assert prof_set["login-by"] == "http-pap,cookie"
     up_set = runner.sets("/ip/hotspot/user/profile")[0]["params"]
     assert up_set["shared-users"] == 2
+
+
+def test_hotspot_apply_creates_profile_when_missing_and_assigns_it():
+    # Fresh router: a hotspot server exists but the named profile does not yet.
+    # /ip/hotspot/profile/set is item-based, so we must add the profile (not set
+    # it by name) and then point the server at it.
+    runner = FakeRunner({
+        ("/ip/hotspot", "print"): [{".id": "*7", "name": "hotspot1"}],
+        ("/ip/hotspot/profile", "print"): [],
+        ("/ip/hotspot/user/profile", "print"): [{".id": "*2", "name": "default"}],
+    })
+    data = {"bridge_name": "bridge-hotspot", "dns_name": "hotspot.acme.local", "login_by": ["http-pap", "cookie"],
+            "session_timeout": 0, "idle_timeout": 0, "addresses_per_mac": 2, "pool_name": "hs-pool"}
+    svc._op_apply_hotspot(runner, data)
+
+    # No profile/set without a .id (the original bug produced exactly that).
+    assert all(".id" in c["params"] for c in runner.sets("/ip/hotspot/profile"))
+
+    prof_add = runner.adds("/ip/hotspot/profile")[0]["params"]
+    assert prof_add["name"] == "hsprof1"
+    assert prof_add["use-radius"] == "yes"
+    assert prof_add["nas-port-type"] == "wireless-802.11"
+    assert prof_add["dns-name"] == "hotspot.acme.local"
+    assert prof_add["login-by"] == "http-pap,cookie"
+
+    # The server is repointed at the freshly created profile.
+    server_set = [c for c in runner.sets("/ip/hotspot") if c["params"].get("profile") == "hsprof1"]
+    assert server_set and server_set[0]["params"][".id"] == "*7"
+
+
+# ─── Generic template path: create-if-missing for named set commands ────────
+
+
+def test_template_set_creates_named_item_when_missing():
+    # Fresh router: applying a template whose first command is
+    # /ip/hotspot/profile/set name=hsprof1 ... must create the profile rather than
+    # failing — /.../set is item-based and needs a .id (the original bug).
+    api = MikroTikAPIService()
+    runner = FakeRunner({("/ip/hotspot/profile", "print"): []})
+    data = {"commands": [
+        {"path": "/ip/hotspot/profile", "command": "set",
+         "params": {"name": "hsprof1", "use-radius": "yes", "nas-port-type": "wireless-802.11"}},
+    ]}
+    api._sync_execute_template_commands(runner, data)
+
+    assert not runner.sets("/ip/hotspot/profile")  # no .id-less set went out
+    prof_add = runner.adds("/ip/hotspot/profile")[0]["params"]
+    assert prof_add["name"] == "hsprof1"  # name kept so the created item is identifiable
+    assert prof_add["use-radius"] == "yes"
+    assert prof_add["nas-port-type"] == "wireless-802.11"
+
+
+def test_template_set_resolves_existing_named_item_to_id():
+    # When the item already exists, we still resolve name -> .id and set (no add).
+    api = MikroTikAPIService()
+    runner = FakeRunner({("/ip/hotspot/profile", "print"): [{".id": "*3", "name": "hsprof1"}]})
+    data = {"commands": [
+        {"path": "/ip/hotspot/profile", "command": "set",
+         "params": {"name": "hsprof1", "use-radius": "yes"}},
+    ]}
+    api._sync_execute_template_commands(runner, data)
+
+    assert not runner.adds("/ip/hotspot/profile")
+    prof_set = runner.sets("/ip/hotspot/profile")[0]["params"]
+    assert prof_set[".id"] == "*3"
+    assert "name" not in prof_set  # redundant once we have the .id
+    assert prof_set["use-radius"] == "yes"
+
+
+def test_template_set_still_raises_for_uncreatable_named_item():
+    # Paths outside the create-if-missing allow-list (e.g. physical interfaces that
+    # can't be added) keep raising — a missing item there is a real error.
+    api = MikroTikAPIService()
+    runner = FakeRunner({("/interface/ethernet", "print"): []})
+    data = {"commands": [
+        {"path": "/interface/ethernet", "command": "set",
+         "params": {"name": "ether1", "comment": "WAN"}},
+    ]}
+    with pytest.raises(MikroTikOperationError):
+        api._sync_execute_template_commands(runner, data)
+    assert not runner.adds("/interface/ethernet")
 
 
 # ─── Section 3: RADIUS apply + secret safety ────────────────────────────────

@@ -99,6 +99,25 @@ class SyncCommandRunner:
             raise MikroTikOperationError(entry["error"], commands=self.commands, status=_classify_status(entry["error"])) from exc
 
 
+# Template ``set name=X`` commands targeting these collections are upserts: the
+# items are addressable by ``name`` and can be created with a plain ``add``, so a
+# fresh router that lacks the item gets it created rather than failing the template.
+# Deliberately excluded: RouterOS singletons (e.g. /ip/dns, /system/identity — they
+# carry no ``name`` and never reach the create branch) and physical/built-in items
+# that cannot be added (e.g. /interface/ethernet), where a missing item is a real
+# error worth raising.
+_CREATE_IF_MISSING_PATHS = frozenset(
+    {
+        "/ip/hotspot/profile",
+        "/ip/hotspot/user/profile",
+        "/queue/simple",
+        "/queue/type",
+        "/ip/pool",
+        "/ppp/profile",
+    }
+)
+
+
 class MikroTikAPIService:
     def __init__(self) -> None:
         self.connection_timeout = settings.mikrotik_api_timeout
@@ -666,28 +685,44 @@ class MikroTikAPIService:
             action = command.get("command", "set")
             params = dict(command.get("params") or {})
             if action == "set":
-                params = self._resolve_named_set_params(runner, command["path"], params)
+                action, params = self._resolve_named_set_params(runner, command["path"], params)
             runner.execute(command["path"], action, params=params)
         return "Template applied"
 
-    def _resolve_named_set_params(self, runner: SyncCommandRunner, path: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _resolve_named_set_params(
+        self, runner: SyncCommandRunner, path: str, params: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        """Turn a template ``set`` keyed by ``name`` into a concrete (command, params) pair.
+
+        ``/.../set`` is item-based and needs a ``.id``. When the named item exists we
+        resolve it to ``set`` with ``.id``. When it doesn't and the collection is one
+        we can safely create (see ``_CREATE_IF_MISSING_PATHS``), we fall back to ``add``
+        so a fresh router gets the item created — mirroring the hotspot profile fix in
+        ``setup_service._op_apply_hotspot``. Otherwise we raise: a missing item is a real
+        error for anything we can't (re)create by name.
+        """
         if params.get(".id") or "name" not in params:
-            return params
+            return "set", params
 
         rows = runner.execute(path, "print")
         target = next((row for row in rows if row.get("name") == params.get("name")), None)
         target_id = _routeros_id(target) if target else None
-        if not target_id:
-            raise MikroTikOperationError(
-                f"Template set command could not find named item '{params.get('name')}' at {path}",
-                commands=runner.commands,
-                status="offline",
-            )
+        if target_id:
+            resolved = dict(params)
+            resolved[".id"] = target_id
+            resolved.pop("name", None)
+            return "set", resolved
 
-        resolved = dict(params)
-        resolved[".id"] = target_id
-        resolved.pop("name", None)
-        return resolved
+        if path.rstrip("/") in _CREATE_IF_MISSING_PATHS:
+            # Fresh router: the named item doesn't exist yet. Create it with the
+            # requested params (keeping name=) instead of failing the whole template.
+            return "add", dict(params)
+
+        raise MikroTikOperationError(
+            f"Template set command could not find named item '{params.get('name')}' at {path}",
+            commands=runner.commands,
+            status="offline",
+        )
 
     def _ensure_walled_garden_host(self, runner: SyncCommandRunner, parsed_url) -> None:
         rows = runner.execute("/ip/hotspot/walled-garden", "print")
