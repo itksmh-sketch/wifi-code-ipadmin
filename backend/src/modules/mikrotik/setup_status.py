@@ -35,7 +35,12 @@ async def get_or_create(db: AsyncSession, router_id) -> RouterSetupStatus:
 
 async def record_detect(db: AsyncSession, router_id, section: str, status: str, config: dict[str, Any] | None = None) -> RouterSetupStatus:
     row = await get_or_create(db, router_id)
-    stored = dict(config or {})
+    # Merge into (not replace) the existing config so values persisted by a prior
+    # apply — e.g. network's hotspot_network, which the NAT section depends on —
+    # survive a later re-detect. Detect payloads live under "detected", so they
+    # never collide with the flat keys written on apply.
+    stored = dict(getattr(row, f"{section}_config") or {})
+    stored.update(config or {})
     stored["_detected_at"] = _utcnow().isoformat()
     setattr(row, f"{section}_status", status)
     setattr(row, f"{section}_config", stored)

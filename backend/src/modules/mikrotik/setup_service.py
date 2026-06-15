@@ -87,6 +87,26 @@ def plan_subnet(gateway_ip: str, prefix: int) -> SubnetPlan:
     )
 
 
+def resolve_hotspot_network(network_config: dict[str, Any] | None) -> str | None:
+    """Best-effort recovery of the hotspot source network from the stored Network
+    section config, used by the NAT section. Tries, in order: the explicit applied
+    value, the applied gateway subnet, and finally a uniquely-detected DHCP network
+    (which covers configs whose applied keys were overwritten by a later detect)."""
+    config = network_config or {}
+    explicit = config.get("hotspot_network")
+    if explicit:
+        return explicit
+    network_address = config.get("network_address")
+    prefix = config.get("prefix")
+    if network_address and prefix:
+        return f"{network_address}/{prefix}"
+    detected = config.get("detected") or {}
+    addresses = [n.get("address") for n in (detected.get("dhcp_networks") or []) if n.get("address")]
+    if len(addresses) == 1:
+        return addresses[0]
+    return None
+
+
 def validate_pool_range(plan: SubnetPlan, pool_start: str, pool_end: str) -> tuple[str, str]:
     """Ensure an operator-customised pool range stays inside the subnet and the
     gateway is not handed out. Returns the validated (start, end)."""

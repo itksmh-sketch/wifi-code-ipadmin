@@ -56,6 +56,24 @@ def test_hosts_in_subnet(prefix, hosts):
     assert svc.hosts_in_subnet(prefix) == hosts
 
 
+def test_resolve_hotspot_network_prefers_explicit_then_subnet_then_detected():
+    # 1. Explicit applied value wins.
+    assert svc.resolve_hotspot_network({"hotspot_network": "10.0.0.0/24"}) == "10.0.0.0/24"
+    # 2. Derive from the applied gateway subnet.
+    assert svc.resolve_hotspot_network({"network_address": "192.168.10.0", "prefix": 24}) == "192.168.10.0/24"
+    # 3. Recover from a uniquely-detected DHCP network (applied keys wiped by a re-detect).
+    detected_only = {"detected": {"dhcp_networks": [{"address": "192.168.50.0/24", "gateway": "192.168.50.1"}]}}
+    assert svc.resolve_hotspot_network(detected_only) == "192.168.50.0/24"
+
+
+def test_resolve_hotspot_network_returns_none_when_unknown_or_ambiguous():
+    assert svc.resolve_hotspot_network(None) is None
+    assert svc.resolve_hotspot_network({}) is None
+    # Ambiguous: more than one detected DHCP network — can't safely guess.
+    two = {"detected": {"dhcp_networks": [{"address": "10.0.0.0/24"}, {"address": "10.0.1.0/24"}]}}
+    assert svc.resolve_hotspot_network(two) is None
+
+
 def test_plan_subnet_rejects_bad_input():
     with pytest.raises(svc.SetupValidationError):
         svc.plan_subnet("999.1.1.1", 24)

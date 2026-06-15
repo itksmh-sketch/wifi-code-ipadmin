@@ -677,6 +677,15 @@ function ipToInt(ip) {
 function intToIp(n) {
     return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
 }
+// Mirrors svc.resolve_hotspot_network: recover the hotspot source network from the
+// stored Network config — explicit value, applied subnet, or a single detected DHCP net.
+function resolveHotspotNetwork(networkConfig) {
+    const cfg = networkConfig || {};
+    if (cfg.hotspot_network) return cfg.hotspot_network;
+    if (cfg.network_address && cfg.prefix) return `${cfg.network_address}/${cfg.prefix}`;
+    const addrs = (cfg.detected?.dhcp_networks || []).map(n => n.address).filter(Boolean);
+    return addrs.length === 1 ? addrs[0] : '';
+}
 // Mirrors the server's plan_subnet: pool runs gateway+1 .. broadcast-1.
 function subnetPlan(gateway, prefix) {
     const gw = ipToInt(gateway);
@@ -1107,7 +1116,7 @@ function RouterSetupTab({ routerId }) {
     const toggle = (k) => setExpanded(e => ({ ...e, [k]: !e[k] }));
     const online = status.online;
     const networkReady = status.network?.status === 'configured';
-    const hotspotNetwork = status.network?.config?.hotspot_network;
+    const hotspotNetwork = resolveHotspotNetwork(status.network?.config);
 
     return (
         <div>

@@ -313,8 +313,8 @@ async def apply_nat(router_id: uuid.UUID, body: NatApplyRequest, db: AsyncSessio
     hotspot_network = body.hotspot_network
     if not hotspot_network:
         setup_row = (await db.execute(select(RouterSetupStatus).where(RouterSetupStatus.router_id == router_id))).scalar_one_or_none()
-        if setup_row and setup_row.network_config:
-            hotspot_network = setup_row.network_config.get("hotspot_network")
+        if setup_row:
+            hotspot_network = svc.resolve_hotspot_network(setup_row.network_config)
     if not hotspot_network:
         raise HTTPException(status_code=422, detail="hotspot_network is required (complete Network setup first or provide it explicitly)")
 
