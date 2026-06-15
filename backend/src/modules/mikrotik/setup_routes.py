@@ -32,6 +32,7 @@ from src.modules.mikrotik.setup_types import (
     SetupStatusResponse,
 )
 from src.utils.encryption import decrypt_secret
+from src.utils.portal_token import create_portal_router_token
 
 router = APIRouter(prefix="/admin", tags=["router-setup"])
 setup = svc.RouterSetupService()
@@ -330,9 +331,23 @@ async def apply_nat(router_id: uuid.UUID, body: NatApplyRequest, db: AsyncSessio
         "enable_nat": body.enable_nat,
         "firewall_options": body.firewall_options,
     }
+
+    async def _apply_nat_then_portal():
+        """NAT is the final wizard step, so we also wire the captive-portal
+        redirect here: once the router has internet (NAT masquerade), it can fetch
+        the platform login page. Failures surface as a NAT-section error so the
+        operator knows the portal didn't get configured."""
+        message, commands = await setup.apply_nat(str(router_id), data)
+        portal_base = get_settings().effective_portal_public_base_url
+        if portal_base:
+            token = create_portal_router_token(str(router_id))
+            portal_message, portal_commands = await setup.apply_portal(str(router_id), portal_base, token)
+            return f"{message}; {portal_message}", commands + portal_commands
+        return f"{message}; portal redirect skipped (portal base URL not configured)", commands
+
     return await _run_apply(
         db, router_id, tenant, "nat", "setup_nat",
-        setup.apply_nat(str(router_id), data),
+        _apply_nat_then_portal(),
         config_to_store=data,
         terminal_commands=svc.nat_terminal_commands(data),
     )

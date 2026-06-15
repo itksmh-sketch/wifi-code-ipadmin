@@ -34,6 +34,7 @@
                 <input type="hidden" id="portalSiteId" name="site_id" value="{{ site_id or '' }}">
                 <input type="hidden" id="portalLinkLoginOnly" name="link_login_only" value="{{ link_login_only or '' }}">
                 <input type="hidden" id="portalLinkOrig" name="link_orig" value="{{ link_orig or '' }}">
+                <input type="hidden" id="portalRt" name="rt" value="{{ rt or '' }}">
 
                 <div class="form-group">
                     <label for="code">Voucher Code</label>
@@ -72,6 +73,7 @@
                     var clientIp = params.get("ip") || "{{ ip or '' }}";
                     var originalUrl = params.get("url") || params.get("link-orig") || params.get("link_orig") || "{{ link_orig or url or '' }}";
                     var gateway = params.get("gateway") || "{{ gateway or '10.5.50.1' }}";
+                    var rt = params.get("rt") || "{{ rt or '' }}";
                     var linkLoginOnly = params.get("link-login-only") || params.get("link_login_only") || "{{ link_login_only or '' }}";
                     var statusEl = document.getElementById("plansStatus");
                     var gridEl = document.getElementById("plansGrid");
@@ -123,6 +125,7 @@
                     setValue("portalSiteId", siteId);
                     setValue("portalLinkLoginOnly", linkLoginOnly);
                     setValue("portalLinkOrig", originalUrl);
+                    setValue("portalRt", rt);
 
                     try {
                         if (siteId) sessionStorage.setItem("portal.site_id", siteId);
@@ -150,6 +153,7 @@
                         if (clientIp) formData.append("ip", clientIp);
                         if (originalUrl) formData.append("url", originalUrl);
                         if (gateway) formData.append("gateway", gateway);
+                        if (rt) formData.append("rt", rt);
                         if (siteId) formData.append("site_id", siteId);
                         if (linkLoginOnly) formData.append("link_login_only", linkLoginOnly);
                         if (originalUrl) formData.append("link_orig", originalUrl);
@@ -231,7 +235,8 @@
                             url += sep + "site_id=" + encodeURIComponent(activeSiteId);
                             sep = "&";
                         }
-                        if (gateway) url += sep + "gateway=" + encodeURIComponent(gateway);
+                        if (gateway) { url += sep + "gateway=" + encodeURIComponent(gateway); sep = "&"; }
+                        if (rt) url += sep + "rt=" + encodeURIComponent(rt);
                         fetch(url, { headers: { "Accept": "application/json" } })
                             .then(function(response) {
                                 if (!response.ok) throw new Error("plans_http_" + response.status);
@@ -255,6 +260,7 @@
                         var planId = button.getAttribute("data-plan");
                         var target = "/portal/pay?plan_id=" + encodeURIComponent(planId) + "&site_id=" + encodeURIComponent(chosenSiteId);
                         if (gateway) target += "&gateway=" + encodeURIComponent(gateway);
+                        if (rt) target += "&rt=" + encodeURIComponent(rt);
                         window.location.href = target;
                     });
 

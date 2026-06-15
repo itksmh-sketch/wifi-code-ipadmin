@@ -56,6 +56,7 @@
         var planId = "{{ plan_id }}";
         var siteId = "{{ site_id }}";
         var gateway = "{{ gateway or '' }}";
+        var rt = "{{ rt or '' }}";
         var internalReference = null;
         var polling = null;
         var selectedPlan = null;
@@ -228,7 +229,7 @@
                 .catch(function(){});
         }
 
-        fetch("/portal/plans?site_id="+encodeURIComponent(siteId)+"&gateway="+encodeURIComponent(gateway), { headers: { "Accept":"application/json" } })
+        fetch("/portal/plans?site_id="+encodeURIComponent(siteId)+"&gateway="+encodeURIComponent(gateway)+(rt?("&rt="+encodeURIComponent(rt)):""), { headers: { "Accept":"application/json" } })
             .then(function(r){ if(!r.ok) throw new Error("plans_http_"+r.status); return r.json(); })
             .then(renderPlan)
             .catch(function(){
@@ -249,7 +250,7 @@
             fetch("/portal/initiate-payment", {
                 method: "POST",
                 headers: { "Content-Type":"application/json", "Accept":"application/json" },
-                body: JSON.stringify({ plan_id: planId, site_id: siteId, gateway: gateway, phone: phone, payment_method: method })
+                body: JSON.stringify({ plan_id: planId, site_id: siteId, gateway: gateway, rt: rt, phone: phone, payment_method: method })
             })
             .then(function(r){ return r.json().then(function(j){ return { ok:r.ok, status:r.status, body:j }; }); })
             .then(function(res){

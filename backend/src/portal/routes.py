@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
+from html import escape
 import os
+import uuid
 from urllib.parse import unquote, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Form
@@ -16,6 +18,7 @@ from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.payments.dependencies import get_payment_service
 from src.modules.payments.service import PaymentService
 from src.modules.payments.types import PaymentMethod, PaymentStatus
+from src.utils.portal_token import decode_portal_router_token
 from src.schemas import (
     PortalContinuePaymentRequest,
     PortalAuthenticateResponse,
@@ -60,6 +63,24 @@ def _normalize_hotspot_url(value: str | None, fallback: str) -> str:
     return fallback
 
 
+async def _resolve_operator_from_token(db: AsyncSession, rt: str | None) -> tuple[str, str] | None:
+    """Resolve (operator_id, site_id) from a signed router token, or None if the
+    token is absent/invalid/unknown so the caller can fall back to gateway match."""
+    router_id = decode_portal_router_token(rt)
+    if not router_id:
+        return None
+    try:
+        router_uuid = uuid.UUID(router_id)
+    except (ValueError, TypeError):
+        return None
+    router_row = (
+        await db.execute(select(Router).where(Router.id == router_uuid, Router.is_active == True))
+    ).scalar_one_or_none()
+    if not router_row:
+        return None
+    return str(router_row.isp_operator_id), (str(router_row.site_id) if router_row.site_id else "")
+
+
 async def _resolve_operator_from_gateway(db: AsyncSession, gateway: str | None) -> tuple[str, str]:
     if not gateway:
         raise HTTPException(status_code=400, detail="Gateway is required")
@@ -73,6 +94,15 @@ async def _resolve_operator_from_gateway(db: AsyncSession, gateway: str | None) 
     return str(router_row.isp_operator_id), str(router_row.site_id)
 
 
+async def _resolve_operator(db: AsyncSession, rt: str | None, gateway: str | None) -> tuple[str, str]:
+    """Prefer the signed router token; fall back to gateway-IP matching for legacy
+    routers (or a malformed/missing token) rather than hard-erroring."""
+    resolved = await _resolve_operator_from_token(db, rt)
+    if resolved is not None:
+        return resolved
+    return await _resolve_operator_from_gateway(db, gateway)
+
+
 @router.get("/portal/login", response_class=HTMLResponse)
 async def portal_login(
     request: Request,
@@ -83,12 +113,20 @@ async def portal_login(
     site_id: str = Query(None),
     link_login_only: str = Query(None),
     link_orig: str = Query(None),
+    rt: str = Query(None),
+    db: AsyncSession = Depends(get_db),
 ):
     settings = get_settings()
     login_fallback = settings.mikrotik_gateway_login_url or "http://10.5.5.1/login"
     url = _decode_portal_value(url)
     link_orig = _normalize_hotspot_url(link_orig, url or "http://www.google.com")
     link_login_only = _normalize_hotspot_url(link_login_only, login_fallback)
+    # If the signed token is valid, pin the router's site so the page can load its
+    # plans directly. The token also rides forward (downstream calls re-resolve it).
+    if not site_id:
+        resolved = await _resolve_operator_from_token(db, rt)
+        if resolved is not None:
+            site_id = resolved[1]
     return templates.TemplateResponse("login.html", {
         "request": request,
         "mac": mac,
@@ -98,6 +136,7 @@ async def portal_login(
         "site_id": site_id,
         "link_login_only": link_login_only,
         "link_orig": link_orig,
+        "rt": rt,
         "mikrotik_login_fallback": login_fallback,
         "error": None,
     })
@@ -109,12 +148,14 @@ async def portal_pay(
     plan_id: str = Query(...),
     site_id: str = Query(...),
     gateway: str | None = Query(None),
+    rt: str | None = Query(None),
 ):
     return templates.TemplateResponse("pay.html", {
         "request": request,
         "plan_id": plan_id,
         "site_id": site_id,
         "gateway": gateway,
+        "rt": rt,
         "error": None,
     })
 
@@ -138,11 +179,12 @@ async def portal_plans(
     request: Request,
     gateway: str | None = Query(None),
     site_id: str | None = Query(None),
+    rt: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     client_ip = request.client.host if request.client else "unknown"
     await enforce_rate_limit(client_ip, "portal:plans", limit=10, window_seconds=60)
-    operator_id, gateway_site_id = await _resolve_operator_from_gateway(db, gateway)
+    operator_id, gateway_site_id = await _resolve_operator(db, rt, gateway)
     resolved_site_id = site_id or gateway_site_id
     stmt = select(Plan).where(Plan.is_active == True, Plan.isp_operator_id == operator_id)
     if resolved_site_id:
@@ -186,7 +228,7 @@ async def portal_initiate_payment(
     client_ip = request.client.host if request.client else "unknown"
     await enforce_rate_limit(client_ip, "portal:initiate", limit=10, window_seconds=60)
 
-    operator_id, gateway_site_id = await _resolve_operator_from_gateway(db, body.gateway)
+    operator_id, gateway_site_id = await _resolve_operator(db, body.rt, body.gateway)
 
     from src.db.models import ISPOperator
     _op = (await db.execute(select(ISPOperator).where(ISPOperator.id == operator_id))).scalar_one_or_none()
@@ -321,12 +363,13 @@ async def portal_authenticate(
     site_id: str | None = Form(None),
     link_login_only: str | None = Form(None),
     link_orig: str | None = Form(None),
+    rt: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
     if not code:
         raise HTTPException(status_code=400, detail="Please enter a voucher code")
 
-    operator_id, _ = await _resolve_operator_from_gateway(db, gateway)
+    operator_id, _ = await _resolve_operator(db, rt, gateway)
 
     code = code.strip().upper()
     result = await db.execute(select(Voucher).where(Voucher.code == code, Voucher.isp_operator_id == operator_id))
@@ -349,12 +392,16 @@ async def portal_authenticate(
 
 
 @router.get("/portal/mikrotik/login-template", response_class=HTMLResponse)
-async def portal_mikrotik_login_template():
+async def portal_mikrotik_login_template(rt: str = Query(None)):
     settings = get_settings()
     base = settings.effective_portal_public_base_url
     if not base:
         raise HTTPException(status_code=500, detail="Portal public base URL is not configured")
 
+    # rt is a signed router token baked in at provisioning time. It is a static
+    # string (no RouterOS variables), so it survives /tool fetch unchanged and
+    # rides along on every client redirect to identify this router/operator.
+    rt_field = f'\n    <input type="hidden" name="rt" value="{escape(rt, quote=True)}">' if rt else ""
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -363,7 +410,7 @@ async def portal_mikrotik_login_template():
   <title>Redirecting</title>
 </head>
 <body>
-  <form id="portal-redirect" action="{base}/portal/login" method="get">
+  <form id="portal-redirect" action="{base}/portal/login" method="get">{rt_field}
     <input type="hidden" name="mac" value="$(mac-esc)">
     <input type="hidden" name="ip" value="$(ip-esc)">
     <input type="hidden" name="gateway" value="$(server-address)">

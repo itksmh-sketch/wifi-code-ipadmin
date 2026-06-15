@@ -450,3 +450,109 @@ def test_setup_is_tenant_isolated(setup_env):
 def test_radius_secret_endpoint_requires_auth(setup_env):
     status, _ = _request("GET", f"/api/v1/admin/routers/{setup_env['router_id']}/nas-secret")
     assert status in (401, 403)
+
+
+# ─── Captive-portal redirect: signed router tokens + portal config ───────────
+
+
+class _FakeFetchResource:
+    """Stand-in for the RouterOS '/tool' resource used by /tool fetch."""
+    def __init__(self, sink):
+        self.sink = sink
+
+    def call(self, command, arguments=None):
+        self.sink.append({"command": command, "arguments": dict(arguments or {})})
+        return [{"status": "finished"}]
+
+
+class _FakeApi:
+    def __init__(self):
+        self.fetches = []
+
+    def get_resource(self, path):
+        return _FakeFetchResource(self.fetches)
+
+
+def test_portal_token_roundtrip_and_rejections():
+    from src.utils.portal_token import create_portal_router_token, decode_portal_router_token
+    from src.config import get_settings
+    from jose import jwt
+
+    rid = "33333333-3333-3333-3333-333333333333"
+    token = create_portal_router_token(rid)
+    assert decode_portal_router_token(token) == rid
+    # Absent / malformed tokens degrade to None (caller falls back to gateway).
+    assert decode_portal_router_token(None) is None
+    assert decode_portal_router_token("garbage") is None
+    # A foreign JWT (admin session secret) must never be accepted here.
+    s = get_settings()
+    foreign = jwt.encode({"router_id": rid, "iss": "admin"}, s.jwt_secret, algorithm="HS256")
+    assert decode_portal_router_token(foreign) is None
+    # Right secret but wrong purpose claim is rejected too.
+    wrong_purpose = jwt.encode({"router_id": rid, "purpose": "login"}, s.portal_token_secret, algorithm="HS256")
+    assert decode_portal_router_token(wrong_purpose) is None
+
+
+def test_configure_external_portal_bakes_token_and_derives_https_mode():
+    from urllib.parse import unquote
+    from src.utils.portal_token import create_portal_router_token, decode_portal_router_token
+
+    api = MikroTikAPIService()
+    runner = FakeRunner({
+        ("/ip/hotspot", "print"): [{".id": "*1", "name": "hotspot1", "profile": "hsprof1"}],
+        ("/ip/hotspot/profile", "print"): [{".id": "*9", "name": "hsprof1"}],
+        ("/ip/hotspot/walled-garden", "print"): [],
+        ("/ip/hotspot/walled-garden/ip", "print"): [],
+    })
+    runner.api = _FakeApi()
+    rid = "22222222-2222-2222-2222-222222222222"
+    token = create_portal_router_token(rid)
+    api._sync_configure_external_portal(runner, {"portal_base_url": "https://portal.example.com", "rt_token": token})
+
+    # Profile login-by updated by .id (item-based set, never by name).
+    prof = runner.sets("/ip/hotspot/profile")[0]["params"]
+    assert prof[".id"] == "*9" and "cookie" in prof["login-by"]
+    # Walled-garden allows the portal host pre-auth.
+    wg = runner.adds("/ip/hotspot/walled-garden")[0]["params"]
+    assert wg["dst-host"] == "portal.example.com" and wg["dst-port"] == "443"
+    # Both login pages fetched, https mode derived from the base URL scheme.
+    assert {f["arguments"]["dst-path"] for f in runner.api.fetches} == {"hotspot/login.html", "hotspot/rlogin.html"}
+    for f in runner.api.fetches:
+        assert f["arguments"]["mode"] == "https"
+        assert "/portal/mikrotik/login-template?rt=" in f["arguments"]["url"]
+    # The baked-in token decodes back to this router.
+    rt_in_url = unquote(runner.api.fetches[0]["arguments"]["url"].split("rt=", 1)[1])
+    assert decode_portal_router_token(rt_in_url) == rid
+
+
+def test_configure_external_portal_http_mode_and_no_token():
+    api = MikroTikAPIService()
+    runner = FakeRunner({
+        ("/ip/hotspot", "print"): [{".id": "*1", "name": "hotspot1", "profile": "hsprof1"}],
+        ("/ip/hotspot/profile", "print"): [{".id": "*9", "name": "hsprof1"}],
+        ("/ip/hotspot/walled-garden", "print"): [],
+        ("/ip/hotspot/walled-garden/ip", "print"): [],
+    })
+    runner.api = _FakeApi()
+    api._sync_configure_external_portal(runner, {"portal_base_url": "http://10.0.0.5:8000", "rt_token": None})
+    assert runner.api.fetches  # fetched
+    for f in runner.api.fetches:
+        assert f["arguments"]["mode"] == "http"
+        assert f["arguments"]["url"].endswith("/portal/mikrotik/login-template")  # no rt appended
+
+
+def test_login_template_embeds_token():
+    import asyncio
+    from src.portal.routes import portal_mikrotik_login_template
+    from src.utils.portal_token import create_portal_router_token
+
+    token = create_portal_router_token("44444444-4444-4444-4444-444444444444")
+    resp = asyncio.run(portal_mikrotik_login_template(rt=token))
+    body = resp.body.decode()
+    assert f'name="rt" value="{token}"' in body
+    # RouterOS variables are still present alongside the static token.
+    assert 'name="mac" value="$(mac-esc)"' in body
+    assert "/portal/login" in body
+    # No token -> no rt field rendered.
+    resp2 = asyncio.run(portal_mikrotik_login_template(rt=None))
+    assert 'name="rt"' not in resp2.body.decode()

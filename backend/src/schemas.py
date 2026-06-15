@@ -285,6 +285,7 @@ class PortalInitiatePaymentRequest(BaseModel):
     plan_id: uuid.UUID
     site_id: Optional[uuid.UUID] = None
     gateway: Optional[str] = None
+    rt: Optional[str] = None
     phone: Optional[str] = None
     payment_method: PaymentMethodEnum
 

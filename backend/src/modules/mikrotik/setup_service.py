@@ -617,3 +617,10 @@ class RouterSetupService:
 
     async def remove_duplicate_nat(self, router_id: str):
         return await self.apply(router_id, _op_remove_duplicate_nat, {})
+
+    async def apply_portal(self, router_id: str, portal_base_url: str, rt_token: str | None = None):
+        """Configure the captive-portal redirect: profile login-by, walled-garden
+        entries for the portal host, and overwrite login.html/rlogin.html with a
+        page that bounces clients to the platform portal (with the signed token)."""
+        result = await self.api.configure_external_portal(router_id, portal_base_url, rt_token)
+        return result.message, result.commands_executed

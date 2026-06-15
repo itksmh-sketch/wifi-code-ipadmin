@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     radius_coa_secret: str = "radius_secret_123"
     radius_accounting_secret: str = "acct_secret_123"
     encryption_key: str = "change_me_encryption_key_32chars!!"
+    # Signs router-bound captive-portal redirect tokens (see utils/portal_token.py).
+    # Kept distinct from the auth secrets so no session JWT is ever valid here.
+    portal_token_secret: str = "change_me_portal_token_in_production"
     admin_email: str = "admin@isp.com"
     admin_password: str = "admin123"
     platform_owner_email: str = "owner@yourdomain.com"

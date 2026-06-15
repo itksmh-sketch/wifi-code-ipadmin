@@ -11,6 +11,7 @@ from src.db.base import async_session_factory
 from src.db.models import ConfigTemplate, Router, RouterCredential, RouterProvisionLog
 from src.modules.mikrotik.api_service import MikroTikAPIService, MikroTikOperationError, RouterCredentialsMissingError
 from src.modules.mikrotik.template_engine import ConfigTemplateService, TemplateValidationError
+from src.utils.portal_token import create_portal_router_token
 
 settings = get_settings()
 
@@ -63,7 +64,11 @@ class MikroTikProvisioner:
             result = await self.api_service.set_hotspot_dns_name(router_id, dns_name=dns_name)
             await self._append_commands(log_id, result.commands_executed)
 
-            result = await self.api_service.configure_external_portal(router_id, settings.effective_portal_public_base_url)
+            result = await self.api_service.configure_external_portal(
+                router_id,
+                settings.effective_portal_public_base_url,
+                create_portal_router_token(router_id),
+            )
             await self._append_commands(log_id, result.commands_executed)
 
             if template_id:

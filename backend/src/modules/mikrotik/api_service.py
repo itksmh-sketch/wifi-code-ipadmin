@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import routeros_api
 from routeros_api.exceptions import RouterOsApiError
@@ -288,11 +288,13 @@ class MikroTikAPIService:
         )
         return ProvisionResult(success=True, message=result, commands_executed=commands)
 
-    async def configure_external_portal(self, router_id: str, portal_base_url: str) -> ProvisionResult:
+    async def configure_external_portal(
+        self, router_id: str, portal_base_url: str, rt_token: str | None = None
+    ) -> ProvisionResult:
         result, commands = await self._run_router_operation(
             router_id,
             self._sync_configure_external_portal,
-            data={"portal_base_url": portal_base_url},
+            data={"portal_base_url": portal_base_url, "rt_token": rt_token},
             timeout=max(self.command_timeout, self.connection_timeout + 10),
         )
         return ProvisionResult(success=True, message=result, commands_executed=commands)
@@ -653,9 +655,15 @@ class MikroTikAPIService:
             raise MikroTikOperationError("Portal public base URL is not configured", commands=runner.commands, status="offline")
 
         portal_url = f"{portal_base_url}/portal/mikrotik/login-template"
+        # Bake a router-bound signed token into the downloaded login page so the
+        # portal can resolve this router/operator without relying on gateway IPs.
+        rt_token = data.get("rt_token")
+        if rt_token:
+            portal_url = f"{portal_url}?rt={quote(rt_token, safe='')}"
         parsed = urlsplit(portal_base_url)
         if not parsed.scheme or not parsed.netloc:
             raise MikroTikOperationError("Portal public base URL must be an absolute URL", commands=runner.commands, status="offline")
+        fetch_mode = "https" if parsed.scheme == "https" else "http"
 
         servers = runner.execute("/ip/hotspot", "print")
         server = servers[0] if servers else None
@@ -675,8 +683,8 @@ class MikroTikAPIService:
         runner.execute("/ip/hotspot/profile", "set", params={".id": profile_id, "login-by": "cookie,http-pap,mac-cookie"})
         self._ensure_walled_garden_host(runner, parsed)
         self._ensure_walled_garden_ip(runner, parsed)
-        self._fetch_hotspot_file(runner, portal_url, "hotspot/login.html")
-        self._fetch_hotspot_file(runner, portal_url, "hotspot/rlogin.html")
+        self._fetch_hotspot_file(runner, portal_url, "hotspot/login.html", mode=fetch_mode)
+        self._fetch_hotspot_file(runner, portal_url, "hotspot/rlogin.html", mode=fetch_mode)
         return "External captive portal configured"
 
     def _sync_execute_template_commands(self, runner: SyncCommandRunner, data: dict[str, Any]) -> str:
@@ -742,19 +750,20 @@ class MikroTikAPIService:
             },
         )
 
-    def _fetch_hotspot_file(self, runner: SyncCommandRunner, url: str, dst_path: str) -> None:
+    def _fetch_hotspot_file(self, runner: SyncCommandRunner, url: str, dst_path: str, mode: str = "http") -> None:
         resource = runner.api.get_resource("/tool")
+        fetch_args = {"url": url, "dst-path": dst_path, "mode": mode, "keep-result": "yes"}
         entry = {
             "path": "/tool",
             "command": "fetch",
-            "params": _sanitize_mapping({"url": url, "dst-path": dst_path, "mode": "http", "keep-result": "yes"}),
+            "params": _sanitize_mapping(fetch_args),
             "queries": {},
             "status": "running",
             "started_at": _utcnow().isoformat(),
         }
         runner.commands.append(entry)
         try:
-            response = resource.call("fetch", arguments={"url": url, "dst-path": dst_path, "mode": "http", "keep-result": "yes"})
+            response = resource.call("fetch", arguments=fetch_args)
             entry["status"] = "success"
             entry["completed_at"] = _utcnow().isoformat()
             entry["response"] = _sanitize_value(response)
