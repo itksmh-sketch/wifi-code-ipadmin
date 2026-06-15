@@ -178,6 +178,52 @@ def test_hotspot_apply_creates_profile_when_missing_and_assigns_it():
     assert server_set and server_set[0]["params"][".id"] == "*7"
 
 
+def test_hotspot_apply_never_readds_builtin_default_profile():
+    # Field bug: a freshly-added hotspot server points at the built-in "default"
+    # profile, so profile_name resolves to "default". We must create/configure
+    # hsprof1 and repoint the server — never /ip/hotspot/profile/add name=default,
+    # which always already exists ("server profile with such name already exists").
+    runner = FakeRunner({
+        ("/ip/hotspot", "print"): [{".id": "*5", "name": "hotspot1", "profile": "default"}],
+        ("/ip/hotspot/profile", "print"): [],  # ?name=hsprof1 -> nothing yet
+        ("/ip/hotspot/user/profile", "print"): [{".id": "*2", "name": "default"}],
+    })
+    data = {"bridge_name": "bridge-hotspot", "dns_name": "ipadmin.local", "login_by": ["http-pap", "cookie"],
+            "session_timeout": 0, "idle_timeout": 0, "addresses_per_mac": 2, "pool_name": "hs-pool"}
+    svc._op_apply_hotspot(runner, data)
+
+    # We never try to (re)create the built-in default profile.
+    assert all(c["params"].get("name") != "default" for c in runner.adds("/ip/hotspot/profile"))
+
+    prof_add = runner.adds("/ip/hotspot/profile")[0]["params"]
+    assert prof_add["name"] == "hsprof1"
+    assert prof_add["dns-name"] == "ipadmin.local"
+
+    # The server is moved off "default" onto the configured profile.
+    server_set = [c for c in runner.sets("/ip/hotspot") if c["params"].get("profile") == "hsprof1"]
+    assert server_set and server_set[0]["params"][".id"] == "*5"
+
+
+def test_hotspot_apply_reuses_existing_hsprof1_via_set():
+    # Re-running provisioning (or a router already on hsprof1): resolve by name and
+    # set by .id — no add, no "already exists" error.
+    runner = FakeRunner({
+        ("/ip/hotspot", "print"): [{".id": "*5", "name": "hotspot1", "profile": "hsprof1"}],
+        ("/ip/hotspot/profile", "print"): [{".id": "*9", "name": "hsprof1"}],
+        ("/ip/hotspot/user/profile", "print"): [{".id": "*2", "name": "default"}],
+    })
+    data = {"bridge_name": "bridge-hotspot", "dns_name": "ipadmin.local", "login_by": ["http-pap", "cookie"],
+            "session_timeout": 0, "idle_timeout": 0, "addresses_per_mac": 2, "pool_name": "hs-pool"}
+    svc._op_apply_hotspot(runner, data)
+
+    assert not runner.adds("/ip/hotspot/profile")  # nothing created
+    prof_set = runner.sets("/ip/hotspot/profile")[0]["params"]
+    assert prof_set[".id"] == "*9"
+    assert prof_set["use-radius"] == "yes"
+    # Already on hsprof1, so no redundant server repoint.
+    assert not [c for c in runner.sets("/ip/hotspot") if "profile" in c["params"]]
+
+
 # ─── Generic template path: create-if-missing for named set commands ────────
 
 

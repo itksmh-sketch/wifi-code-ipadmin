@@ -253,9 +253,12 @@ def _op_apply_hotspot(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
         server = _find(servers, "name", HOTSPOT_SERVER_NAME) or {}
         profile_name = server.get("profile") or "hsprof1"
 
-    # 2. Server profile — login methods, RADIUS, DNS name
-    profiles = runner.execute("/ip/hotspot/profile", "print")
-    profile = _find(profiles, "name", profile_name) or _find(profiles, "name", "hsprof1")
+    # 2. Server profile — login methods, RADIUS, DNS name.
+    #    A freshly-added hotspot server points at RouterOS's built-in "default"
+    #    profile. We configure a dedicated "hsprof1" profile and point the server
+    #    at it. The built-in "default" always exists and cannot be re-created, so
+    #    we never /add a profile by that name — we resolve hsprof1 by a server-side
+    #    name query and either set it (if present) or add it (fresh router).
     login_by = ",".join(data.get("login_by") or ["http-pap", "cookie"])
     profile_params = {
         "login-by": login_by,
@@ -263,17 +266,19 @@ def _op_apply_hotspot(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
         "nas-port-type": "wireless-802.11",
         "dns-name": data["dns_name"],
     }
-    if profile and profile.get(".id"):
-        runner.execute("/ip/hotspot/profile", "set", params={**profile_params, ".id": profile[".id"]})
+    target_profile = "hsprof1" if profile_name in ("", "default") else profile_name
+    existing = _find(
+        runner.execute("/ip/hotspot/profile", "print", queries={"name": target_profile}),
+        "name",
+        target_profile,
+    )
+    if existing and existing.get(".id"):
+        runner.execute("/ip/hotspot/profile", "set", params={**profile_params, ".id": existing[".id"]})
     else:
-        # No matching profile exists yet (fresh router). /ip/hotspot/profile/set is
-        # item-based and needs a .id, so create the profile instead of trying to
-        # set one by name, then point the hotspot server at it — otherwise the
-        # server keeps using the built-in "default" profile and these RADIUS/login
-        # settings never take effect.
-        runner.execute("/ip/hotspot/profile", "add", params={**profile_params, "name": profile_name})
-        if server.get(".id"):
-            runner.execute("/ip/hotspot", "set", params={".id": server[".id"], "profile": profile_name})
+        runner.execute("/ip/hotspot/profile", "add", params={**profile_params, "name": target_profile})
+    # Point the hotspot server at the configured profile (it otherwise stays on "default").
+    if server.get(".id") and (server.get("profile") or "") != target_profile:
+        runner.execute("/ip/hotspot", "set", params={".id": server[".id"], "profile": target_profile})
 
     # 3. Default user profile — session/idle timeouts and devices-per-credential.
     #    (RouterOS keeps these on the user profile, not the server profile.)

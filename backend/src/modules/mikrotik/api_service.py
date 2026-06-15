@@ -704,7 +704,7 @@ class MikroTikAPIService:
         if params.get(".id") or "name" not in params:
             return "set", params
 
-        rows = runner.execute(path, "print")
+        rows = runner.execute(path, "print", queries={"name": params["name"]})
         target = next((row for row in rows if row.get("name") == params.get("name")), None)
         target_id = _routeros_id(target) if target else None
         if target_id:
