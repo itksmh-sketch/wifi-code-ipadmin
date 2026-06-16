@@ -10,6 +10,7 @@ const links = [
     { to: '/vouchers', label: 'Vouchers', icon: 'VC' },
     { to: '/sessions', label: 'Sessions', icon: 'SE' },
     { to: '/payment-credentials', label: 'Payments', icon: '$' },
+    { to: '/branding', label: 'Branding', icon: 'BR' },
     { to: '/billing', label: 'Billing', icon: '₵' },
 ];
 

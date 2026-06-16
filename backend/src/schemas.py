@@ -1,4 +1,4 @@
-from pydantic import BaseModel, BeforeValidator, field_validator
+from pydantic import BaseModel, BeforeValidator, Field, field_validator
 from typing import Annotated, Optional
 from datetime import datetime
 import uuid
@@ -279,6 +279,25 @@ class PaymentNextActionEnum(str, Enum):
     enter_birthday = "enter_birthday"
     enter_address = "enter_address"
     open_url = "open_url"
+
+
+class BrandingResponse(BaseModel):
+    portal_display_name: Optional[str] = None
+    logo_url: Optional[str] = None
+    primary_color: str
+    accent_color: str
+    background_gradient_start: str
+    welcome_message: str
+
+
+class BrandingUpdate(BaseModel):
+    # All optional: a PUT may set any subset. Passing null clears a field back to
+    # the platform default. Colours are validated as #RGB / #RRGGBB hex.
+    portal_display_name: Optional[str] = Field(None, max_length=120)
+    primary_color: Optional[str] = Field(None, pattern=r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+    accent_color: Optional[str] = Field(None, pattern=r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+    background_gradient_start: Optional[str] = Field(None, pattern=r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+    portal_welcome_message: Optional[str] = Field(None, max_length=500)
 
 
 class PortalInitiatePaymentRequest(BaseModel):

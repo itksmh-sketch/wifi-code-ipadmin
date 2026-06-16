@@ -41,6 +41,14 @@ class ISPOperator(Base):
     )
     trial_ends_at = Column(DateTime(timezone=True), nullable=True)
     onboarding_checklist = Column(JSONB, nullable=True, server_default="'{}'")
+    # Captive-portal branding (all nullable; defaults applied at read time so an
+    # unconfigured operator renders identically to the original hardcoded portal).
+    portal_display_name = Column(Text, nullable=True)
+    logo_url = Column(Text, nullable=True)
+    primary_color = Column(Text, nullable=True)
+    accent_color = Column(Text, nullable=True)
+    background_gradient_start = Column(Text, nullable=True)
+    portal_welcome_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

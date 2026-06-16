@@ -8,6 +8,7 @@ import Plans from './pages/Plans';
 import Vouchers from './pages/Vouchers';
 import Sessions from './pages/Sessions';
 import PaymentCredentials from './pages/PaymentCredentials';
+import Branding from './pages/Branding';
 import PlatformLogin from './pages/platform/PlatformLogin';
 import PlatformOperators from './pages/platform/PlatformOperators';
 import PlatformOperatorNew from './pages/platform/PlatformOperatorNew';
@@ -55,8 +56,11 @@ export class ApiError extends Error {
 
 async function request(endpoint, options, { tokenKey, loginPath }) {
     const token = localStorage.getItem(tokenKey);
+    // Let the browser set the multipart boundary for FormData uploads; only force
+    // JSON for regular bodies.
+    const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
     const headers = {
-        'Content-Type': 'application/json',
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
         ...options.headers,
     };
     if (token) {
@@ -193,6 +197,7 @@ export default function App() {
                                             <Route path="/vouchers" element={<Vouchers />} />
                                             <Route path="/sessions" element={<Sessions />} />
                                             <Route path="/payment-credentials" element={<PaymentCredentials />} />
+                                            <Route path="/branding" element={<Branding />} />
                                             <Route path="/billing" element={<Billing />} />
                                             <Route path="*" element={<Navigate to="/" />} />
                                         </Routes>

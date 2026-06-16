@@ -23,6 +23,7 @@ from src.modules.vouchers.routes import router as vouchers_router
 from src.modules.sessions.routes import router as sessions_router
 from src.modules.payments.routes import router as payments_router
 from src.modules.payments.credentials_routes import router as payment_credentials_router
+from src.modules.branding.routes import router as branding_router
 from src.modules.webhooks.routes import router as webhooks_router
 from src.radius.routes import router as radius_router
 from src.portal.routes import router as portal_router
@@ -77,6 +78,7 @@ app.include_router(vouchers_router, prefix="/api/v1")
 app.include_router(sessions_router, prefix="/api/v1")
 app.include_router(payments_router, prefix="/api/v1")
 app.include_router(payment_credentials_router, prefix="/api/v1")
+app.include_router(branding_router, prefix="/api/v1")
 app.include_router(radius_router, prefix="/api/v1")
 app.include_router(webhooks_router)
 app.include_router(portal_router)

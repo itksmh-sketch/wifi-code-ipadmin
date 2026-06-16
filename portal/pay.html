@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pay - ISP Hotspot</title>
     <link rel="stylesheet" href="/portal/statics/style.css">
+    <script defer src="/portal/statics/branding.js"></script>
 </head>
 <body>
     <div class="container">
@@ -173,6 +174,7 @@
                 stopPolling();
                 var target = "/portal/success?ref=" + encodeURIComponent(internalReference || body.internal_reference || "");
                 if(gateway) target += "&gateway=" + encodeURIComponent(gateway);
+                if(rt) target += "&rt=" + encodeURIComponent(rt);
                 window.location.href = target;
                 return;
             }

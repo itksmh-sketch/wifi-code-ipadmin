@@ -13,13 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
 from src.db.base import get_db
-from src.db.models import PaymentTransaction, Plan, Router, Site, Voucher
+from src.db.models import ISPOperator, PaymentTransaction, Plan, Router, Site, Voucher
 from src.middleware.rate_limit import enforce_rate_limit
+from src.modules.branding.service import build_branding
 from src.modules.payments.dependencies import get_payment_service
 from src.modules.payments.service import PaymentService
 from src.modules.payments.types import PaymentMethod, PaymentStatus
 from src.utils.portal_token import decode_portal_router_token
 from src.schemas import (
+    BrandingResponse,
     PortalContinuePaymentRequest,
     PortalAuthenticateResponse,
     PlanResponse,
@@ -424,6 +426,20 @@ async def portal_mikrotik_login_template(rt: str = Query(None)):
 </body>
 </html>"""
     return HTMLResponse(content=html)
+
+
+@router.get("/portal/branding/{rt}", response_model=BrandingResponse)
+async def portal_branding(rt: str, db: AsyncSession = Depends(get_db)):
+    """Public branding for the captive portal, keyed on the signed router token.
+    A missing/invalid/unknown token resolves to platform-wide defaults — this must
+    never error, so the portal always has something to render."""
+    operator = None
+    resolved = await _resolve_operator_from_token(db, rt)
+    if resolved is not None:
+        operator = (
+            await db.execute(select(ISPOperator).where(ISPOperator.id == resolved[0]))
+        ).scalar_one_or_none()
+    return build_branding(operator)
 
 
 @router.get("/portal/statics/{file_path:path}")
