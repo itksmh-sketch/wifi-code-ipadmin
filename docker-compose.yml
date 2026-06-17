@@ -253,6 +253,14 @@ services:
   freeradius:
     image: freeradius/freeradius-server:3.2.6
     container_name: hotspot-freeradius
+    # PRIMARY runs on the host network so tunneled routers reach it at
+    # 10.100.0.1:1812/1813 and FreeRADIUS sees their true 10.100.0.x source IPs
+    # (under bridge + userland-proxy, UDP sources were masked as 172.x, defeating
+    # per-router SQL clients). The listeners bind 0.0.0.0/* (shared config with
+    # the bridge-networked secondary, so we must NOT pin to 10.100.0.1) — this
+    # also exposes 1812/1813 on the VM's public interface, which MUST be closed
+    # by a host firewall DROP on the public NIC (allow only wg0/10.100.0.0/24).
+    network_mode: host
     entrypoint:
       - /bin/sh
       - -c
@@ -260,19 +268,21 @@ services:
       - |
         ln -sf /etc/freeradius/mods-available/sql /etc/freeradius/mods-enabled/sql
         cp /overrides/sql.conf /etc/freeradius/mods-enabled/sql
+        # Host networking has no Docker DNS, so the service name "postgres" won't
+        # resolve. Postgres publishes 5432 on the host, so reach it via loopback.
+        # Rewrite only this container's copy — the shared override file (and the
+        # bridge-networked secondary that still uses "postgres") are untouched.
+        sed -i 's/host=postgres/host=127.0.0.1/' /etc/freeradius/mods-enabled/sql
         cp /overrides/default /etc/freeradius/sites-enabled/default
         cp /overrides/clients.conf /etc/freeradius/clients.conf
         chmod 640 /etc/freeradius/mods-enabled/sql /etc/freeradius/sites-enabled/default /etc/freeradius/clients.conf
         exec /docker-entrypoint.sh freeradius
-    ports:
-      - "1812:1812/udp"
-      - "1813:1813/udp"
     volumes:
       - ./freeradius/sql.conf:/overrides/sql.conf:ro
       - ./freeradius/sites-enabled/default:/overrides/default:ro
       - ./freeradius/clients.conf:/overrides/clients.conf:ro
     environment:
-      POSTGRES_HOST: postgres
+      POSTGRES_HOST: 127.0.0.1
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-hotspot_db}
       POSTGRES_USER: ${POSTGRES_USER:-hotspot_user}

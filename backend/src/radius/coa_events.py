@@ -41,14 +41,16 @@ async def send_disconnect_with_event(
     try:
         if session is None or not session.ip_address:
             raise ValueError("missing_active_session_ip_address")
-        if not router.ip_address:
-            # CoA/Disconnect is sent directly to the NAS at its IP; a tunnel-only
-            # router with no direct IP cannot be reached this way.
-            raise ValueError("router_has_no_ip_address")
+        # VPN-only platform: reach the NAS over its WireGuard tunnel IP (same rule
+        # as resolve_radius_host). ip_address is a display-only fallback for any
+        # legacy non-tunneled router; a router with neither is unreachable.
+        target_ip = str(router.wg_tunnel_ip) if router.wg_tunnel_ip else (str(router.ip_address) if router.ip_address else None)
+        if not target_ip:
+            raise ValueError("router_has_no_reachable_ip")
 
         decrypted_secret = decrypt_secret(router.nas_secret)
         result = send_disconnect_request(
-            router_ip=str(router.ip_address),
+            router_ip=target_ip,
             router_secret=decrypted_secret,
             attributes={
                 "User-Name": session.username,

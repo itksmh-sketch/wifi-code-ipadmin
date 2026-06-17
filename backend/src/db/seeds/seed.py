@@ -145,6 +145,7 @@ async def seed():
                 ip_address="192.168.1.1",
                 nas_identifier="router-osu-01",
                 nas_secret=encrypt_secret("testing123"),
+                nas_secret_plain="testing123",  # FreeRADIUS client_query reads this
                 is_active=True,
             )
             db.add(router1)
@@ -165,6 +166,7 @@ async def seed():
                 ip_address="192.168.1.2",
                 nas_identifier="router-eastlegon-01",
                 nas_secret=encrypt_secret("testing123"),
+                nas_secret_plain="testing123",  # FreeRADIUS client_query reads this
                 is_active=True,
             )
             db.add(router2)

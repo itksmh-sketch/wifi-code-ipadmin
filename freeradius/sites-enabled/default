@@ -18,6 +18,17 @@ server default {
         # Filter out bad packets
         filter_username
 
+        # Rollback-safety visibility: a router request should match its own
+        # per-router SQL client. If it instead matched the static catch-all
+        # (shared testing123 secret), make it loud — it means the per-router
+        # client_query row is missing or the source IP is being SNATed. Surfaced
+        # in radiusd -X and the auth log via Module-Failure-Message.
+        if ("%{client:shortname}" == "CATCHALL_docker_network") {
+            update control {
+                Module-Failure-Message := "CATCHALL client matched: src=%{Packet-Src-IP-Address} user=%{User-Name} authenticated via shared secret, NOT a per-router SQL client"
+            }
+        }
+
         # SQL-based voucher authentication
         sql_hotspot
 
