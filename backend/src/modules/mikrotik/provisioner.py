@@ -51,9 +51,10 @@ class MikroTikProvisioner:
     async def _run_provision(self, *, router_id: str, log_id: str, dns_name: str, hotspot_interface: str | None, template_id: str | None) -> None:
         try:
             await self._append_step_meta(log_id, {"step": "starting", "message": "Provisioning started", "hotspot_interface": hotspot_interface})
+            radius_host = await self._radius_host_for(router_id)
             result = await self.api_service.set_radius_server(
                 router_id,
-                radius_host=settings.radius_public_host,
+                radius_host=radius_host,
                 radius_secret=await self._get_router_nas_secret(router_id),
             )
             await self._append_commands(log_id, result.commands_executed)
@@ -77,7 +78,7 @@ class MikroTikProvisioner:
                     result = await self.template_service.apply_template(db, router_id=router_id, template_id=template_id, dns_name=dns_name)
                 await self._append_commands(log_id, result.commands_executed)
 
-            result = await self.api_service.verify_radius_host(router_id, settings.radius_public_host)
+            result = await self.api_service.verify_radius_host(router_id, radius_host)
             await self._append_commands(log_id, result.commands_executed)
             await self._mark_log_complete(log_id, status="success")
         except (MikroTikOperationError, RouterCredentialsMissingError, TemplateValidationError) as exc:
@@ -112,6 +113,17 @@ class MikroTikProvisioner:
             if router is None:
                 raise ValueError("Router not found")
             return decrypt_secret(router.nas_secret)
+
+    async def _radius_host_for(self, router_id: str) -> str:
+        """RADIUS server address to push to this router — the server's tunnel IP
+        for tunneled routers, RADIUS_PUBLIC_HOST otherwise. See radius_host."""
+        from src.modules.mikrotik.radius_host import resolve_radius_host
+
+        async with async_session_factory() as db:
+            router = await db.get(Router, router_id)
+            if router is None:
+                raise ValueError("Router not found")
+            return resolve_radius_host(router, settings)
 
     async def _append_step_meta(self, log_id: str, entry: dict[str, Any]) -> None:
         async with async_session_factory() as db:

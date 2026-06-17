@@ -97,9 +97,11 @@ class ConfigTemplateService:
         if router is None:
             raise TemplateValidationError("Router not found")
 
+        from src.modules.mikrotik.radius_host import resolve_radius_host
+
         rendered = self.render_template(
             template.template_data,
-            radius_host=self._radius_host(),
+            radius_host=resolve_radius_host(router),
             nas_secret=decrypt_secret(router.nas_secret),
             dns_name=dns_name,
         )
@@ -148,8 +150,3 @@ class ConfigTemplateService:
                 return path[: -len(suffix)], action
         return path, "set"
 
-    def _radius_host(self) -> str:
-        from src.config import get_settings
-
-        settings = get_settings()
-        return settings.radius_public_host

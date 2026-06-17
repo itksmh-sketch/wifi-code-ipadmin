@@ -50,6 +50,7 @@ class RouterAccess:
     api_password: str
     use_ssl: bool
     nas_secret: str
+    wg_tunnel_ip: str | None = None
 
 
 @dataclass
@@ -428,6 +429,7 @@ class MikroTikAPIService:
                 api_password=decrypt_secret(credentials.api_password_encrypted),
                 use_ssl=bool(credentials.use_ssl),
                 nas_secret=decrypt_secret(router.nas_secret),
+                wg_tunnel_ip=str(router.wg_tunnel_ip) if router.wg_tunnel_ip else None,
             )
 
     async def _update_router_connection_status(self, router_id: str, status: str) -> None:

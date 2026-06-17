@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from src.config import get_settings
 from src.modules.mikrotik.api_service import MikroTikAPIService
+from src.modules.mikrotik.radius_host import resolve_radius_host
 from src.modules.mikrotik.types import DiagnosticCheck, DiagnosticsResponse
 
 settings = get_settings()
@@ -113,14 +114,15 @@ class MikroTikDiagnosticsService:
                 operation=lambda runner: self.api_service._sync_get_radius_config(runner, {}),
                 timeout=self.api_service.command_timeout,
             )
-            correct = any(cfg.address == settings.radius_public_host for cfg in configs)
+            expected_host = resolve_radius_host(access, settings)
+            correct = any(cfg.address == expected_host for cfg in configs)
             if not configs:
                 return DiagnosticCheck(name="radius_config", status="fail", message="No RADIUS entries configured", data={})
             if not correct:
                 return DiagnosticCheck(
                     name="radius_config",
                     status="fail",
-                    message=f"RADIUS entry does not point to {settings.radius_public_host}",
+                    message=f"RADIUS entry does not point to {expected_host}",
                     data={"radius_entries": [cfg.model_dump() for cfg in configs]},
                 )
             return DiagnosticCheck(

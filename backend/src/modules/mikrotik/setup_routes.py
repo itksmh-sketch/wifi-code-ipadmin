@@ -21,6 +21,7 @@ from src.middleware.auth import TenantContext, get_admin_tenant_context
 from src.modules.mikrotik.api_service import MikroTikOperationError, RouterCredentialsMissingError
 from src.modules.mikrotik import setup_service as svc
 from src.modules.mikrotik import setup_status as store
+from src.modules.mikrotik.radius_host import resolve_radius_host
 from src.modules.mikrotik.setup_types import (
     ApplyResultResponse,
     HotspotApplyRequest,
@@ -55,10 +56,6 @@ async def _load_router(db: AsyncSession, router_id: uuid.UUID, tenant: TenantCon
 
 def _is_online(router: Router) -> bool:
     return bool(router.is_online) or bool(router.wg_enabled and router.wg_is_connected)
-
-
-def _radius_host() -> str:
-    return (settings.radius_public_host or "").strip()
 
 
 def _router_secret(router_row: Router) -> str:
@@ -239,12 +236,12 @@ async def apply_hotspot(router_id: uuid.UUID, body: HotspotApplyRequest, db: Asy
 
 @router.get("/routers/{router_id}/setup/radius/detect")
 async def detect_radius(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
-    await _load_router(db, router_id, tenant)
+    router_row = await _load_router(db, router_id, tenant)
     try:
         detected, _ = await setup.detect_radius(str(router_id))
     except (RouterCredentialsMissingError, MikroTikOperationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    radius_host = _radius_host()
+    radius_host = resolve_radius_host(router_row, settings)
     status = svc.derive_radius_status(detected, radius_host)
     # Warn if an entry points somewhere other than the platform host.
     other = [e.get("address") for e in detected.get("entries", []) if e.get("address") and e.get("address") != radius_host]
@@ -257,9 +254,13 @@ async def apply_radius(router_id: uuid.UUID, body: RadiusApplyRequest, db: Async
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
         raise HTTPException(status_code=409, detail=OFFLINE_MESSAGE)
-    radius_host = _radius_host()
+    # Tunnel-only platform: a router reached over WireGuard must point its RADIUS
+    # client at the server's tunnel IP, not RADIUS_PUBLIC_HOST (unreachable from
+    # the tunnel). resolve_radius_host() falls back to RADIUS_PUBLIC_HOST only for
+    # a (currently unreachable) non-tunneled router.
+    radius_host = resolve_radius_host(router_row, settings)
     if not radius_host:
-        raise HTTPException(status_code=422, detail="Platform RADIUS host (RADIUS_PUBLIC_HOST) is not configured")
+        raise HTTPException(status_code=422, detail="Platform RADIUS host is not configured (set WG_SERVER_TUNNEL_IP or RADIUS_PUBLIC_HOST)")
 
     # Decrypt the router's unique shared secret server-side — never sent to client.
     secret = _router_secret(router_row)
