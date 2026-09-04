@@ -87,6 +87,21 @@ class Settings(BaseSettings):
     wg_manager_url: str = "http://127.0.0.1:8999"     # wg-manager sidecar (localhost only)
     wg_handshake_timeout_seconds: int = 180           # peer considered offline after this
 
+    # Platform service health monitor (read-only status display).
+    # Secret used only for local RADIUS Status-Server probes against the
+    # `client localhost` / `docker_network` entries in freeradius/clients.conf
+    # (both already carry this value in the committed config). It never
+    # authenticates a router — override per-environment via .env if those
+    # static client secrets are ever changed.
+    radius_status_secret: str = "testing123"
+    radius_primary_auth_port: int = 1812
+    radius_primary_acct_port: int = 1813
+    radius_secondary_auth_port: int = 2812
+    radius_secondary_acct_port: int = 2813
+    postgres_direct_port: int = 5432                  # FreeRADIUS connects here, bypassing PgBouncer
+    health_check_timeout_seconds: float = 1.5         # per-probe cap; a down service must fail fast
+    worker_heartbeat_stale_seconds: int = 4200        # arq default health_check_interval (3600) + slack
+
     @property
     def effective_portal_public_base_url(self) -> str:
         base = (self.portal_public_base_url or self.webhook_base_url or "").strip().rstrip("/")

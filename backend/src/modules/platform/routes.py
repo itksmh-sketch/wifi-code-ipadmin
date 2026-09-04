@@ -694,3 +694,23 @@ async def update_platform_settings(
         await set_setting(db, key, str(value if value is not None else ""))
     await db.commit()
     return await get_all_settings(db)
+
+
+# --- Service health monitor (platform owner only, strictly read-only) ---
+
+@router.get("/health/services")
+async def platform_service_health(
+    _: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Per-service up/down/degraded status for the platform health monitor.
+
+    Read-only by design: it probes reachability and app-level health endpoints
+    the backend can already reach, and exposes no lifecycle controls. Restarting
+    a service is Docker-daemon territory and is deliberately out of scope.
+
+    Each probe opens its own connection, so a hung dependency can never
+    invalidate the session this request is authenticated on.
+    """
+    from src.modules.platform.health_service import collect_service_health
+
+    return await collect_service_health()
