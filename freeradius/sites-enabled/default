@@ -78,3 +78,52 @@ server default {
         }
     }
 }
+
+# Dynamic SQL client discovery virtual server.
+#
+# Called when a packet arrives from a 10.100.0.x IP that is not in the
+# in-memory client table (i.e. a router added after FreeRADIUS last started).
+# Sets FreeRADIUS-Client-* attributes from the routers table; the discovered
+# client is cached for FreeRADIUS-Client-Lifetime seconds (300 s).
+#
+# Security: only IPs in the wg_vpn_dynamic /24 block reach this server (set in
+# clients.conf). The ::inet cast rejects non-IP strings before Postgres sees
+# them. An empty secret means no matching active router row — rejected below,
+# no client registered. Even if a rogue WireGuard peer triggers the lookup, it
+# still must prove knowledge of the correct per-router secret via the RADIUS
+# MD5 authenticator before any access is granted.
+#
+# Deactivation lag: startup-loaded clients (read_clients) have no TTL and
+# require a FreeRADIUS restart to deactivate. Dynamic clients cached here
+# expire within 300 s of is_active being set false in the DB — after which the
+# next packet re-queries SQL, finds nothing, and is rejected. For immediate
+# deactivation of a dynamic client, a SIGHUP clears the dynamic cache.
+server dynamic_sql_client_server {
+    authorize {
+        # Fetch per-router secret. Empty result = no active router at this IP.
+        update control {
+            &FreeRADIUS-Client-Secret := "%{sql_hotspot: SELECT nas_secret_plain \
+                FROM routers \
+                WHERE wg_tunnel_ip = '%{Packet-Src-IP-Address}'::inet \
+                  AND is_active = true \
+                  AND nas_secret_plain IS NOT NULL \
+                LIMIT 1}"
+        }
+
+        if (&control:FreeRADIUS-Client-Secret == "") {
+            reject
+        }
+
+        update control {
+            &FreeRADIUS-Client-IP-Address := "%{Packet-Src-IP-Address}"
+            &FreeRADIUS-Client-Shortname  := "%{sql_hotspot: SELECT name \
+                FROM routers \
+                WHERE wg_tunnel_ip = '%{Packet-Src-IP-Address}'::inet \
+                  AND is_active = true \
+                LIMIT 1}"
+            &FreeRADIUS-Client-NAS-Type   := "other"
+        }
+
+        ok
+    }
+}

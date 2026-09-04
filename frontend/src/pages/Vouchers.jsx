@@ -1,13 +1,23 @@
 import React, { useEffect, useState } from 'react';
 import { apiCall } from '../App';
 
+// Server-side bounds live in vouchers/engine.py (MIN_CODE_LENGTH / MAX_CODE_LENGTH);
+// these are the offered steps, and the API re-validates whatever is sent.
+const CODE_LENGTHS = [8, 10, 12, 14, 16, 18, 20, 22, 24];
+
+// Mirrors generate_voucher_code(): groups of 4, dash separated, short last group.
+function sampleCode(length) {
+    const n = parseInt(length) || 16;
+    return 'XXXXXXXXXXXXXXXXXXXXXXXX'.slice(0, n).match(/.{1,4}/g).join('-');
+}
+
 export default function Vouchers() {
     const [vouchers, setVouchers] = useState([]);
     const [total, setTotal] = useState(0);
     const [plans, setPlans] = useState([]);
     const [filters, setFilters] = useState({ status: '', plan_id: '', batch_id: '' });
     const [showForm, setShowForm] = useState(false);
-    const [form, setForm] = useState({ plan_id: '', quantity: 10, device_policy: 'single' });
+    const [form, setForm] = useState({ plan_id: '', quantity: 10, device_policy: 'single', code_length: 16 });
     const [loading, setLoading] = useState(true);
     const [generatedVouchers, setGeneratedVouchers] = useState(null);
 
@@ -35,6 +45,7 @@ export default function Vouchers() {
             plan_id: form.plan_id,
             quantity: parseInt(form.quantity),
             device_policy: form.device_policy,
+            code_length: parseInt(form.code_length),
         };
         try {
             const res = await apiCall('/vouchers/generate', { method: 'POST', body: JSON.stringify(body) });
@@ -118,6 +129,17 @@ export default function Vouchers() {
                         <div className="form-group">
                             <label>Quantity</label>
                             <input type="number" min="1" max="500" value={form.quantity} onChange={e => setForm({...form, quantity: e.target.value})} />
+                        </div>
+                        <div className="form-group">
+                            <label>Code Length</label>
+                            <select value={form.code_length} onChange={e => setForm({...form, code_length: e.target.value})}>
+                                {CODE_LENGTHS.map(n => (
+                                    <option key={n} value={n}>{n} characters{n === 16 ? ' (default)' : ''}</option>
+                                ))}
+                            </select>
+                            <small style={{ color: '#6b7280' }}>
+                                Letters and digits only, printed in groups of 4 &mdash; e.g. {sampleCode(form.code_length)}
+                            </small>
                         </div>
                         <div className="form-group">
                             <label>Device Policy</label>

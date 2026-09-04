@@ -318,7 +318,13 @@ def test_invoice_payment_uses_platform_billing_keys():
 # ---------------------------------------------------------------------------
 
 def test_platform_billing_webhook_marks_paid_and_reactivates():
-    """Spec #7 -- POST webhook, confirm invoice paid, suspended operator reactivated."""
+    """Spec #7 -- POST webhook, confirm invoice paid, suspended operator reactivated.
+
+    The endpoint fails closed: when PLATFORM_BILLING_PAYSTACK_WEBHOOK_SECRET is
+    unset it cannot verify anything, so it must reject with 403 and leave all
+    billing state untouched. Both states are asserted here so neither the happy
+    path nor the fail-closed guard can regress unnoticed.
+    """
     try:
         from src.db.base import engine
         engine.sync_engine.dispose()
@@ -364,8 +370,12 @@ def test_platform_billing_webhook_marks_paid_and_reactivates():
     }
     raw = json.dumps(payload).encode()
     from src.config import get_settings
-    secret = get_settings().platform_billing_paystack_webhook_secret or "test-secret"
-    sig = hmac.new(secret.encode(), raw, hashlib.sha512).hexdigest()
+    secret = get_settings().platform_billing_paystack_webhook_secret
+    # With no secret configured the request cannot be signed into validity, and
+    # the endpoint must refuse it outright rather than process it unverified.
+    signing_key = secret or "unconfigured-placeholder"
+    expected_status = 200 if secret else 403
+    sig = hmac.new(signing_key.encode(), raw, hashlib.sha512).hexdigest()
 
     # Post to platform billing webhook
     import urllib.request, urllib.error
@@ -384,7 +394,7 @@ def test_platform_billing_webhook_marks_paid_and_reactivates():
         status = e.code
         body = json.loads(e.read().decode())
 
-    assert status == 200, body
+    assert status == expected_status, body
 
     async def verify():
         async with async_session_factory() as db:
@@ -393,11 +403,17 @@ def test_platform_billing_webhook_marks_paid_and_reactivates():
                 select(OperatorInvoice).where(OperatorInvoice.id == invoice_id)
             )).scalar_one_or_none()
             assert invoice is not None
-            assert invoice.status == "paid"
-
             op = await db.get(ISPOperator, operator_id)
-            assert op.status == "approved"
-            assert op.billing_status == "active"
+
+            if secret:
+                assert invoice.status == "paid"
+                assert op.status == "approved"
+                assert op.billing_status == "active"
+            else:
+                # Rejected before processing: no billing state may have moved.
+                assert invoice.status != "paid"
+                assert op.status == "suspended"
+                assert op.billing_status == "past_due"
 
     run_async(verify())
 

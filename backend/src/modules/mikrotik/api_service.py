@@ -548,7 +548,7 @@ class MikroTikAPIService:
         rows = runner.execute("/ip/hotspot", "print")
         return [
             HotspotServerInfo(
-                id=row.get(".id"),
+                id=_routeros_id(row),
                 name=row.get("name", ""),
                 interface=row.get("interface"),
                 profile=row.get("profile"),
@@ -562,7 +562,7 @@ class MikroTikAPIService:
         rows = runner.execute("/ip/hotspot/active", "print")
         return [
             ActiveUserInfo(
-                id=row.get(".id"),
+                id=_routeros_id(row),
                 user=row.get("user"),
                 address=row.get("address"),
                 mac_address=row.get("mac-address"),
@@ -591,13 +591,12 @@ class MikroTikAPIService:
 
     def _sync_set_radius_server(self, runner: SyncCommandRunner, data: dict[str, Any]) -> str:
         rows = runner.execute("/radius", "print")
-        matching = None
+        matches = []
         for row in rows:
             service_value = row.get("service") or ""
             services = {part.strip() for part in str(service_value).split(",") if part.strip()}
             if data["service"] in services or row.get("address") == data["radius_host"]:
-                matching = row
-                break
+                matches.append(row)
 
         params = {
             "service": data["service"],
@@ -606,13 +605,20 @@ class MikroTikAPIService:
             "authentication-port": data["auth_port"],
             "accounting-port": data["accounting_port"],
         }
-        matching_id = _routeros_id(matching) if matching else None
-        if matching and matching_id:
-            params[".id"] = matching_id
+        first_id = _routeros_id(matches[0]) if matches else None
+        if matches and first_id:
+            params[".id"] = first_id
             runner.execute("/radius", "set", params=params)
-            return "RADIUS server updated"
-        runner.execute("/radius", "add", params=params)
-        return "RADIUS server added"
+            for extra in matches[1:]:
+                extra_id = _routeros_id(extra)
+                if extra_id:
+                    runner.execute("/radius", "remove", params={".id": extra_id})
+        else:
+            runner.execute("/radius", "add", params=params)
+        # Enable incoming CoA/Disconnect-Request so voucher disable and cap
+        # enforcement can terminate live sessions via RADIUS disconnect.
+        runner.execute("/radius/incoming", "set", params={"accept": "yes"})
+        return "RADIUS server updated" if (matches and first_id) else "RADIUS server added"
 
     def _sync_enable_hotspot_radius(self, runner: SyncCommandRunner, data: dict[str, Any]) -> str:
         servers = runner.execute("/ip/hotspot", "print")
@@ -620,17 +626,23 @@ class MikroTikAPIService:
         if server is None:
             raise MikroTikOperationError("Hotspot server not found", commands=runner.commands, status="offline")
 
+        # Always target hsprof1. If the server is on "default", rebind it first —
+        # enabling use-radius on "default" would give working auth but a broken
+        # captive portal, since portal redirect, DNS name, and walled-garden all
+        # live on hsprof1.
         profiles = runner.execute("/ip/hotspot/profile", "print")
-        profile_name = server.get("profile") or "hsprof1"
-        profile = next((row for row in profiles if row.get("name") == profile_name), None) or next(
-            (row for row in profiles if row.get("name") == "hsprof1"),
-            None,
-        )
+        profile = next((row for row in profiles if row.get("name") == "hsprof1"), None)
         profile_id = _routeros_id(profile) if profile else None
         if profile is None or not profile_id:
-            raise MikroTikOperationError("Hotspot profile not found", commands=runner.commands, status="offline")
+            raise MikroTikOperationError("hsprof1 not found — run hotspot apply first", commands=runner.commands, status="offline")
         runner.execute("/ip/hotspot/profile", "set", params={".id": profile_id, "use-radius": "yes"})
-        return f"Hotspot profile {profile.get('name') or profile_name} now uses RADIUS"
+
+        # Bind the hotspot server to hsprof1 if it isn't already.
+        server_id = _routeros_id(server)
+        if server_id and server.get("profile") != "hsprof1":
+            runner.execute("/ip/hotspot", "set", params={".id": server_id, "profile": "hsprof1"})
+
+        return "hsprof1 now uses RADIUS; hotspot server bound to hsprof1"
 
     def _sync_set_hotspot_dns_name(self, runner: SyncCommandRunner, data: dict[str, Any]) -> str:
         servers = runner.execute("/ip/hotspot", "print")
@@ -875,6 +887,7 @@ def _sanitize_value(value: Any) -> Any:
 
 
 def _routeros_id(row: dict[str, Any] | None) -> str | None:
+    # routeros_api returns the object ID as 'id' (no dot) for most paths — never use .get(".id") directly.
     if not row:
         return None
     return row.get(".id") or row.get("id")

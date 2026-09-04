@@ -176,7 +176,7 @@ function renderTable(rows) {
   tbody.innerHTML = rows.map(op => `
     <tr>
       <td>
-        <div style="font-weight:600">${escHtml(op.name)}</div>
+        <div style="font-weight:600"><a href="/platform/operators/${op.id}">${escHtml(op.name)}</a></div>
         <div class="text-muted">${escHtml(op.slug)}</div>
         <div class="text-muted">${escHtml(op.contact_email)}</div>
       </td>

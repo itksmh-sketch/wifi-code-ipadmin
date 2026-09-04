@@ -15,10 +15,20 @@ from src.db.models import (
     OperatorPaymentCredential,
     PaymentTransaction,
     PlatformOwner,
+    Plan,
+    Router,
+    RouterCredential,
+    RouterSetupStatus,
     Session,
+    Site,
+    Town,
     Voucher,
 )
 from src.middleware.auth import get_platform_owner_context
+from src.modules.mikrotik import setup_status as setup_store
+# Reuse the admin view's reachability predicate verbatim so the platform
+# drill-down can never disagree with what an operator's own dashboard shows.
+from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 from src.middleware.rate_limit import enforce_rate_limit
 from src.schemas import LoginRequest, PlatformAdminCreate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, RefreshRequest, TokenResponse
 from src.utils.auth import (
@@ -200,6 +210,12 @@ async def get_operator(
         "last_validated_at": creds.last_validated_at if creds else None,
         "last_validation_error": creds.last_validation_error if creds else None,
     }
+    # The detail page renders total_sessions; without this it only ever came from
+    # /summary, so the page showed 0. Kept out of _operator_row so the list
+    # endpoint doesn't pick up another per-operator query.
+    row["total_sessions"] = (
+        await db.execute(select(func.count()).select_from(Session).where(Session.isp_operator_id == operator.id))
+    ).scalar() or 0
     return row
 
 
@@ -302,7 +318,222 @@ async def operator_summary(
 
 
 # ---------------------------------------------------------------------------
+# Operator infrastructure drill-down (read-only)
+# ---------------------------------------------------------------------------
+# Platform-owner scope only, and deliberately cross-tenant: the owner sees every
+# operator's estate. Strictly a projection — no writes, no router contact, and
+# no field of the Router model is ever serialized wholesale (nas_secret /
+# nas_secret_plain must never leave the API), so every payload below is built
+# key-by-key from an explicit allow-list.
+
+
+def _ip_str(value) -> Optional[str]:
+    """INET columns come back as str or ipaddress objects depending on driver."""
+    return str(value) if value is not None else None
+
+
+def _router_payload(router: Router, setup: Optional[RouterSetupStatus], cred: Optional[RouterCredential]) -> dict:
+    tunnel_ip = _ip_str(router.wg_tunnel_ip)
+    label_ip = _ip_str(router.ip_address)
+    if router.wg_enabled and tunnel_ip:
+        connectivity = "tunnel"
+    elif label_ip:
+        connectivity = "direct"
+    else:
+        connectivity = "none"
+    sections = {
+        name: {
+            "status": getattr(setup, f"{name}_status", None) or "unconfigured",
+            "applied_at": getattr(setup, f"{name}_applied_at", None),
+        }
+        for name in setup_store.SECTIONS
+    }
+    sections_complete = setup_store.sections_complete(setup)
+    return {
+        "id": str(router.id),
+        "name": router.name,
+        "nas_identifier": router.nas_identifier,
+        "is_active": bool(router.is_active),
+        # `online` is the single source of truth for the UI badge; the two raw
+        # flags are exposed alongside it so the owner can see *why*.
+        "online": router_is_online(router),
+        "is_online": bool(router.is_online),
+        "last_seen_at": router.last_seen_at,
+        "connectivity": connectivity,
+        "wg_enabled": bool(router.wg_enabled),
+        "wg_is_connected": bool(router.wg_is_connected),
+        "wg_tunnel_ip": tunnel_ip,
+        "wg_last_handshake_at": router.wg_last_handshake_at,
+        "ip_address": label_ip,
+        "setup": {
+            # No setup_status row yet == never provisioned, not an error state.
+            "tracked": setup is not None,
+            "sections_complete": sections_complete,
+            "sections_total": len(setup_store.SECTIONS),
+            "provisioned": sections_complete == len(setup_store.SECTIONS),
+            **sections,
+        },
+        "api_credentials": {
+            "configured": cred is not None,
+            "connection_status": cred.connection_status if cred else "unknown",
+            "last_connected_at": cred.last_connected_at if cred else None,
+        },
+    }
+
+
+def _plan_payload(plan: Plan, site_name: Optional[str]) -> dict:
+    return {
+        "id": str(plan.id),
+        "name": plan.name,
+        "type": plan.type,
+        "duration_minutes": plan.duration_minutes,
+        "data_limit_mb": plan.data_limit_mb,
+        "download_speed_kbps": plan.download_speed_kbps,
+        "upload_speed_kbps": plan.upload_speed_kbps,
+        "price_ghs": float(plan.price_ghs or 0),
+        "is_active": bool(plan.is_active),
+        "site_id": str(plan.site_id) if plan.site_id else None,
+        # plans.site_id is nullable — a null means the plan is offered estate-wide.
+        "site_name": site_name,
+        "scope": "site" if plan.site_id else "operator-wide",
+        "created_at": plan.created_at,
+    }
+
+
+@router.get("/operators/{operator_id}/infrastructure")
+async def operator_infrastructure(
+    operator_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Towns -> sites -> routers, plus the operator's plans, in 4 flat queries.
+
+    The tree is grouped in memory rather than walked with per-parent queries, so
+    the query count is constant no matter how many towns/sites/routers exist.
+    """
+    operator = await db.get(ISPOperator, operator_id)
+    if not operator:
+        raise HTTPException(status_code=404, detail="Operator not found")
+
+    # 1) towns
+    towns = (
+        await db.execute(
+            select(Town).where(Town.isp_operator_id == operator_id).order_by(Town.name)
+        )
+    ).scalars().all()
+
+    # 2) sites
+    sites = (
+        await db.execute(
+            select(Site).where(Site.isp_operator_id == operator_id).order_by(Site.name)
+        )
+    ).scalars().all()
+
+    # 3) routers + their setup/credential side-tables in one pass (outer joins so
+    #    a router that was added but never provisioned still comes back).
+    router_rows = (
+        await db.execute(
+            select(Router, RouterSetupStatus, RouterCredential)
+            .outerjoin(RouterSetupStatus, RouterSetupStatus.router_id == Router.id)
+            .outerjoin(RouterCredential, RouterCredential.router_id == Router.id)
+            .where(Router.isp_operator_id == operator_id)
+            .order_by(Router.name)
+        )
+    ).all()
+
+    # 4) plans + the site label for site-scoped ones
+    plan_rows = (
+        await db.execute(
+            select(Plan, Site.name)
+            .outerjoin(Site, Site.id == Plan.site_id)
+            .where(Plan.isp_operator_id == operator_id)
+            .order_by(Plan.price_ghs, Plan.name)
+        )
+    ).all()
+
+    routers_by_site: dict[str, list] = {}
+    routers_online = 0
+    for router_row, setup_row, cred_row in router_rows:
+        payload = _router_payload(router_row, setup_row, cred_row)
+        if payload["online"]:
+            routers_online += 1
+        routers_by_site.setdefault(str(router_row.site_id), []).append(payload)
+
+    sites_by_town: dict[str, list] = {}
+    orphan_sites: list = []
+    town_ids = {str(town.id) for town in towns}
+    for site in sites:
+        site_payload = {
+            "id": str(site.id),
+            "name": site.name,
+            "address": site.address,
+            "created_at": site.created_at,
+            "routers": routers_by_site.pop(str(site.id), []),
+        }
+        town_key = str(site.town_id) if site.town_id else None
+        if town_key in town_ids:
+            sites_by_town.setdefault(town_key, []).append(site_payload)
+        else:
+            # Town missing/mismatched — surface the site rather than dropping it.
+            orphan_sites.append(site_payload)
+
+    town_payloads = []
+    for town in towns:
+        town_sites = sites_by_town.get(str(town.id), [])
+        town_payloads.append(
+            {
+                "id": str(town.id),
+                "name": town.name,
+                "region": town.region,
+                "created_at": town.created_at,
+                "site_count": len(town_sites),
+                "router_count": sum(len(s["routers"]) for s in town_sites),
+                "sites": town_sites,
+            }
+        )
+
+    # Anything left in routers_by_site points at a site this operator doesn't own.
+    orphan_routers = [r for group in routers_by_site.values() for r in group]
+
+    plans = [_plan_payload(plan, site_name) for plan, site_name in plan_rows]
+
+    return {
+        "operator": {
+            "id": str(operator.id),
+            "name": operator.name,
+            "slug": operator.slug,
+            "status": operator.status,
+        },
+        "towns": town_payloads,
+        "unassigned_sites": orphan_sites,
+        "unassigned_routers": orphan_routers,
+        "plans": plans,
+        "totals": {
+            "towns": len(town_payloads),
+            "sites": len(sites),
+            "routers": len(router_rows),
+            "routers_online": routers_online,
+            "routers_offline": len(router_rows) - routers_online,
+            "plans": len(plans),
+            "plans_active": sum(1 for p in plans if p["is_active"]),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Platform billing endpoints
+#
+# These have no UI at present. Their only consumer was the React platform page
+# frontend/src/pages/platform/PlatformBilling.jsx, which read /billing/summary
+# and /billing/operators into a summary + per-operator table (its waive button
+# was never implemented — it alerted "use the API directly"). That page was
+# deleted when the React platform-owner portal was retired in favour of the
+# vanilla portal at /platform/*; see git history for the markup it rendered.
+#
+# /billing/summary, /billing/operators, /operators/{id}/billing and
+# /invoices/{id}/waive are deliberately kept: they are the foundation for the
+# vanilla platform-billing page (feature #3), which is where the retired
+# React page's display should be rebuilt — this time with a working waive.
 # ---------------------------------------------------------------------------
 
 @router.get("/billing/summary")

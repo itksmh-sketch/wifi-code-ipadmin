@@ -14,9 +14,13 @@ logger = structlog.get_logger(__name__)
 async def _mark_router_heartbeat(db: AsyncSession, nas_ip: str | None):
     if not nas_ip:
         return
+    ip = cast(nas_ip, INET)
+    # VPN-only routers are keyed on wg_tunnel_ip (NAS-IP-Address = tunnel IP);
+    # legacy non-VPN routers still use ip_address. Match either so accounting
+    # packets update is_online for both router types.
     await db.execute(
         update(Router)
-        .where(Router.ip_address == cast(nas_ip, INET))
+        .where(or_(Router.wg_tunnel_ip == ip, Router.ip_address == ip))
         .values(last_seen_at=datetime.now(timezone.utc), is_online=True)
     )
 
@@ -28,19 +32,17 @@ async def handle_accounting_start(db: AsyncSession, data: dict):
     nas_ip = data.get("nas_ip_address")
     mac_address = data.get("calling_station_id")
     ip_address = data.get("framed_ip_address")
-    nas_identifier = data.get("nas_identifier")
-
     if not username or not session_id:
         logger.warning("accounting_start_missing_fields", module=__name__)
         return
 
     await _mark_router_heartbeat(db, nas_ip)
 
-    # Find router by NAS identifier
-    router_result = await db.execute(select(Router).where(Router.nas_identifier == nas_identifier))
+    # Find router by tunnel IP (VPN-only platform: NAS-IP-Address = wg_tunnel_ip)
+    router_result = await db.execute(select(Router).where(Router.wg_tunnel_ip == cast(nas_ip, INET)))
     router = router_result.scalar_one_or_none()
     if not router:
-        logger.warning("accounting_start_router_not_found", module=__name__, nas_identifier=nas_identifier)
+        logger.warning("accounting_start_router_not_found", module=__name__, nas_ip=nas_ip)
         return
 
     # Find voucher

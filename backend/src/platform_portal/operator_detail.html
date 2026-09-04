@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Operator — Platform Admin</title>
+  <link rel="stylesheet" href="/platform/statics/app.css">
+  <style>
+    .town-block{margin-bottom:22px}
+    .town-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
+    .town-name{font-size:15px;font-weight:700}
+    .site-block{border-left:2px solid var(--border);padding-left:14px;margin:0 0 16px 4px}
+    .site-head{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
+    .site-name{font-weight:600;font-size:13px}
+    .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
+    .dot.on{background:var(--success);box-shadow:0 0 0 3px rgba(34,197,94,.15)}
+    .dot.off{background:var(--danger);box-shadow:0 0 0 3px rgba(239,68,68,.12)}
+    code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+    .mono-dim{color:var(--muted)}
+    .detail-grid{display:grid;gap:12px;grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:20px}
+    .detail-grid .card{padding:16px 18px}
+    .detail-grid .card .card-title{font-size:13px;color:var(--muted);font-weight:600;margin-bottom:10px}
+    .detail-line{font-size:14px;margin:0 0 4px}
+    .detail-line.dim{color:var(--muted);font-size:13px}
+    @media (max-width:820px){.detail-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<div class="container">
+  <nav class="nav">
+    <span class="brand">Platform <span>Admin</span></span>
+    <div class="links">
+      <a href="/platform/operators" class="btn">&larr; All Operators</a>
+      <a href="/platform/settings" class="btn">Settings</a>
+      <button class="btn" id="logout-btn">Logout</button>
+    </div>
+  </nav>
+
+  <div id="loading" class="text-muted">Loading operator…</div>
+  <div id="err" class="notice bad" style="display:none"></div>
+
+  <div id="main" style="display:none">
+    <div class="section-title" id="op-name">—</div>
+    <p class="section-sub" id="op-sub">—</p>
+
+    <div class="stats-grid" id="stats">
+      <div class="stat-card"><div class="stat-label">Towns</div><div class="stat-value" id="s-towns">—</div></div>
+      <div class="stat-card"><div class="stat-label">Sites</div><div class="stat-value" id="s-sites">—</div></div>
+      <div class="stat-card"><div class="stat-label">Routers Online</div><div class="stat-value" id="s-routers">—</div></div>
+      <div class="stat-card"><div class="stat-label">Packages</div><div class="stat-value" id="s-plans">—</div></div>
+    </div>
+
+    <div id="op-err" class="notice bad" style="display:none;margin-bottom:16px"></div>
+    <div class="detail-grid" id="detail-cards" style="display:none">
+      <div class="card">
+        <div class="card-title">Contact</div>
+        <div id="c-contact"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Revenue</div>
+        <div id="c-revenue"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Payment Credentials</div>
+        <div id="c-payment"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:18px">
+      <div class="card-header">
+        <span class="card-title">Infrastructure</span>
+        <span class="text-muted">Read-only view</span>
+      </div>
+      <div id="infra-body"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Packages</span>
+        <span class="text-muted" id="plans-count"></span>
+      </div>
+      <div id="plans-body"></div>
+    </div>
+
+    <div class="card" style="margin-top:18px">
+      <div class="card-header">
+        <span class="card-title">Admins</span>
+        <button class="btn primary sm" id="add-admin-btn">+ Add Admin</button>
+      </div>
+      <div id="admins-err" class="notice bad" style="display:none;margin-bottom:12px"></div>
+      <div id="admins-body"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modals -->
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:50;align-items:center;justify-content:center;padding:20px">
+  <!-- Create admin -->
+  <div id="modal-admin" class="card" style="display:none;max-width:420px;width:100%;padding:24px">
+    <div class="card-title" style="margin-bottom:6px">Add admin</div>
+    <p class="text-muted" id="admin-sub" style="margin:0 0 14px"></p>
+    <div id="admin-msg" class="notice bad" style="display:none;margin-bottom:12px"></div>
+    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Email</label>
+    <input id="admin-email" type="email" required placeholder="admin@isp.com" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:12px">
+    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Password</label>
+    <input id="admin-password" type="password" required minlength="8" placeholder="Min 8 characters" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:12px">
+    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Role</label>
+    <select id="admin-role" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:16px">
+      <option value="admin" selected>admin</option>
+      <option value="superadmin">superadmin</option>
+      <option value="viewer">viewer</option>
+    </select>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closeModals()">Cancel</button>
+      <button class="btn primary" id="admin-submit">Create admin</button>
+    </div>
+  </div>
+  <!-- Created confirmation -->
+  <div id="modal-admin-done" class="card" style="display:none;max-width:460px;width:100%;padding:24px">
+    <div class="card-title" style="margin-bottom:6px">Admin created</div>
+    <p class="text-muted" style="margin:0 0 14px">Share these credentials securely. The password is not stored in readable form and cannot be shown again.</p>
+    <div id="admin-done-body" style="margin-bottom:16px"></div>
+    <div style="display:flex;justify-content:flex-end">
+      <button class="btn primary" onclick="closeModals()">Done</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const token = localStorage.getItem('platform_access_token');
+if (!token) { window.location.replace('/platform/login'); }
+
+document.getElementById('logout-btn').addEventListener('click', () => {
+  localStorage.removeItem('platform_access_token');
+  localStorage.removeItem('platform_refresh_token');
+  window.location.href = '/platform/login';
+});
+
+const operatorId = window.location.pathname.split('/').filter(Boolean).pop();
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: {
+      'Authorization': 'Bearer ' + localStorage.getItem('platform_access_token'),
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('platform_access_token');
+    window.location.replace('/platform/login');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
+function escHtml(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmtDateTime(s) {
+  if (!s) return '<span class="text-muted">Never</span>';
+  const d = new Date(s);
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  let rel;
+  if (mins < 1) rel = 'just now';
+  else if (mins < 60) rel = mins + 'm ago';
+  else if (mins < 1440) rel = Math.floor(mins / 60) + 'h ago';
+  else rel = Math.floor(mins / 1440) + 'd ago';
+  return escHtml(d.toLocaleString('en-GB', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'}))
+    + ' <span class="text-muted">(' + rel + ')</span>';
+}
+
+function fmtMoney(n) {
+  return 'GHS ' + Number(n || 0).toLocaleString('en-GH', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+// A router with no tunnel and no setup row is a normal state (added but never
+// provisioned) — every cell below has a defined rendering for it, never a blank.
+function connectivityCell(r) {
+  if (r.connectivity === 'tunnel') return '<code>' + escHtml(r.wg_tunnel_ip) + '</code>';
+  if (r.connectivity === 'direct') {
+    return '<span class="badge pending">No tunnel</span> <code class="mono-dim">' + escHtml(r.ip_address) + '</code>';
+  }
+  return '<span class="badge cancelled">No address</span>';
+}
+
+function setupCell(s) {
+  if (!s || !s.tracked) return '<span class="badge cancelled">Not provisioned</span>';
+  const cls = s.provisioned ? 'approved' : (s.sections_complete > 0 ? 'pending' : 'cancelled');
+  const tip = ['network','hotspot','radius','nat']
+    .map(n => n + ': ' + ((s[n] && s[n].status) || 'unconfigured')).join(' | ');
+  return '<span class="badge ' + cls + '" title="' + escHtml(tip) + '">'
+    + s.sections_complete + '/' + s.sections_total + ' configured</span>';
+}
+
+function apiCell(c) {
+  if (!c || !c.configured) return '<span class="badge cancelled">None</span>';
+  const map = { online: 'approved', offline: 'suspended', auth_failed: 'suspended', timeout: 'pending', unknown: 'cancelled' };
+  const st = c.connection_status || 'unknown';
+  return '<span class="badge ' + (map[st] || 'cancelled') + '">' + escHtml(st) + '</span>';
+}
+
+function routerTable(routers) {
+  if (!routers.length) return '<p class="text-muted" style="margin:6px 0 0">No routers at this site.</p>';
+  return '<div class="table-wrap"><table class="table"><thead><tr>'
+    + '<th>Router</th><th>State</th><th>Tunnel / Address</th><th>Last Seen</th>'
+    + '<th>Setup</th><th>API</th><th>NAS ID</th>'
+    + '</tr></thead><tbody>'
+    + routers.map(r =>
+        '<tr>'
+        + '<td><div style="font-weight:600">' + escHtml(r.name) + '</div>'
+        + (r.is_active ? '' : '<div class="text-muted" style="font-size:11px">inactive</div>') + '</td>'
+        + '<td><span class="dot ' + (r.online ? 'on' : 'off') + '"></span>' + (r.online ? 'Online' : 'Offline') + '</td>'
+        + '<td>' + connectivityCell(r) + '</td>'
+        + '<td>' + fmtDateTime(r.last_seen_at) + '</td>'
+        + '<td>' + setupCell(r.setup) + '</td>'
+        + '<td>' + apiCell(r.api_credentials) + '</td>'
+        + '<td><code class="mono-dim">' + escHtml(r.nas_identifier) + '</code></td>'
+        + '</tr>'
+      ).join('')
+    + '</tbody></table></div>';
+}
+
+function siteBlock(site) {
+  return '<div class="site-block">'
+    + '<div class="site-head"><span class="site-name">' + escHtml(site.name) + '</span>'
+    + (site.address ? '<span class="text-muted" style="font-size:12px">' + escHtml(site.address) + '</span>' : '')
+    + '</div>' + routerTable(site.routers || []) + '</div>';
+}
+
+function planLimit(p) {
+  const bits = [];
+  if (p.duration_minutes) {
+    bits.push(p.duration_minutes >= 1440
+      ? (p.duration_minutes / 1440) + 'd'
+      : (p.duration_minutes >= 60 ? (p.duration_minutes / 60) + 'h' : p.duration_minutes + 'm'));
+  }
+  if (p.data_limit_mb) bits.push(p.data_limit_mb >= 1024 ? (p.data_limit_mb / 1024) + ' GB' : p.data_limit_mb + ' MB');
+  return bits.length ? bits.join(' · ') : 'Unlimited';
+}
+
+function speed(p) {
+  if (!p.download_speed_kbps && !p.upload_speed_kbps) return '<span class="text-muted">—</span>';
+  // RouterOS rates are kbps on a 1024 base: 1024 kbps == 1 Mbps.
+  const f = k => k >= 1024 ? +(k / 1024).toFixed(2) + ' Mbps' : k + ' kbps';
+  return escHtml(f(p.download_speed_kbps || 0) + ' / ' + f(p.upload_speed_kbps || 0));
+}
+
+function renderInfra(d) {
+  const parts = [];
+  const t = d.totals;
+  parts.push('<p class="text-muted" style="margin:0 0 16px">'
+    + t.towns + ' town' + (t.towns === 1 ? '' : 's') + ' · '
+    + t.sites + ' site' + (t.sites === 1 ? '' : 's') + ' · '
+    + t.routers + ' router' + (t.routers === 1 ? '' : 's')
+    + ' (<span style="color:#86efac">' + t.routers_online + ' online</span>'
+    + (t.routers_offline > 0 ? ', <span style="color:#fca5a5">' + t.routers_offline + ' offline</span>' : '')
+    + ')</p>');
+
+  for (const town of d.towns) {
+    parts.push('<div class="town-block"><div class="town-head">'
+      + '<span class="town-name">' + escHtml(town.name) + '</span>'
+      + (town.region ? '<span class="badge trial">' + escHtml(town.region) + '</span>' : '')
+      + '<span class="text-muted" style="font-size:12px">'
+      + town.site_count + ' site' + (town.site_count === 1 ? '' : 's') + ' · '
+      + town.router_count + ' router' + (town.router_count === 1 ? '' : 's') + '</span></div>'
+      + (town.sites.length ? town.sites.map(siteBlock).join('')
+                           : '<p class="text-muted" style="margin:0 0 0 4px">No sites in this town.</p>')
+      + '</div>');
+  }
+
+  if (d.unassigned_sites && d.unassigned_sites.length) {
+    parts.push('<div class="town-block"><div class="town-head">'
+      + '<span class="town-name">Unassigned sites</span>'
+      + '<span class="text-muted" style="font-size:12px">not linked to a town</span></div>'
+      + d.unassigned_sites.map(siteBlock).join('') + '</div>');
+  }
+  if (d.unassigned_routers && d.unassigned_routers.length) {
+    parts.push('<div class="town-block"><div class="town-head">'
+      + '<span class="town-name">Unassigned routers</span>'
+      + '<span class="text-muted" style="font-size:12px">site missing or not owned by this operator</span></div>'
+      + routerTable(d.unassigned_routers) + '</div>');
+  }
+  if (!d.towns.length && !(d.unassigned_sites || []).length && !(d.unassigned_routers || []).length) {
+    parts.push('<p class="text-muted">This operator has no towns, sites or routers yet.</p>');
+  }
+  document.getElementById('infra-body').innerHTML = parts.join('');
+}
+
+function renderPlans(d) {
+  const plans = d.plans || [];
+  document.getElementById('plans-count').textContent =
+    plans.length ? (d.totals.plans_active + ' active of ' + d.totals.plans) : '';
+  if (!plans.length) {
+    document.getElementById('plans-body').innerHTML =
+      '<p class="text-muted">This operator offers no packages yet.</p>';
+    return;
+  }
+  document.getElementById('plans-body').innerHTML =
+    '<div class="table-wrap"><table class="table"><thead><tr>'
+    + '<th>Package</th><th>Type</th><th>Limit</th><th>Speed (down/up)</th>'
+    + '<th>Price</th><th>Scope</th><th>Status</th>'
+    + '</tr></thead><tbody>'
+    + plans.map(p =>
+        '<tr>'
+        + '<td style="font-weight:600">' + escHtml(p.name) + '</td>'
+        + '<td class="text-muted">' + escHtml(p.type || '—') + '</td>'
+        + '<td>' + escHtml(planLimit(p)) + '</td>'
+        + '<td>' + speed(p) + '</td>'
+        + '<td>' + escHtml(fmtMoney(p.price_ghs)) + '</td>'
+        + '<td class="text-muted">' + escHtml(p.site_name || 'All sites') + '</td>'
+        + '<td><span class="badge ' + (p.is_active ? 'approved' : 'cancelled') + '">'
+        + (p.is_active ? 'active' : 'inactive') + '</span></td>'
+        + '</tr>'
+      ).join('')
+    + '</tbody></table></div>';
+}
+
+// --- Operator detail cards (read-only) ------------------------------------
+// The payment card deliberately shows only presence + validation state: the
+// /operators/{id} endpoint returns no key material at all (the *_encrypted
+// columns are never serialized), so there is nothing here to mask.
+function renderOperatorCards(op) {
+  document.getElementById('c-contact').innerHTML =
+    '<p class="detail-line">' + (op.contact_email
+      ? '<a href="mailto:' + escHtml(op.contact_email) + '">' + escHtml(op.contact_email) + '</a>'
+      : '<span class="text-muted">No email</span>') + '</p>'
+    + '<p class="detail-line dim">' + escHtml(op.contact_phone || 'No phone') + '</p>'
+    + '<p class="detail-line dim">Joined ' + fmtDateTime(op.created_at) + '</p>'
+    + '<p class="detail-line" style="margin-top:10px">'
+    + '<span class="badge ' + escHtml(op.status) + '">' + escHtml(op.status) + '</span> '
+    + '<span class="badge ' + escHtml(op.billing_status) + '">' + escHtml(op.billing_status) + '</span></p>';
+
+  document.getElementById('c-revenue').innerHTML =
+    '<p class="detail-line" style="font-size:20px;font-weight:700">' + escHtml(fmtMoney(op.monthly_revenue_this_month)) + '</p>'
+    + '<p class="detail-line dim">this month</p>'
+    + '<p class="detail-line dim" style="margin-top:10px">' + (op.voucher_count_this_month || 0) + ' vouchers this month</p>'
+    + '<p class="detail-line dim">' + (op.total_sessions || 0) + ' sessions all time</p>';
+
+  const pc = op.payment_credentials || {};
+  let payHtml;
+  if (!pc.configured) {
+    payHtml = '<p class="detail-line"><span class="badge cancelled">Not configured</span></p>'
+      + '<p class="detail-line dim">This operator cannot take payments yet.</p>';
+  } else {
+    payHtml = '<p class="detail-line"><span class="badge ' + (pc.active ? 'approved' : 'suspended') + '">'
+      + (pc.active ? 'Configured &amp; active' : 'Configured, inactive') + '</span></p>'
+      + '<p class="detail-line dim">Last validated: ' + fmtDateTime(pc.last_validated_at) + '</p>';
+    if (pc.last_validation_error) {
+      payHtml += '<p class="detail-line dim" style="color:#fca5a5">' + escHtml(pc.last_validation_error) + '</p>';
+    }
+  }
+  document.getElementById('c-payment').innerHTML = payHtml;
+  document.getElementById('detail-cards').style.display = 'grid';
+}
+
+async function loadOperator() {
+  try {
+    const res = await api('/api/v1/platform/operators/' + operatorId);
+    if (!res.ok) throw new Error('Could not load operator details (' + res.status + ').');
+    renderOperatorCards(await res.json());
+  } catch (e) {
+    const el = document.getElementById('op-err');
+    el.textContent = e.message || 'Could not load operator details.';
+    el.style.display = 'block';
+  }
+}
+
+// --- Admins ---------------------------------------------------------------
+function renderAdmins(admins) {
+  if (!admins.length) {
+    document.getElementById('admins-body').innerHTML =
+      '<p class="text-muted">No admins yet for this operator.</p>';
+    return;
+  }
+  document.getElementById('admins-body').innerHTML =
+    '<div class="table-wrap"><table class="table"><thead><tr>'
+    + '<th>Email</th><th>Role</th><th>Status</th><th>Created</th><th>Last Login</th>'
+    + '</tr></thead><tbody>'
+    + admins.map(a =>
+        '<tr>'
+        + '<td style="font-weight:600">' + escHtml(a.email) + '</td>'
+        + '<td class="text-muted">' + escHtml(a.role) + '</td>'
+        + '<td><span class="badge ' + (a.is_active ? 'approved' : 'cancelled') + '">'
+        + (a.is_active ? 'active' : 'inactive') + '</span></td>'
+        + '<td>' + fmtDateTime(a.created_at) + '</td>'
+        + '<td>' + fmtDateTime(a.last_login_at) + '</td>'
+        + '</tr>'
+      ).join('')
+    + '</tbody></table></div>';
+}
+
+async function loadAdmins() {
+  const err = document.getElementById('admins-err');
+  try {
+    const res = await api('/api/v1/platform/operators/' + operatorId + '/admins');
+    if (!res.ok) throw new Error('Could not load admins (' + res.status + ').');
+    const data = await res.json();
+    err.style.display = 'none';
+    renderAdmins(Array.isArray(data) ? data : []);
+  } catch (e) {
+    document.getElementById('admins-body').innerHTML = '';
+    err.textContent = e.message || 'Could not load admins.';
+    err.style.display = 'block';
+  }
+}
+
+// --- Create admin (the one mutation on this page) -------------------------
+function showOverlay(which) {
+  document.getElementById('modal-overlay').style.display = 'flex';
+  ['modal-admin', 'modal-admin-done'].forEach(id => {
+    document.getElementById(id).style.display = id === which ? 'block' : 'none';
+  });
+}
+function closeModals() {
+  document.getElementById('modal-overlay').style.display = 'none';
+}
+
+function adminMsg(text) {
+  const el = document.getElementById('admin-msg');
+  if (!text) { el.style.display = 'none'; return; }
+  el.textContent = text;
+  el.style.display = 'block';
+}
+
+document.getElementById('add-admin-btn').addEventListener('click', () => {
+  document.getElementById('admin-email').value = '';
+  document.getElementById('admin-password').value = '';
+  document.getElementById('admin-role').value = 'admin';
+  adminMsg('');
+  document.getElementById('admin-sub').textContent =
+    'New admin for ' + (operatorName || 'this operator') + '.';
+  showOverlay('modal-admin');
+});
+
+document.getElementById('admin-submit').addEventListener('click', async () => {
+  const btn = document.getElementById('admin-submit');
+  const email = document.getElementById('admin-email').value.trim();
+  const password = document.getElementById('admin-password').value;
+  const role = document.getElementById('admin-role').value;
+
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { adminMsg('Enter a valid email address.'); return; }
+  if (password.length < 8) { adminMsg('Password must be at least 8 characters.'); return; }
+
+  adminMsg('');
+  btn.disabled = true;
+  btn.textContent = 'Creating…';
+  try {
+    const res = await api('/api/v1/platform/operators/' + operatorId + '/admins', {
+      method: 'POST',
+      body: JSON.stringify({ email, password, role }),
+    });
+    if (!res.ok) {
+      let detail = 'Could not create admin (' + res.status + ').';
+      try { const b = await res.json(); if (b && b.detail) detail = typeof b.detail === 'string' ? b.detail : detail; } catch (_) {}
+      adminMsg(detail);
+      return;
+    }
+    const admin = await res.json();
+    document.getElementById('admin-done-body').innerHTML =
+      '<p class="detail-line">Email: <code>' + escHtml(admin.email) + '</code></p>'
+      + '<p class="detail-line">Role: <code>' + escHtml(admin.role) + '</code></p>'
+      + '<p class="detail-line dim">They sign in at <code>/admin/login</code> with the password you set.</p>';
+    showOverlay('modal-admin-done');
+    loadAdmins();
+  } catch (e) {
+    adminMsg(e.message || 'Could not create admin.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create admin';
+  }
+});
+
+let operatorName = '';
+
+async function load() {
+  try {
+    const res = await api('/api/v1/platform/operators/' + operatorId + '/infrastructure');
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(res.status === 404 ? 'Operator not found.' : 'Failed to load (' + res.status + '). ' + body);
+    }
+    const d = await res.json();
+
+    document.title = d.operator.name + ' — Platform Admin';
+    document.getElementById('op-name').textContent = d.operator.name;
+    document.getElementById('op-sub').innerHTML =
+      '<code>' + escHtml(d.operator.slug) + '</code> · '
+      + '<span class="badge ' + escHtml(d.operator.status) + '">' + escHtml(d.operator.status) + '</span>';
+
+    document.getElementById('s-towns').textContent = d.totals.towns;
+    document.getElementById('s-sites').textContent = d.totals.sites;
+    document.getElementById('s-routers').textContent = d.totals.routers_online + ' / ' + d.totals.routers;
+    document.getElementById('s-plans').textContent = d.totals.plans;
+
+    operatorName = d.operator.name;
+    renderInfra(d);
+    renderPlans(d);
+
+    // Secondary panels load independently — a failure in either shows its own
+    // notice instead of blanking the page the infrastructure view already filled.
+    loadOperator();
+    loadAdmins();
+
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('main').style.display = 'block';
+  } catch (e) {
+    document.getElementById('loading').style.display = 'none';
+    const err = document.getElementById('err');
+    err.textContent = e.message || 'Failed to load operator.';
+    err.style.display = 'block';
+  }
+}
+
+load();
+</script>
+</body>
+</html>

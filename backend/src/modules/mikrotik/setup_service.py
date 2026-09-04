@@ -143,6 +143,13 @@ def _find(rows: list[dict[str, Any]], key: str, value: str) -> dict[str, Any] | 
     return next((row for row in rows if (row.get(key) or "") == value), None)
 
 
+def _row_id(row: dict[str, Any] | None) -> str | None:
+    # routeros_api returns the object ID as 'id' (no dot) for most paths — never use .get(".id") directly.
+    if row is None:
+        return None
+    return row.get(".id") or row.get("id") or None
+
+
 def _truthy(value: Any) -> bool:
     return str(value).lower() in {"true", "yes"}
 
@@ -202,8 +209,9 @@ def _op_apply_network(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
     ranges = f"{data['pool_start']}-{data['pool_end']}"
     pools = runner.execute("/ip/pool", "print")
     existing_pool = _find(pools, "name", pool_name)
-    if existing_pool and existing_pool.get(".id"):
-        runner.execute("/ip/pool", "set", params={".id": existing_pool[".id"], "ranges": ranges})
+    pool_id = _row_id(existing_pool)
+    if existing_pool and pool_id:
+        runner.execute("/ip/pool", "set", params={".id": pool_id, "ranges": ranges})
     else:
         runner.execute("/ip/pool", "add", params={"name": pool_name, "ranges": ranges})
 
@@ -217,10 +225,11 @@ def _op_apply_network(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
         "disabled": "no",
     }
     existing_server = _find(dhcp_servers, "name", DHCP_SERVER_NAME)
-    if existing_server and existing_server.get(".id"):
+    dhcp_server_id = _row_id(existing_server)
+    if existing_server and dhcp_server_id:
         # 'name' is the match key, not a settable field on update — drop it.
         update_params = {k: v for k, v in server_params.items() if k != "name"}
-        runner.execute("/ip/dhcp-server", "set", params={**update_params, ".id": existing_server[".id"]})
+        runner.execute("/ip/dhcp-server", "set", params={**update_params, ".id": dhcp_server_id})
     else:
         runner.execute("/ip/dhcp-server", "add", params=server_params)
 
@@ -229,8 +238,9 @@ def _op_apply_network(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
     dhcp_networks = runner.execute("/ip/dhcp-server/network", "print")
     net_params = {"address": network_cidr, "gateway": data["gateway_ip"], "dns-server": data.get("dns") or "8.8.8.8"}
     existing_net = _find(dhcp_networks, "address", network_cidr)
-    if existing_net and existing_net.get(".id"):
-        runner.execute("/ip/dhcp-server/network", "set", params={**net_params, ".id": existing_net[".id"]})
+    net_id = _row_id(existing_net)
+    if existing_net and net_id:
+        runner.execute("/ip/dhcp-server/network", "set", params={**net_params, ".id": net_id})
     else:
         runner.execute("/ip/dhcp-server/network", "add", params=net_params)
 
@@ -261,17 +271,19 @@ def _op_apply_hotspot(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
     bridge = data["bridge_name"]
     pool_name = data.get("pool_name") or POOL_NAME
 
-    # 1. Hotspot server (idempotent by name)
+    # 1. Hotspot server (idempotent by name).
+    #    RouterOS returns entries with key 'id' (no dot) for /ip/hotspot — use
+    #    _row_id() rather than .get(".id") which always returns None here.
     servers = runner.execute("/ip/hotspot", "print")
     server = _find(servers, "name", HOTSPOT_SERVER_NAME)
-    if server and server.get(".id"):
-        runner.execute("/ip/hotspot", "set", params={".id": server[".id"], "interface": bridge, "address-pool": pool_name, "disabled": "no"})
-        profile_name = server.get("profile") or "hsprof1"
+    server_id = _row_id(server)
+    if server and server_id:
+        runner.execute("/ip/hotspot", "set", params={".id": server_id, "interface": bridge, "address-pool": pool_name, "disabled": "no"})
     else:
         runner.execute("/ip/hotspot", "add", params={"name": HOTSPOT_SERVER_NAME, "interface": bridge, "address-pool": pool_name, "disabled": "no"})
         servers = runner.execute("/ip/hotspot", "print")
         server = _find(servers, "name", HOTSPOT_SERVER_NAME) or {}
-        profile_name = server.get("profile") or "hsprof1"
+        server_id = _row_id(server)
 
     # 2. Server profile — login methods, RADIUS, DNS name.
     #    A freshly-added hotspot server points at RouterOS's built-in "default"
@@ -286,30 +298,49 @@ def _op_apply_hotspot(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
         "nas-port-type": "wireless-802.11",
         "dns-name": data["dns_name"],
     }
-    target_profile = "hsprof1" if profile_name in ("", "default") else profile_name
+    # Always target hsprof1 — never configure default, since portal redirect,
+    # walled-garden, DNS name, and all per-profile settings live on hsprof1.
+    target_profile = "hsprof1"
     existing = _find(
         runner.execute("/ip/hotspot/profile", "print", queries={"name": target_profile}),
         "name",
         target_profile,
     )
-    if existing and existing.get(".id"):
-        runner.execute("/ip/hotspot/profile", "set", params={**profile_params, ".id": existing[".id"]})
+    existing_id = _row_id(existing)
+    if existing and existing_id:
+        runner.execute("/ip/hotspot/profile", "set", params={**profile_params, ".id": existing_id})
     else:
         runner.execute("/ip/hotspot/profile", "add", params={**profile_params, "name": target_profile})
-    # Point the hotspot server at the configured profile (it otherwise stays on "default").
-    if server.get(".id") and (server.get("profile") or "") != target_profile:
-        runner.execute("/ip/hotspot", "set", params={".id": server[".id"], "profile": target_profile})
+
+    # Bind the hotspot server to hsprof1 unconditionally — the old code gated this
+    # on server.get(".id") which is always None (RouterOS uses 'id', not '.id' for
+    # /ip/hotspot entries), so the bind was silently skipped on every wizard run.
+    if server_id:
+        runner.execute("/ip/hotspot", "set", params={".id": server_id, "profile": target_profile})
+
+    # Verify the bind took effect before returning success.
+    verify_servers = runner.execute("/ip/hotspot", "print")
+    verify_server = _find(verify_servers, "name", HOTSPOT_SERVER_NAME)
+    actual_profile = (verify_server or {}).get("profile", "")
+    if actual_profile != target_profile:
+        raise MikroTikOperationError(
+            f"Hotspot profile bind failed: expected '{target_profile}', got '{actual_profile}'",
+            commands=runner.commands,
+            status="offline",
+        )
 
     # 3. Default user profile — session/idle timeouts and devices-per-credential.
     #    (RouterOS keeps these on the user profile, not the server profile.)
     user_profiles = runner.execute("/ip/hotspot/user/profile", "print")
     default_profile = _find(user_profiles, "name", "default") or (user_profiles[0] if user_profiles else None)
-    if default_profile and default_profile.get(".id"):
-        up_params = {".id": default_profile[".id"]}
-        # 0 = inherit from RADIUS for session timeout, 0 = disabled for idle
-        up_params["session-timeout"] = _minutes_to_clock(data.get("session_timeout", 0))
-        up_params["idle-timeout"] = "none" if not data.get("idle_timeout") else _minutes_to_clock(data["idle_timeout"])
-        up_params["shared-users"] = data.get("addresses_per_mac", 2)
+    up_id = _row_id(default_profile)
+    if default_profile and up_id:
+        up_params = {
+            ".id": up_id,
+            "session-timeout": _minutes_to_clock(data.get("session_timeout", 0)),
+            "idle-timeout": "none" if not data.get("idle_timeout") else _minutes_to_clock(data["idle_timeout"]),
+            "shared-users": data.get("addresses_per_mac", 2),
+        }
         runner.execute("/ip/hotspot/user/profile", "set", params=up_params)
 
     return "Hotspot configured"
@@ -331,7 +362,7 @@ def _op_detect_radius(runner: SyncCommandRunner, _: dict[str, Any]) -> dict[str,
     return {
         "entries": [
             {
-                "id": row.get(".id"),
+                "id": _row_id(row),
                 "service": row.get("service"),
                 "address": row.get("address"),
                 "authentication_port": row.get("authentication-port"),
@@ -355,26 +386,40 @@ def _op_apply_radius(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
         "accounting-port": data.get("accounting_port", 1813),
         "timeout": _ms_to_routeros_timeout(data.get("timeout", 3000)),
     }
-    # 1. Upsert the RADIUS entry (match by service+address)
+    # 1. Upsert the RADIUS entry — match by service so an address change (e.g.
+    #    public IP → tunnel IP) updates the existing entry rather than adding a
+    #    duplicate. Address is kept as a secondary match. All params including
+    #    address are always overwritten on the surviving entry.
     rows = runner.execute("/radius", "print")
-    matching = None
+    matches = []
     for row in rows:
         services = {part.strip() for part in str(row.get("service") or "").split(",") if part.strip()}
-        if row.get("address") == radius_host and (service in services or not services):
-            matching = row
-            break
-    if matching and matching.get(".id"):
-        runner.execute("/radius", "set", params={**params, ".id": matching[".id"]})
+        if service in services or row.get("address") == radius_host:
+            matches.append(row)
+    first_id = _row_id(matches[0]) if matches else None
+    if matches and first_id:
+        runner.execute("/radius", "set", params={**params, ".id": first_id})
+        for extra in matches[1:]:
+            extra_id = _row_id(extra)
+            if extra_id:
+                runner.execute("/radius", "remove", params={".id": extra_id})
     else:
         runner.execute("/radius", "add", params=params)
 
-    # 2. Enable use-radius on the hotspot profile(s)
+    # 2. Enable incoming CoA/Disconnect-Request (required for voucher disable and cap enforcement)
+    runner.execute("/radius/incoming", "set", params={"accept": "yes"})
+
+    # 3. Enable use-radius on hsprof1 specifically. Skipping "default" intentionally
+    #    — portal config, DNS name, and login-by all live on hsprof1. The old code
+    #    used profile.get(".id") which is always None (RouterOS returns 'id'), so
+    #    this step was silently a no-op on every router.
     profiles = runner.execute("/ip/hotspot/profile", "print")
     for profile in profiles:
-        if profile.get(".id") and profile.get("name") != "default":
-            runner.execute("/ip/hotspot/profile", "set", params={".id": profile[".id"], "use-radius": "yes"})
+        pid = _row_id(profile)
+        if pid and profile.get("name") == "hsprof1":
+            runner.execute("/ip/hotspot/profile", "set", params={".id": pid, "use-radius": "yes"})
 
-    # 3. Verify the entry now exists
+    # 4. Verify the entry now exists
     verify = runner.execute("/radius", "print")
     if not any(row.get("address") == radius_host for row in verify):
         raise MikroTikOperationError("RADIUS verification failed: entry not found after apply", commands=runner.commands, status="offline")
@@ -416,11 +461,11 @@ def _op_detect_nat(runner: SyncCommandRunner, _: dict[str, Any]) -> dict[str, An
     ]
     return {
         "nat_rules": [
-            {"id": r.get(".id"), "chain": r.get("chain"), "action": r.get("action"), "src_address": r.get("src-address"), "out_interface": r.get("out-interface"), "comment": r.get("comment")}
+            {"id": _row_id(r), "chain": r.get("chain"), "action": r.get("action"), "src_address": r.get("src-address"), "out_interface": r.get("out-interface"), "comment": r.get("comment")}
             for r in nat_rules
         ],
         "filter_rules": [
-            {"id": r.get(".id"), "chain": r.get("chain"), "action": r.get("action"), "connection_state": r.get("connection-state"), "comment": r.get("comment")}
+            {"id": _row_id(r), "chain": r.get("chain"), "action": r.get("action"), "connection_state": r.get("connection-state"), "comment": r.get("comment")}
             for r in filter_rules
         ],
         "interfaces": [
@@ -472,10 +517,10 @@ def _op_apply_nat(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
 def _op_remove_duplicate_nat(runner: SyncCommandRunner, _: dict[str, Any]) -> str:
     """Remove all but the first wizard-created masquerade rule."""
     nat_rules = runner.execute("/ip/firewall/nat", "print")
-    wizard_rules = [r for r in nat_rules if (r.get("comment") == NAT_COMMENT) and r.get(".id")]
+    wizard_rules = [r for r in nat_rules if r.get("comment") == NAT_COMMENT and _row_id(r)]
     removed = 0
     for rule in wizard_rules[1:]:
-        runner.execute("/ip/firewall/nat", "remove", params={".id": rule[".id"]})
+        runner.execute("/ip/firewall/nat", "remove", params={".id": _row_id(rule)})
         removed += 1
     return f"Removed {removed} duplicate NAT rule(s)"
 

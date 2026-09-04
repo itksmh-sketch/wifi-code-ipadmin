@@ -9,6 +9,9 @@ export default function Plans() {
         download_speed_kbps: 1024, upload_speed_kbps: 512, price_ghs: 0, is_active: true,
     });
     const [loading, setLoading] = useState(true);
+    // Surfaced inside the modal so a rejected create (e.g. duplicate settings)
+    // is shown next to the form the operator has to fix, not in a popup.
+    const [formError, setFormError] = useState('');
 
     const fetchPlans = () => {
         apiCall('/plans')
@@ -19,7 +22,13 @@ export default function Plans() {
 
     useEffect(() => { fetchPlans(); }, []);
 
+    const openForm = () => {
+        setFormError('');
+        setShowForm(true);
+    };
+
     const createPlan = async () => {
+        setFormError('');
         const body = {
             ...form,
             duration_minutes: form.duration_minutes ? parseInt(form.duration_minutes) : null,
@@ -34,7 +43,7 @@ export default function Plans() {
             setShowForm(false);
             fetchPlans();
         } catch (e) {
-            alert(e.message);
+            setFormError(e.message);
         }
     };
 
@@ -53,13 +62,18 @@ export default function Plans() {
         <div>
             <div className="flex-between">
                 <h1 style={{ fontSize: 24, fontWeight: 700 }}>Plans</h1>
-                <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ New Plan</button>
+                <button className="btn btn-primary" onClick={openForm}>+ New Plan</button>
             </div>
 
             {showForm && (
                 <div className="modal-overlay" onClick={() => setShowForm(false)}>
                     <div className="modal" onClick={e => e.stopPropagation()}>
                         <h2>Add Plan</h2>
+                        {formError && (
+                            <div className="alert alert-error" role="alert" style={{ background: '#fee2e2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, marginBottom: 12 }}>
+                                {formError}
+                            </div>
+                        )}
                         <div className="form-group"><label>Name</label><input value={form.name} onChange={e => setForm({...form, name: e.target.value})} /></div>
                         <div className="form-group">
                             <label>Type</label>

@@ -26,6 +26,13 @@ async def platform_operators_page():
     return FileResponse(_DIR / "operators.html")
 
 
+# Registered after /platform/operators/new so the literal path keeps winning —
+# FastAPI matches in declaration order and "new" would otherwise bind to operator_id.
+@router.get("/platform/operators/{operator_id}", include_in_schema=False)
+async def platform_operator_detail_page(operator_id: str):
+    return FileResponse(_DIR / "operator_detail.html")
+
+
 @router.get("/platform/settings", include_in_schema=False)
 async def platform_settings_page():
     return FileResponse(_DIR / "settings.html")

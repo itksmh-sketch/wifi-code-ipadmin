@@ -9,12 +9,6 @@ import Vouchers from './pages/Vouchers';
 import Sessions from './pages/Sessions';
 import PaymentCredentials from './pages/PaymentCredentials';
 import Branding from './pages/Branding';
-import PlatformLogin from './pages/platform/PlatformLogin';
-import PlatformOperators from './pages/platform/PlatformOperators';
-import PlatformOperatorNew from './pages/platform/PlatformOperatorNew';
-import PlatformOperatorDetail from './pages/platform/PlatformOperatorDetail';
-import PlatformApplications from './pages/platform/PlatformApplications';
-import PlatformBilling from './pages/platform/PlatformBilling';
 import Billing from './pages/Billing';
 import Sidebar from './components/Sidebar';
 
@@ -93,6 +87,10 @@ export function apiCall(endpoint, options = {}) {
     return request(endpoint, options, { tokenKey: 'access_token', loginPath: '/admin/login' });
 }
 
+// Retained with no callers: the React platform-owner pages that used it were
+// retired in favour of the vanilla portal at /platform/*. Kept for feature #3.
+// NOTE: loginPath points at /admin/platform/login, a route that no longer
+// exists — fix it (to /platform/login) before wiring this up to anything.
 export function platformApiCall(endpoint, options = {}) {
     return request(endpoint, options, { tokenKey: 'platform_access_token', loginPath: '/admin/platform/login' });
 }
@@ -100,11 +98,6 @@ export function platformApiCall(endpoint, options = {}) {
 function ProtectedRoute({ children }) {
     const token = localStorage.getItem('access_token');
     return token ? children : <Navigate to="/login" />;
-}
-
-function PlatformRoute({ children }) {
-    const token = localStorage.getItem('platform_access_token');
-    return token ? children : <Navigate to="/platform/login" />;
 }
 
 export default function App() {
@@ -140,47 +133,6 @@ export default function App() {
         <AuthContext.Provider value={{ user, login, logout }}>
             <BrowserRouter basename="/admin">
                 <Routes>
-                    <Route path="/platform/login" element={<PlatformLogin />} />
-                    <Route
-                        path="/platform/operators"
-                        element={
-                            <PlatformRoute>
-                                <PlatformOperators />
-                            </PlatformRoute>
-                        }
-                    />
-                    <Route
-                        path="/platform/operators/new"
-                        element={
-                            <PlatformRoute>
-                                <PlatformOperatorNew />
-                            </PlatformRoute>
-                        }
-                    />
-                    <Route
-                        path="/platform/operators/:id"
-                        element={
-                            <PlatformRoute>
-                                <PlatformOperatorDetail />
-                            </PlatformRoute>
-                        }
-                    />
-                    <Route
-                        path="/platform/applications"
-                        element={
-                            <PlatformRoute>
-                                <PlatformApplications />
-                            </PlatformRoute>
-                        }
-                    />
-                    <Route
-                        path="/platform/billing"
-                        element={
-                            <PlatformRoute>
-                                <PlatformBilling />
-                            </PlatformRoute>
-                        }
-                    />
                     <Route path="/login" element={<Login />} />
                     <Route
                         path="/*"

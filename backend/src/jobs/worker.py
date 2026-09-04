@@ -2,6 +2,7 @@ from arq import cron
 from arq.connections import RedisSettings
 
 from src.config import get_settings
+from src.jobs.check_exhausted_sessions import check_exhausted_sessions
 from src.jobs.coa_retry import retry_failed_coa_events
 from src.jobs.collect_router_metrics import collect_router_metrics
 from src.jobs.payment_reconciliation import run_payment_reconciliation
@@ -31,12 +32,13 @@ def _redis_settings() -> RedisSettings:
 
 class WorkerSettings:
     redis_settings = _redis_settings()
-    functions = [process_webhook_event, run_payment_reconciliation, expire_vouchers, retry_failed_coa_events, check_router_health, collect_router_metrics, generate_monthly_invoices, handle_trial_expiry, enforce_billing, check_wireguard_tunnels]
+    functions = [process_webhook_event, run_payment_reconciliation, expire_vouchers, retry_failed_coa_events, check_exhausted_sessions, check_router_health, collect_router_metrics, generate_monthly_invoices, handle_trial_expiry, enforce_billing, check_wireguard_tunnels]
     cron_jobs = [
         cron(check_router_health, minute={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58}),
         cron(check_wireguard_tunnels, minute={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58}),
-        cron(expire_vouchers, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
-        cron(retry_failed_coa_events, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
+        cron(expire_vouchers, second=0),
+        cron(retry_failed_coa_events, second=30),
+        cron(check_exhausted_sessions, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
         cron(run_payment_reconciliation, minute={0, 10, 20, 30, 40, 50}),
         cron(collect_router_metrics, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
         cron(generate_monthly_invoices, hour=0, minute=0),

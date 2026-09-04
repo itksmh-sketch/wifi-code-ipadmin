@@ -180,6 +180,10 @@ class VoucherGenerate(BaseModel):
     site_id: Optional[uuid.UUID] = None
     quantity: int = 10
     device_policy: DevicePolicy = DevicePolicy.single
+    # Number of alphanumeric characters in the code, excluding the dashes the
+    # printed form is grouped with. Bounds are enforced server-side in the engine
+    # (validate_code_length); None keeps the historical 16.
+    code_length: Optional[int] = None
 
 
 class VoucherUpdate(BaseModel):

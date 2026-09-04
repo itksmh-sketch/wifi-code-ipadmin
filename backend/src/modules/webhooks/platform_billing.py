@@ -1,6 +1,6 @@
 """
 Platform billing webhook — separate from per-operator webhooks.
-Uses PLATFORM_BILLING_PAYSTACK_WEBHOOK_SECRET for signature verification.
+Requires PLATFORM_BILLING_PAYSTACK_WEBHOOK_SECRET; requests are refused if it is unset.
 """
 from __future__ import annotations
 import hashlib
@@ -35,9 +35,15 @@ async def platform_billing_webhook(request: Request, db: AsyncSession = Depends(
     raw_body = await request.body()
     signature = request.headers.get("x-paystack-signature", "")
 
-    if settings.platform_billing_paystack_webhook_secret:
-        if not _verify_signature(raw_body, signature, settings.platform_billing_paystack_webhook_secret):
-            raise HTTPException(401, "Invalid webhook signature")
+    webhook_secret = settings.platform_billing_paystack_webhook_secret
+    if not webhook_secret:
+        # Fail closed: with no configured secret we cannot verify anything, so the
+        # payload must be refused rather than trusted. Paystack retries non-2xx,
+        # so deliveries are not lost once the secret is configured.
+        logger.error("platform_billing_webhook rejected reason=webhook_secret_not_configured")
+        raise HTTPException(403, "Platform billing webhook secret is not configured")
+    if not _verify_signature(raw_body, signature, webhook_secret):
+        raise HTTPException(401, "Invalid webhook signature")
 
     try:
         payload = json.loads(raw_body)
