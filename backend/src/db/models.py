@@ -1,6 +1,6 @@
 import uuid
 import datetime
-from sqlalchemy import Column, String, Text, Integer, Float, Boolean, DateTime, ForeignKey, BigInteger, Numeric, func
+from sqlalchemy import CheckConstraint, Column, String, Text, Integer, Float, Boolean, DateTime, ForeignKey, BigInteger, Numeric, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID, INET, MACADDR, ENUM, JSONB
 from sqlalchemy.orm import relationship
 from src.db.base import Base
@@ -149,6 +149,57 @@ class PlatformSetting(Base):
     key = Column(String(128), primary_key=True)
     value = Column(Text, nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ProviderCatalogEntry(Base):
+    """Catalog of the payment and SMS providers the platform knows about.
+
+    Rows come only from migration 021 / the re-runnable seed — there is no
+    create or delete API.  The platform admin writes exactly two fields:
+    ``is_available`` (offer this provider to operators) and, on platform-provided
+    SMS entries, ``platform_rate_per_message``.
+
+    ``is_platform_provided`` distinguishes the two SMS models: True means the
+    platform's own gateway credentials are used and operators are billed per
+    message on their monthly invoice; False means the operator brings their own
+    credentials and is billed by that gateway directly.  ``credential_schema``
+    carries ``configured_by`` ("operator" or "platform_admin") plus the field
+    descriptors the later operator-config UI renders.
+
+    See [[provider-catalog]] and src/modules/platform/provider_catalog.py.
+    """
+    __tablename__ = "provider_catalog"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    category = Column(
+        ENUM("payment", "sms", name="provider_category", create_type=False),
+        nullable=False,
+    )
+    provider_key = Column(String(64), nullable=False)
+    display_name = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    credential_schema = Column(JSONB, nullable=False, server_default="'{}'")
+    # Is the send/charge path actually built? Gates the availability toggle.
+    is_integrated = Column(Boolean, nullable=False, server_default="false")
+    is_available = Column(Boolean, nullable=False, server_default="false")
+    is_platform_provided = Column(Boolean, nullable=False, server_default="false")
+    # Only meaningful when is_platform_provided; unused until SMS billing lands.
+    platform_rate_per_message = Column(Numeric(10, 4), nullable=True)
+    sort_order = Column(Integer, nullable=False, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("category", "provider_key", name="uq_provider_catalog_category_key"),
+        CheckConstraint(
+            "NOT (is_available AND NOT is_integrated)",
+            name="ck_provider_catalog_available_requires_integrated",
+        ),
+        CheckConstraint(
+            "platform_rate_per_message IS NULL OR is_platform_provided",
+            name="ck_provider_catalog_rate_requires_platform_provided",
+        ),
+    )
 
 
 class WgIpAllocation(Base):

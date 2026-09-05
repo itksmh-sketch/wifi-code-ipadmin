@@ -16,6 +16,7 @@ from src.db.models import (
     PaymentTransaction,
     PlatformOwner,
     Plan,
+    ProviderCatalogEntry,
     Router,
     RouterCredential,
     RouterSetupStatus,
@@ -30,7 +31,7 @@ from src.modules.mikrotik import setup_status as setup_store
 # drill-down can never disagree with what an operator's own dashboard shows.
 from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 from src.middleware.rate_limit import enforce_rate_limit
-from src.schemas import LoginRequest, PlatformAdminCreate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, RefreshRequest, TokenResponse
+from src.schemas import LoginRequest, PlatformAdminCreate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse
 from src.utils.auth import (
     create_platform_owner_access_token,
     create_platform_owner_refresh_token,
@@ -714,3 +715,96 @@ async def platform_service_health(
     from src.modules.platform.health_service import collect_service_health
 
     return await collect_service_health()
+
+
+# --- Provider catalog (platform owner only) ---
+
+def _catalog_row(entry: ProviderCatalogEntry) -> dict:
+    return {
+        "id": str(entry.id),
+        "category": entry.category,
+        "provider_key": entry.provider_key,
+        "display_name": entry.display_name,
+        "description": entry.description,
+        "credential_schema": entry.credential_schema or {},
+        "is_integrated": bool(entry.is_integrated),
+        "is_available": bool(entry.is_available),
+        "is_platform_provided": bool(entry.is_platform_provided),
+        # String, not float: the rate is Numeric(10,4) and money must not go
+        # through a binary float on the way to the browser.
+        "platform_rate_per_message": (
+            str(entry.platform_rate_per_message) if entry.platform_rate_per_message is not None else None
+        ),
+        "sort_order": entry.sort_order,
+    }
+
+
+@router.get("/providers", response_model=dict[str, list[ProviderCatalogEntryResponse]])
+async def list_provider_catalog(
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """The full provider catalog, grouped by category.
+
+    Rows are read-only apart from the availability toggle and the per-message
+    rate; there is deliberately no create or delete endpoint, since the catalog
+    is defined by the migration/seed.
+    """
+    result = await db.execute(
+        select(ProviderCatalogEntry).order_by(
+            ProviderCatalogEntry.category,
+            ProviderCatalogEntry.sort_order,
+            ProviderCatalogEntry.display_name,
+        )
+    )
+    entries = result.scalars().all()
+    grouped: dict[str, list] = {"payment": [], "sms": []}
+    for entry in entries:
+        grouped.setdefault(entry.category, []).append(_catalog_row(entry))
+    return grouped
+
+
+@router.put("/providers/{entry_id}", response_model=ProviderCatalogEntryResponse)
+async def update_provider_catalog_entry(
+    entry_id: uuid.UUID,
+    body: ProviderCatalogUpdate,
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Toggle availability and/or set the platform per-message rate.
+
+    Enabling a provider whose integration does not exist yet is a 409, not a
+    silently-ignored write — the UI disables the control, but the server is what
+    actually guarantees operators are never offered a dead provider.
+    """
+    entry = (
+        await db.execute(select(ProviderCatalogEntry).where(ProviderCatalogEntry.id == entry_id))
+    ).scalar_one_or_none()
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    if body.is_available is not None:
+        if body.is_available and not entry.is_integrated:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{entry.display_name} is not yet integrated and cannot be made available to operators.",
+            )
+        entry.is_available = body.is_available
+
+    if body.clear_platform_rate:
+        entry.platform_rate_per_message = None
+    elif body.platform_rate_per_message is not None:
+        if not entry.is_platform_provided:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{entry.display_name} is not platform-provided; operators are billed by the "
+                    "provider directly, so there is no platform rate to set."
+                ),
+            )
+        entry.platform_rate_per_message = body.platform_rate_per_message
+
+    entry.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(entry)
+    return _catalog_row(entry)

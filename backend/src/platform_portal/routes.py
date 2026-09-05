@@ -38,6 +38,11 @@ async def platform_settings_page():
     return FileResponse(_DIR / "settings.html")
 
 
+@router.get("/platform/providers", include_in_schema=False)
+async def platform_providers_page():
+    return FileResponse(_DIR / "providers.html")
+
+
 @router.get("/platform/health", include_in_schema=False)
 async def platform_health_page():
     return FileResponse(_DIR / "health.html")

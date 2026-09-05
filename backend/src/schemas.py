@@ -1,6 +1,7 @@
 from pydantic import BaseModel, BeforeValidator, Field, field_validator
 from typing import Annotated, Optional
 from datetime import datetime
+from decimal import Decimal
 import uuid
 from enum import Enum
 
@@ -447,3 +448,32 @@ class ResellerWalletTransactionResponse(BaseModel):
     created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+
+# --- Provider catalog (platform owner only) ---
+
+class ProviderCatalogEntryResponse(BaseModel):
+    id: uuid.UUID
+    category: str
+    provider_key: str
+    display_name: str
+    description: Optional[str] = None
+    credential_schema: dict = Field(default_factory=dict)
+    is_integrated: bool
+    is_available: bool
+    is_platform_provided: bool
+    # Serialised as a string so the 4-decimal rate survives the JSON round-trip
+    # without float rounding.
+    platform_rate_per_message: Optional[str] = None
+    sort_order: int
+
+    model_config = {"from_attributes": True}
+
+
+class ProviderCatalogUpdate(BaseModel):
+    """Platform-admin-editable fields. Both optional — send only what changes."""
+    is_available: Optional[bool] = None
+    platform_rate_per_message: Optional[Decimal] = Field(default=None, ge=0)
+    # Distinguishes "leave the rate alone" (field omitted) from "clear the rate"
+    # (this flag), since None already means "not sent".
+    clear_platform_rate: bool = False

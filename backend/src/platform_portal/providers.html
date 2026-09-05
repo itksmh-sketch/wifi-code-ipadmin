@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Providers — Platform Admin</title>
+  <link rel="stylesheet" href="/platform/statics/app.css">
+  <style>
+    #toast{position:fixed;top:20px;right:20px;z-index:1000;padding:12px 18px;border-radius:10px;
+      border:1px solid rgba(34,197,94,.35);background:rgba(34,197,94,.16);color:#bbf7d0;font-size:14px;
+      font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(-8px);
+      transition:opacity .2s,transform .2s;pointer-events:none}
+    #toast.show{opacity:1;transform:translateY(0)}
+    #toast.bad{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.16);color:#fca5a5}
+
+    /* Three states must be readable at a glance, so each gets its own colour,
+       its own badge wording and its own control affordance. */
+    .switch{position:relative;display:inline-block;width:42px;height:24px;flex:none}
+    .switch input{position:absolute;opacity:0;width:0;height:0;padding:0;margin:0}
+    .slider{position:absolute;inset:0;border-radius:999px;background:#1e293b;border:1px solid var(--border);
+      cursor:pointer;transition:background .15s,border-color .15s}
+    .slider::before{content:"";position:absolute;height:16px;width:16px;left:3px;top:3px;border-radius:50%;
+      background:var(--muted);transition:transform .15s,background .15s}
+    .switch input:checked + .slider{background:rgba(34,197,94,.3);border-color:rgba(34,197,94,.5)}
+    .switch input:checked + .slider::before{transform:translateX(18px);background:#22c55e}
+    .switch input:focus-visible + .slider{box-shadow:0 0 0 3px rgba(99,102,241,.25)}
+    .switch input:disabled + .slider{cursor:not-allowed;opacity:.4}
+
+    tr.locked td{opacity:.55}
+    tr.locked td .provider-name::after{content:" 🔒";opacity:.7;font-size:11px}
+    .badge.integrated{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.35);color:#fcd34d}
+    .badge.locked{background:rgba(148,163,184,.1);border-color:var(--border);color:var(--muted)}
+    .badge.platform{background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.35);color:#c7d2fe}
+
+    .provider-name{font-weight:600}
+    .provider-desc{color:var(--muted);font-size:12px;margin-top:3px;max-width:440px;line-height:1.45}
+    .rate-cell{white-space:nowrap}
+    .rate-cell input{width:96px;display:inline-block;padding:7px 10px;font-size:13px;text-align:right}
+    .rate-cell .dash{color:var(--muted)}
+    .rate-prefix{color:var(--muted);font-size:12px;margin-right:5px}
+    .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:18px}
+    .legend span{display:inline-flex;align-items:center;gap:6px}
+    .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+    .dot.on{background:#22c55e}.dot.off{background:#f59e0b}.dot.no{background:var(--muted)}
+  </style>
+</head>
+<body>
+<div class="container">
+  <nav class="nav">
+    <span class="brand">Platform <span>Admin</span></span>
+    <div class="links">
+      <a href="/platform/operators" class="btn">← Operators</a>
+      <a href="/platform/health" class="btn">Service Health</a>
+      <a href="/platform/settings" class="btn">Settings</a>
+      <button class="btn" id="logout-btn">Logout</button>
+    </div>
+  </nav>
+
+  <div class="section-title">Providers</div>
+  <p class="section-sub">
+    Payment and SMS providers operators can choose from. Switching one on makes it selectable
+    by every operator — only providers with a working integration can be switched on.
+  </p>
+
+  <div class="legend">
+    <span><i class="dot on"></i> Available — operators can select it</span>
+    <span><i class="dot off"></i> Integrated, switched off</span>
+    <span><i class="dot no"></i> Not yet integrated — cannot be switched on</span>
+  </div>
+
+  <div id="msg" class="notice bad" style="display:none;margin-bottom:16px"></div>
+
+  <div id="main" style="display:none">
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header">
+        <h2 class="card-title">Payment providers</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th style="width:44%">Provider</th>
+              <th>Status</th>
+              <th>Available to operators</th>
+            </tr>
+          </thead>
+          <tbody id="payment-rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">SMS providers</h2>
+      </div>
+      <p class="text-muted" style="margin:-8px 0 14px">
+        A <span class="badge platform">Platform gateway</span> entry sends through the platform's own
+        account — operators pay us per message on their monthly invoice, at the rate set here. Every
+        other entry is bring-your-own: the operator supplies credentials and is billed by that gateway
+        directly, and the platform charges nothing.
+      </p>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th style="width:38%">Provider</th>
+              <th>Status</th>
+              <th>Rate / message</th>
+              <th>Available to operators</th>
+            </tr>
+          </thead>
+          <tbody id="sms-rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const token = localStorage.getItem('platform_access_token');
+if (!token) { window.location.replace('/platform/login'); }
+
+document.getElementById('logout-btn').addEventListener('click', () => {
+  localStorage.removeItem('platform_access_token');
+  localStorage.removeItem('platform_refresh_token');
+  window.location.href = '/platform/login';
+});
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: {
+      'Authorization': 'Bearer ' + localStorage.getItem('platform_access_token'),
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('platform_access_token');
+    window.location.replace('/platform/login');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
+function showError(text) {
+  const msg = document.getElementById('msg');
+  msg.textContent = text;
+  msg.style.display = 'block';
+}
+function hideError() { document.getElementById('msg').style.display = 'none'; }
+
+let toastTimer = null;
+function showToast(text, bad) {
+  const t = document.getElementById('toast');
+  t.textContent = text;
+  t.className = bad ? 'bad show' : 'show';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// The three states, in priority order. `locked` is the only one that disables
+// the toggle — the server rejects the write too (409), this just stops the
+// admin from making it.
+function statusBadge(p) {
+  if (!p.is_integrated) return '<span class="badge locked">Not yet integrated</span>';
+  if (p.is_available) return '<span class="badge active">Available</span>';
+  return '<span class="badge integrated">Integrated — off</span>';
+}
+
+function nameCell(p) {
+  const platformTag = p.is_platform_provided
+    ? ' <span class="badge platform">Platform gateway</span>' : '';
+  return `<div class="provider-name">${esc(p.display_name)}${platformTag}</div>`
+       + (p.description ? `<div class="provider-desc">${esc(p.description)}</div>` : '');
+}
+
+function toggleCell(p) {
+  const dis = p.is_integrated ? '' : ' disabled';
+  const chk = p.is_available ? ' checked' : '';
+  const title = p.is_integrated ? '' : ' title="This provider has no working integration yet."';
+  return `<label class="switch"${title}>`
+       + `<input type="checkbox" data-id="${esc(p.id)}" data-field="is_available"${chk}${dis}>`
+       + `<span class="slider"></span></label>`;
+}
+
+// The rate only exists on platform-provided entries; everyone else is billed by
+// their own gateway, so there is nothing for us to charge.
+function rateCell(p) {
+  if (!p.is_platform_provided) {
+    return '<span class="dash" title="Operator is billed by the provider directly">—</span>';
+  }
+  const val = p.platform_rate_per_message == null ? '' : esc(p.platform_rate_per_message);
+  return `<span class="rate-prefix">GHS</span>`
+       + `<input type="number" step="0.0001" min="0" placeholder="unset" value="${val}"`
+       + ` data-id="${esc(p.id)}" data-field="platform_rate_per_message"`
+       + ` data-original="${val}" title="Charged to operators per SMS sent through the platform gateway.">`;
+}
+
+function render(data) {
+  document.getElementById('payment-rows').innerHTML = (data.payment || []).map(p => `
+    <tr class="${p.is_integrated ? '' : 'locked'}">
+      <td>${nameCell(p)}</td>
+      <td>${statusBadge(p)}</td>
+      <td>${toggleCell(p)}</td>
+    </tr>`).join('') || '<tr><td colspan="3" class="text-muted">No payment providers.</td></tr>';
+
+  document.getElementById('sms-rows').innerHTML = (data.sms || []).map(p => `
+    <tr class="${p.is_integrated ? '' : 'locked'}">
+      <td>${nameCell(p)}</td>
+      <td>${statusBadge(p)}</td>
+      <td class="rate-cell">${rateCell(p)}</td>
+      <td>${toggleCell(p)}</td>
+    </tr>`).join('') || '<tr><td colspan="4" class="text-muted">No SMS providers.</td></tr>';
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('main').style.display = 'block';
+}
+
+async function load() {
+  try {
+    const res = await api('/api/v1/platform/providers');
+    if (!res.ok) throw new Error('Failed to load');
+    render(await res.json());
+  } catch (e) {
+    document.getElementById('loading').textContent = 'Failed to load providers. Check your session.';
+  }
+}
+
+async function save(id, body) {
+  const res = await api('/api/v1/platform/providers/' + id, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || 'Update failed.');
+  return data;
+}
+
+// A failed toggle must not leave the switch showing a state the server rejected,
+// so any error reloads from the server rather than trusting the optimistic flip.
+document.addEventListener('change', async e => {
+  const el = e.target;
+  if (el.dataset.field !== 'is_available') return;
+  hideError();
+  el.disabled = true;
+  try {
+    await save(el.dataset.id, { is_available: el.checked });
+    showToast(el.checked ? 'Provider is now available to operators' : 'Provider switched off');
+  } catch (err) {
+    showError(err.message);
+    showToast(err.message, true);
+  } finally {
+    await load();
+  }
+});
+
+document.addEventListener('change', async e => {
+  const el = e.target;
+  if (el.dataset.field !== 'platform_rate_per_message') return;
+  const raw = el.value.trim();
+  if (raw === el.dataset.original) return;
+  hideError();
+  el.disabled = true;
+  try {
+    // Empty box means "no rate set yet", which is a real state (NULL), not zero.
+    const body = raw === ''
+      ? { clear_platform_rate: true }
+      : { platform_rate_per_message: raw };
+    await save(el.dataset.id, body);
+    showToast(raw === '' ? 'Rate cleared' : 'Rate saved');
+  } catch (err) {
+    showError(err.message);
+    showToast(err.message, true);
+  } finally {
+    await load();
+  }
+});
+
+load();
+</script>
+</body>
+</html>
