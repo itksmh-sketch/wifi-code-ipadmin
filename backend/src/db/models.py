@@ -73,6 +73,46 @@ class OperatorPaymentCredential(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
+class PlatformPaymentCredential(Base):
+    """The platform's own payment keys — how operator subscriptions are collected.
+
+    Not to be confused with [[OperatorPaymentCredential]], which is an operator's
+    keys for selling vouchers to their own customers. This one is platform-level.
+
+    One row per provider, at most one active (partial unique index on
+    ``is_active``). Secrets are Fernet ciphertext and are never returned in full
+    by the API — reads are masked to the last 4 characters, same discipline as
+    the operator table. When no active row exists the resolver falls back to the
+    PLATFORM_BILLING_PAYSTACK_* env vars.
+
+    See src/modules/platform/payment_credentials_service.py.
+    """
+    __tablename__ = "platform_payment_credentials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    provider = Column(
+        ENUM(
+            "paystack", "flutterwave", "mtn_momo", "vodafone_cash", "airteltigo",
+            name="platform_payment_provider",
+            create_type=False,
+        ),
+        nullable=False,
+        server_default="'paystack'",
+    )
+    public_key_encrypted = Column(Text, nullable=False)
+    secret_key_encrypted = Column(Text, nullable=False)
+    webhook_secret_encrypted = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, server_default="true")
+    last_validated_at = Column(DateTime(timezone=True), nullable=True)
+    last_validation_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("provider", name="uq_platform_payment_credentials_provider"),
+    )
+
+
 class Town(Base):
     __tablename__ = "towns"
 

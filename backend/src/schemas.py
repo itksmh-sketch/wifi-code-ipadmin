@@ -395,6 +395,24 @@ class PlatformOperatorCreate(BaseModel):
     contact_phone: Optional[str] = None
     initial_admin_email: str
     initial_admin_password: str
+    # Required: an operator created without a fee gets GHS 0.00 invoices, which
+    # cannot be paid (Paystack rejects a zero charge) and therefore run straight
+    # through the grace period into suspension.
+    monthly_fee_ghs: Decimal = Field(ge=0)
+    # Omit for the historical behaviour — billing starts immediately. Supply a
+    # day count to put the operator on a trial first, matching the self-service
+    # application path.
+    trial_days: Optional[int] = Field(default=None, ge=1, le=365)
+
+
+class PlatformOperatorBillingUpdate(BaseModel):
+    """Body for PUT /platform/operators/{id}/billing.
+
+    These were previously bare function arguments, which FastAPI bound to the
+    query string — a JSON body was silently ignored.
+    """
+    monthly_fee_ghs: Optional[Decimal] = Field(default=None, ge=0)
+    extend_trial_days: Optional[int] = Field(default=None, ge=1, le=365)
 
 
 class PlatformAdminCreate(BaseModel):
@@ -477,3 +495,42 @@ class ProviderCatalogUpdate(BaseModel):
     # Distinguishes "leave the rate alone" (field omitted) from "clear the rate"
     # (this flag), since None already means "not sent".
     clear_platform_rate: bool = False
+
+
+# --- Platform payment credentials (platform owner only) ---
+
+class PlatformPaymentProvider(str, Enum):
+    paystack = "paystack"
+
+
+class PlatformPaymentCredentialUpdate(BaseModel):
+    provider: PlatformPaymentProvider = PlatformPaymentProvider.paystack
+    public_key: str
+    secret_key: str
+    webhook_secret: Optional[str] = None
+    is_active: bool = True
+
+
+class PlatformPaymentCredentialResponse(BaseModel):
+    """Masked read. Raw key material is never carried on this model.
+
+    Three facts, deliberately separate — collapsing them is what made a
+    stored-but-deactivated row indistinguishable from no row at all:
+      * ``is_stored``     — a credential row exists
+      * ``is_active``     — that row is the one in force
+      * ``is_configured`` — usable keys resolved from somewhere (row or .env)
+    """
+    provider: str = "paystack"
+    # Last-4 of the stored row when one exists, otherwise of the .env values.
+    public_key_last4: Optional[str] = None
+    secret_key_last4: Optional[str] = None
+    webhook_secret_last4: Optional[str] = None
+    is_stored: bool = False
+    stored_updated_at: Optional[datetime] = None
+    is_active: bool = False
+    is_configured: bool = False
+    # "db" when an active row supplies the keys, "env" when falling back to
+    # PLATFORM_BILLING_PAYSTACK_*, so the UI can say which is actually in force.
+    source: str = "env"
+    last_validated_at: Optional[datetime] = None
+    last_validation_error: Optional[str] = None

@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timezone
+﻿from datetime import datetime, timedelta, timezone
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -11,10 +11,12 @@ from typing import Optional
 from src.db.models import (
     AdminUser,
     ISPOperator,
+    OperatorBillingEvent,
     OperatorInvoice,
     OperatorPaymentCredential,
     PaymentTransaction,
     PlatformOwner,
+    PlatformPaymentCredential,
     Plan,
     ProviderCatalogEntry,
     Router,
@@ -31,7 +33,8 @@ from src.modules.mikrotik import setup_status as setup_store
 # drill-down can never disagree with what an operator's own dashboard shows.
 from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 from src.middleware.rate_limit import enforce_rate_limit
-from src.schemas import LoginRequest, PlatformAdminCreate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse
+from src.schemas import LoginRequest, PlatformAdminCreate, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse
+from src.utils.encryption import encrypt_secret
 from src.utils.auth import (
     create_platform_owner_access_token,
     create_platform_owner_refresh_token,
@@ -164,18 +167,32 @@ async def create_operator(
     if existing_admin:
         raise HTTPException(status_code=409, detail="Initial admin email already exists")
 
+    now = datetime.now(timezone.utc)
+    on_trial = body.trial_days is not None
     operator = ISPOperator(
         name=body.name,
         slug=body.slug,
         contact_email=str(body.contact_email),
         contact_phone=body.contact_phone,
         status="approved",
-        approved_at=datetime.now(timezone.utc),
+        approved_at=now,
         approved_by_platform_owner_id=owner.id,
-        billing_status="active",
+        monthly_fee_ghs=body.monthly_fee_ghs,
+        billing_status="trial" if on_trial else "active",
+        trial_ends_at=(now + timedelta(days=body.trial_days)) if on_trial else None,
     )
     db.add(operator)
     await db.flush()
+
+    if on_trial:
+        db.add(
+            OperatorBillingEvent(
+                isp_operator_id=operator.id,
+                event_type="trial_started",
+                description=f"Trial started for {operator.name}. Ends {operator.trial_ends_at.date()}.",
+                event_metadata={"trial_days": body.trial_days, "monthly_fee_ghs": str(body.monthly_fee_ghs)},
+            )
+        )
 
     admin = AdminUser(
         isp_operator_id=operator.id,
@@ -584,34 +601,67 @@ async def platform_billing_operators(
     _: PlatformOwner = Depends(get_platform_owner_context),
 ):
     operators = (await db.execute(select(ISPOperator).order_by(ISPOperator.name))).scalars().all()
+
+    # An operator can carry several unpaid invoices at once, so these are
+    # aggregated rather than fetched as a single row — reading one invoice with
+    # scalar_one_or_none() raised MultipleResultsFound and 500'd the endpoint.
+    outstanding_rows = (
+        await db.execute(
+            select(
+                OperatorInvoice.isp_operator_id,
+                func.count().label("count"),
+                func.coalesce(func.sum(OperatorInvoice.amount_ghs), 0).label("total"),
+                func.min(OperatorInvoice.due_at).label("next_due_at"),
+            )
+            .where(OperatorInvoice.status.in_(["issued", "overdue"]))
+            .group_by(OperatorInvoice.isp_operator_id)
+        )
+    ).all()
+    outstanding_by_operator = {row.isp_operator_id: row for row in outstanding_rows}
+
+    # The oldest unpaid invoice is the one the operator is chased for, so it is
+    # the one worth naming on the row.
+    oldest_rows = (
+        await db.execute(
+            select(OperatorInvoice)
+            .where(OperatorInvoice.status.in_(["issued", "overdue"]))
+            .order_by(OperatorInvoice.isp_operator_id, OperatorInvoice.created_at.asc())
+        )
+    ).scalars().all()
+    oldest_by_operator: dict = {}
+    for invoice in oldest_rows:
+        oldest_by_operator.setdefault(invoice.isp_operator_id, invoice)
+
+    last_paid_rows = (
+        await db.execute(
+            select(
+                OperatorInvoice.isp_operator_id,
+                func.max(OperatorInvoice.paid_at).label("last_paid_at"),
+            )
+            .where(OperatorInvoice.status == "paid")
+            .group_by(OperatorInvoice.isp_operator_id)
+        )
+    ).all()
+    last_paid_by_operator = {row.isp_operator_id: row.last_paid_at for row in last_paid_rows}
+
     rows = []
     for op in operators:
-        outstanding = (
-            await db.execute(
-                select(OperatorInvoice).where(
-                    OperatorInvoice.isp_operator_id == op.id,
-                    OperatorInvoice.status.in_(["issued", "overdue"]),
-                )
-            )
-        ).scalar_one_or_none()
-        last_paid = (
-            await db.execute(
-                select(OperatorInvoice).where(
-                    OperatorInvoice.isp_operator_id == op.id,
-                    OperatorInvoice.status == "paid",
-                ).order_by(OperatorInvoice.paid_at.desc()).limit(1)
-            )
-        ).scalar_one_or_none()
+        outstanding = outstanding_by_operator.get(op.id)
+        oldest = oldest_by_operator.get(op.id)
+        last_paid_at = last_paid_by_operator.get(op.id)
         rows.append({
             "id": str(op.id),
             "name": op.name,
             "slug": op.slug,
             "billing_status": op.billing_status,
             "monthly_fee_ghs": float(op.monthly_fee_ghs),
-            "last_paid_at": last_paid.paid_at.isoformat() if last_paid and last_paid.paid_at else None,
-            "next_due_at": outstanding.due_at.isoformat() if outstanding and outstanding.due_at else None,
-            "outstanding_amount_ghs": float(outstanding.amount_ghs) if outstanding else 0,
-            "outstanding_invoice_number": outstanding.invoice_number if outstanding else None,
+            "trial_ends_at": op.trial_ends_at.isoformat() if op.trial_ends_at else None,
+            "last_paid_at": last_paid_at.isoformat() if last_paid_at else None,
+            "next_due_at": outstanding.next_due_at.isoformat() if outstanding and outstanding.next_due_at else None,
+            # Total across every unpaid invoice, not just the oldest one.
+            "outstanding_amount_ghs": float(outstanding.total) if outstanding else 0,
+            "outstanding_invoice_count": int(outstanding.count) if outstanding else 0,
+            "outstanding_invoice_number": oldest.invoice_number if oldest else None,
         })
     return rows
 
@@ -619,21 +669,33 @@ async def platform_billing_operators(
 @router.put("/operators/{operator_id}/billing")
 async def update_operator_billing(
     operator_id: uuid.UUID,
-    monthly_fee_ghs: Optional[Decimal] = None,
-    extend_trial_days: Optional[int] = None,
+    body: PlatformOperatorBillingUpdate,
     db: AsyncSession = Depends(get_db),
     _: PlatformOwner = Depends(get_platform_owner_context),
 ):
+    """Set an operator's monthly fee and/or extend their trial."""
     operator = await db.get(ISPOperator, operator_id)
     if not operator:
         raise HTTPException(404, "Operator not found")
-    if monthly_fee_ghs is not None:
-        operator.monthly_fee_ghs = monthly_fee_ghs
-    if extend_trial_days is not None and operator.trial_ends_at:
-        from datetime import timedelta
-        operator.trial_ends_at = operator.trial_ends_at + timedelta(days=extend_trial_days)
+    if body.monthly_fee_ghs is None and body.extend_trial_days is None:
+        raise HTTPException(400, "Provide monthly_fee_ghs and/or extend_trial_days")
+
+    if body.monthly_fee_ghs is not None:
+        operator.monthly_fee_ghs = body.monthly_fee_ghs
+    if body.extend_trial_days is not None:
+        # Previously a silent no-op when the operator had no trial to extend.
+        if not operator.trial_ends_at:
+            raise HTTPException(400, f"{operator.name} is not on a trial, so there is nothing to extend")
+        operator.trial_ends_at = operator.trial_ends_at + timedelta(days=body.extend_trial_days)
+
     await db.commit()
-    return {"message": "Updated", "operator_id": str(operator.id)}
+    await db.refresh(operator)
+    return {
+        "message": "Updated",
+        "operator_id": str(operator.id),
+        "monthly_fee_ghs": float(operator.monthly_fee_ghs),
+        "trial_ends_at": operator.trial_ends_at.isoformat() if operator.trial_ends_at else None,
+    }
 
 
 @router.put("/invoices/{invoice_id}/waive")
@@ -642,7 +704,6 @@ async def waive_invoice(
     db: AsyncSession = Depends(get_db),
     owner: PlatformOwner = Depends(get_platform_owner_context),
 ):
-    from src.db.models import OperatorBillingEvent
     invoice = await db.get(OperatorInvoice, invoice_id)
     if not invoice:
         raise HTTPException(404, "Invoice not found")
@@ -808,3 +869,177 @@ async def update_provider_catalog_entry(
     await db.commit()
     await db.refresh(entry)
     return _catalog_row(entry)
+
+
+# --- Platform payment credentials (platform owner only) ---
+#
+# The platform's own keys — how operator subscriptions are collected. Distinct
+# from /payment-credentials, which is an operator's keys for selling vouchers.
+#
+# Storage and UI only, for now: initiate_invoice_payment and the platform-billing
+# webhook still read settings directly. Switching them to this table is Phase 4,
+# deliberately after the webhook gains amount/currency verification in Phase 3.
+
+def _last4(value: str | None) -> str | None:
+    return value[-4:] if value else None
+
+
+def _validate_paystack_keys(public_key: str, secret_key: str) -> None:
+    if not (public_key.startswith("pk_test_") or public_key.startswith("pk_live_")):
+        raise HTTPException(status_code=400, detail="Paystack public key must start with pk_test_ or pk_live_")
+    if not (secret_key.startswith("sk_test_") or secret_key.startswith("sk_live_")):
+        raise HTTPException(status_code=400, detail="Paystack secret key must start with sk_test_ or sk_live_")
+
+
+# --- PHASE_3_GATE -----------------------------------------------------------
+# Temporary. Delete this block and its single call site (grep PHASE_3_GATE) once
+# the platform-billing webhook verifies the charged amount and currency.
+#
+# Until it does, the webhook treats any charge.success carrying a valid signature
+# as settling its invoice in full — a GHS 1 payment would clear a GHS 500 invoice
+# and reactivate a suspended operator. That is only unexploitable right now
+# because no live keys exist anywhere. Storing a live key is therefore the single
+# action that opens the hole, so it is refused here rather than merely discouraged
+# in the UI. Test-mode keys are unaffected: they move no real money, so Phase 1
+# stays fully exercisable today.
+def _reject_live_keys(public_key: str, secret_key: str) -> None:
+    live = [
+        name for name, value in (("public", public_key), ("secret", secret_key))
+        if value.startswith(("pk_live_", "sk_live_"))
+    ]
+    if live:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Live-mode Paystack {' and '.join(live)} key rejected: the platform-billing "
+                "webhook does not yet verify the charged amount or currency, so a live key "
+                "would let an underpayment settle an invoice in full. Use test-mode keys "
+                "(pk_test_/sk_test_) until that verification ships."
+            ),
+        )
+# --- end PHASE_3_GATE -------------------------------------------------------
+
+
+async def _credential_response(db: AsyncSession) -> PlatformPaymentCredentialResponse:
+    """Masked view of whichever keys are actually in force.
+
+    Only the last 4 characters ever leave this function — the raw values stay in
+    the resolver.
+    """
+    from src.modules.platform import payment_credentials_service as creds_service
+
+    # What is actually in force — the active row, or .env when there is none.
+    keys = await creds_service.resolve_paystack_keys(db)
+    # The stored row, if any, whether or not it is the one in force. A
+    # deactivated row still needs reporting: "stored but switched off" is a
+    # legitimate state (mid provider-switch, say), not an absence.
+    row = await creds_service.get_credential(db)
+    shown = creds_service.keys_from_credential(row) if row is not None else keys
+    return PlatformPaymentCredentialResponse(
+        provider=row.provider if row else "paystack",
+        public_key_last4=_last4(shown.public_key),
+        secret_key_last4=_last4(shown.secret_key),
+        webhook_secret_last4=_last4(shown.webhook_secret),
+        is_stored=row is not None,
+        stored_updated_at=row.updated_at if row else None,
+        is_active=bool(row.is_active) if row else False,
+        is_configured=keys.is_configured,
+        source=keys.source,
+        last_validated_at=row.last_validated_at if row else None,
+        last_validation_error=row.last_validation_error if row else None,
+    )
+
+
+@router.get("/payment-credentials", response_model=PlatformPaymentCredentialResponse)
+async def get_platform_payment_credentials(
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Masked view of the platform's payment keys.
+
+    `source` says whether the values come from the table ("db") or the
+    PLATFORM_BILLING_PAYSTACK_* env vars ("env"), which is the read-through
+    fallback while the table has no active row.
+    """
+    return await _credential_response(db)
+
+
+@router.put("/payment-credentials", response_model=PlatformPaymentCredentialResponse)
+async def update_platform_payment_credentials(
+    body: PlatformPaymentCredentialUpdate,
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Store the platform's payment keys, encrypted at rest.
+
+    Writing a row makes the table authoritative — the .env fallback stops
+    applying the moment an active row exists.
+    """
+    from src.modules.platform import payment_credentials_service as creds_service
+
+    _validate_paystack_keys(body.public_key, body.secret_key)
+    _reject_live_keys(body.public_key, body.secret_key)  # PHASE_3_GATE
+
+    row = await creds_service.get_credential(db, body.provider.value)
+    if row is None:
+        row = PlatformPaymentCredential(provider=body.provider.value)
+        db.add(row)
+
+    row.public_key_encrypted = encrypt_secret(body.public_key)
+    row.secret_key_encrypted = encrypt_secret(body.secret_key)
+    row.webhook_secret_encrypted = encrypt_secret(body.webhook_secret) if body.webhook_secret else None
+    row.is_active = body.is_active
+    # The keys changed, so any previous validation result no longer describes them.
+    row.last_validated_at = None
+    row.last_validation_error = None
+    row.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    return await _credential_response(db)
+
+
+@router.post("/payment-credentials/test", response_model=PlatformPaymentCredentialResponse)
+async def test_platform_payment_credentials(
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Check the resolved keys against Paystack.
+
+    Tests whatever is actually in force, table or .env. The result is only
+    persisted when it came from a stored row — there is nowhere to record a
+    validation against .env values.
+    """
+    import httpx
+
+    from src.modules.platform import payment_credentials_service as creds_service
+
+    keys = await creds_service.resolve_paystack_keys(db)
+    if not keys.is_configured:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Platform payment credentials are not configured — no active row in "
+                "platform_payment_credentials and no PLATFORM_BILLING_PAYSTACK_* values in the environment."
+            ),
+        )
+
+    row = await creds_service.get_active_credential(db)
+    try:
+        async with httpx.AsyncClient(timeout=15.0, base_url="https://api.paystack.co") as client:
+            response = await client.get(
+                "/transaction",
+                params={"perPage": 1},
+                headers={"Authorization": f"Bearer {keys.secret_key}"},
+            )
+            response.raise_for_status()
+    except Exception as exc:
+        if row is not None:
+            row.last_validation_error = str(exc)
+            await db.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if row is not None:
+        row.last_validated_at = datetime.now(timezone.utc)
+        row.last_validation_error = None
+        await db.commit()
+    return await _credential_response(db)

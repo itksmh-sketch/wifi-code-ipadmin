@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Platform Billing — Platform Admin</title>
+  <link rel="stylesheet" href="/platform/statics/app.css">
+  <style>
+    #toast{position:fixed;top:20px;right:20px;z-index:1000;padding:12px 18px;border-radius:10px;
+      border:1px solid rgba(34,197,94,.35);background:rgba(34,197,94,.16);color:#bbf7d0;font-size:14px;
+      font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(-8px);
+      transition:opacity .2s,transform .2s;pointer-events:none}
+    #toast.show{opacity:1;transform:translateY(0)}
+    #toast.bad{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.16);color:#fca5a5}
+
+    .notice.warn{border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.10);color:#fcd34d}
+    .notice.warn strong{color:#fde68a}
+
+    .kv{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;font-size:13px;margin-bottom:18px}
+    .kv dt{color:var(--muted)}
+    .kv dd{margin:0}
+    .mask{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}
+    .mask .dots{color:var(--muted)}
+    .badge.env{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.35);color:#fcd34d}
+    .badge.db{background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.35);color:#c7d2fe}
+    .badge.unset{background:rgba(148,163,184,.1);border-color:var(--border);color:var(--muted)}
+    .badge.off{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.45);color:#fcd34d}
+    .divider{height:1px;background:var(--border);margin:20px 0}
+  </style>
+</head>
+<body>
+<div class="container">
+  <nav class="nav">
+    <span class="brand">Platform <span>Admin</span></span>
+    <div class="links">
+      <a href="/platform/operators" class="btn">← Operators</a>
+      <a href="/platform/providers" class="btn">Providers</a>
+      <a href="/platform/health" class="btn">Service Health</a>
+      <a href="/platform/settings" class="btn">Settings</a>
+      <button class="btn" id="logout-btn">Logout</button>
+    </div>
+  </nav>
+
+  <div class="section-title">Billing</div>
+  <p class="section-sub">
+    The platform's own revenue — what operators pay you each month. Not to be confused with an
+    operator's Paystack keys, which they set themselves for selling vouchers to their customers.
+  </p>
+
+  <div id="msg" class="notice bad" style="display:none;margin-bottom:16px"></div>
+
+  <div id="main" style="display:none">
+    <div class="card" style="max-width:720px">
+      <div class="card-header">
+        <h2 class="card-title">Payment Keys</h2>
+        <span id="source-badge" class="badge unset">—</span>
+      </div>
+
+      <div class="notice warn" style="margin-bottom:18px">
+        <strong>Live keys are refused until webhook verification ships.</strong> The platform-billing
+        webhook does not yet check the charged amount or currency, so an underpayment would settle an
+        invoice in full. Saving a <code>pk_live_</code>/<code>sk_live_</code> key is rejected by the
+        server, not just discouraged here. Test-mode keys (<code>pk_test_</code>/<code>sk_test_</code>)
+        work normally.
+      </div>
+
+      <div id="state-detail" class="notice" style="display:none;margin-bottom:18px"></div>
+
+      <dl class="kv">
+        <dt>Status</dt>                        <dd id="k-configured">—</dd>
+        <dt id="k-keylabel">Keys</dt>          <dd class="text-muted" style="font-size:12px">last 4 characters only</dd>
+        <dt>Public key</dt>                    <dd id="k-public" class="mask">—</dd>
+        <dt>Secret key</dt>                    <dd id="k-secret" class="mask">—</dd>
+        <dt>Webhook secret</dt>                <dd id="k-webhook" class="mask">—</dd>
+        <dt id="k-saved-row" style="display:none">Saved</dt> <dd id="k-saved" style="display:none">—</dd>
+        <dt>Last validated</dt>                <dd id="k-validated">—</dd>
+      </dl>
+
+      <div id="validation-error" class="notice bad" style="display:none;margin-bottom:18px"></div>
+
+      <div class="divider"></div>
+
+      <form id="form" novalidate>
+        <label>Paystack Public Key</label>
+        <input id="public_key" type="text" autocomplete="off" spellcheck="false" placeholder="pk_test_…">
+
+        <label>Paystack Secret Key</label>
+        <input id="secret_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk_test_…">
+
+        <label>Webhook Secret <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+        <input id="webhook_secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="Leave blank to clear">
+
+        <label style="display:flex;align-items:center;gap:8px;margin-top:16px">
+          <input id="is_active" type="checkbox" checked style="width:auto;margin:0">
+          <span style="color:var(--text);font-size:13px">Active — use these keys for platform billing</span>
+        </label>
+        <p class="text-muted" style="margin:6px 0 0 26px">
+          Leave unticked to store keys without putting them in use — e.g. staging a new provider's
+          keys before switching over. Stored-but-inactive keys charge nothing.
+        </p>
+
+        <p class="text-muted" style="margin:10px 0 0">
+          Keys are encrypted at rest and never shown again in full — only the last 4 characters.
+          Re-enter both keys to change either one.
+        </p>
+
+        <div class="spacer"></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn primary" type="submit" id="save-btn">Save keys</button>
+          <button class="btn" type="button" id="test-btn">Test connection</button>
+        </div>
+      </form>
+    </div>
+
+    <p class="text-muted" style="max-width:720px;margin-top:16px">
+      Invoice list, billing summary and per-operator fees land on this page in a later phase.
+    </p>
+  </div>
+
+  <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const token = localStorage.getItem('platform_access_token');
+if (!token) { window.location.replace('/platform/login'); }
+
+document.getElementById('logout-btn').addEventListener('click', () => {
+  localStorage.removeItem('platform_access_token');
+  localStorage.removeItem('platform_refresh_token');
+  window.location.href = '/platform/login';
+});
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: {
+      'Authorization': 'Bearer ' + localStorage.getItem('platform_access_token'),
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('platform_access_token');
+    window.location.replace('/platform/login');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
+function showError(text) {
+  const msg = document.getElementById('msg');
+  msg.textContent = text;
+  msg.style.display = 'block';
+}
+function hideError() { document.getElementById('msg').style.display = 'none'; }
+
+let toastTimer = null;
+function showToast(text, bad) {
+  const t = document.getElementById('toast');
+  t.textContent = text;
+  t.className = bad ? 'bad show' : 'show';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Only the last 4 characters ever reach the browser; the dots are decoration,
+// not a truncated secret.
+function masked(last4) {
+  if (!last4) return '<span class="dots">not set</span>';
+  return `<span class="dots">••••••••</span>${esc(last4)}`;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '<span class="text-muted">never</span>';
+  return new Date(iso).toLocaleString();
+}
+
+// The five states this card can be in. Kept as one resolver so every state —
+// including the legitimate "stored but switched off", which a provider switch
+// puts you in deliberately — explains itself rather than looking like a fault.
+//
+//   is_stored  is_active  is_configured
+//   false      false      false          nothing anywhere
+//   false      false      true           .env supplying the keys
+//   true       true       true           stored row in force
+//   true       false      true           stored row off, .env in force
+//   true       false      false          stored row off, nothing in force
+function describeState(d) {
+  if (d.is_stored && d.is_active) {
+    return {
+      badge: 'db', badgeText: 'Stored keys', keyLabel: 'Stored',
+      status: '<span class="badge active">In use</span>',
+      detail: 'These stored keys are what platform billing uses.',
+      tone: 'good',
+    };
+  }
+  if (d.is_stored && !d.is_active) {
+    return {
+      badge: 'off', badgeText: 'Switched off', keyLabel: 'Stored (not in use)',
+      status: '<span class="badge off">Stored — switched off</span>',
+      detail: d.is_configured
+        ? 'Keys are saved here but marked inactive, so the environment values are being used instead. '
+          + 'Tick <strong>Active</strong> and save to switch over.'
+        : 'Keys are saved here but marked inactive, and there are no environment values to fall back on — '
+          + 'so <strong>nothing is in force</strong> and platform billing cannot charge. '
+          + 'Tick <strong>Active</strong> and save to use them.',
+      tone: d.is_configured ? 'warn' : 'bad',
+    };
+  }
+  if (d.is_configured) {
+    return {
+      badge: 'env', badgeText: 'Environment', keyLabel: 'Environment',
+      status: '<span class="badge env">Environment</span>',
+      detail: 'Falling back to the PLATFORM_BILLING_PAYSTACK_* environment values. '
+            + 'Saving keys here takes over from them.',
+      tone: 'info',
+    };
+  }
+  return {
+    badge: 'unset', badgeText: 'No keys', keyLabel: 'Keys',
+    status: '<span class="badge unset">Not configured</span>',
+    detail: 'Nothing stored here, and no environment values set. Platform billing cannot charge.',
+    tone: 'info',
+  };
+}
+
+function render(d) {
+  const st = describeState(d);
+
+  document.getElementById('k-public').innerHTML = masked(d.public_key_last4);
+  document.getElementById('k-secret').innerHTML = masked(d.secret_key_last4);
+  document.getElementById('k-webhook').innerHTML = masked(d.webhook_secret_last4);
+  document.getElementById('k-validated').innerHTML = fmtDate(d.last_validated_at);
+  document.getElementById('k-keylabel').textContent = st.keyLabel + ' keys';
+  document.getElementById('k-configured').innerHTML = st.status;
+
+  const badge = document.getElementById('source-badge');
+  badge.className = 'badge ' + st.badge;
+  badge.textContent = st.badgeText;
+
+  const stateBox = document.getElementById('state-detail');
+  stateBox.className = 'notice ' + ({ good: 'good', warn: 'warn', bad: 'bad', info: '' }[st.tone] || '');
+  stateBox.innerHTML = st.detail;
+  stateBox.style.display = 'block';
+
+  const savedRow = document.getElementById('k-saved-row');
+  const saved = document.getElementById('k-saved');
+  if (d.is_stored) {
+    saved.innerHTML = fmtDate(d.stored_updated_at);
+    savedRow.style.display = '';
+    saved.style.display = '';
+  } else {
+    savedRow.style.display = 'none';
+    saved.style.display = 'none';
+  }
+
+  const errBox = document.getElementById('validation-error');
+  if (d.last_validation_error) {
+    errBox.textContent = 'Last test failed: ' + d.last_validation_error;
+    errBox.style.display = 'block';
+  } else {
+    errBox.style.display = 'none';
+  }
+
+  // Only mirror a stored row's flag. With no row, is_active is merely "there is
+  // no active row" — priming the checkbox from it silently unchecked Active
+  // before the first save, so every save persisted an inactive row.
+  document.getElementById('is_active').checked = d.is_stored ? d.is_active : true;
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('main').style.display = 'block';
+}
+
+async function load() {
+  try {
+    const res = await api('/api/v1/platform/payment-credentials');
+    if (!res.ok) throw new Error('Failed to load');
+    render(await res.json());
+  } catch (e) {
+    document.getElementById('loading').textContent =
+      'Failed to load payment keys. If the platform_payment_credentials migration has not run yet, this is expected.';
+  }
+}
+
+document.getElementById('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  hideError();
+  const public_key = document.getElementById('public_key').value.trim();
+  const secret_key = document.getElementById('secret_key').value.trim();
+  const webhook_secret = document.getElementById('webhook_secret').value.trim();
+
+  // Both keys are required together: the server replaces the pair, so sending
+  // one would silently blank the other.
+  if (!public_key || !secret_key) {
+    showError('Both the public key and the secret key are required. Re-enter both to change either.');
+    return;
+  }
+
+  const btn = document.getElementById('save-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const res = await api('/api/v1/platform/payment-credentials', {
+      method: 'PUT',
+      body: JSON.stringify({
+        provider: 'paystack',
+        public_key, secret_key,
+        webhook_secret: webhook_secret || null,
+        is_active: document.getElementById('is_active').checked,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.detail || 'Failed to save keys.');
+    } else {
+      ['public_key', 'secret_key', 'webhook_secret'].forEach(id => {
+        document.getElementById(id).value = '';
+      });
+      render(data);
+      showToast('Payment keys saved');
+    }
+  } catch (err) {
+    showError('Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save keys';
+  }
+});
+
+document.getElementById('test-btn').addEventListener('click', async () => {
+  hideError();
+  const btn = document.getElementById('test-btn');
+  btn.disabled = true;
+  btn.textContent = 'Testing…';
+  try {
+    const res = await api('/api/v1/platform/payment-credentials/test', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.detail || 'Test failed.');
+      showToast('Test failed', true);
+      await load();
+    } else {
+      render(data);
+      showToast('Paystack connection OK');
+    }
+  } catch (err) {
+    showError('Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Test connection';
+  }
+});
+
+load();
+</script>
+</body>
+</html>

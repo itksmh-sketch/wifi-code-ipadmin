@@ -50,9 +50,31 @@ async def generate_monthly_invoices(ctx=None):
         try:
             operators = (
                 await db.execute(
-                    select(ISPOperator).where(ISPOperator.billing_status == "active")
+                    select(ISPOperator).where(
+                        ISPOperator.billing_status == "active",
+                        # A zero fee produces a GHS 0.00 invoice, which Paystack
+                        # cannot charge and the operator therefore cannot pay. It
+                        # just runs through the grace period and suspends them.
+                        # Comped and test operators are skipped, not billed.
+                        ISPOperator.monthly_fee_ghs > 0,
+                    )
                 )
             ).scalars().all()
+
+            skipped = (
+                await db.execute(
+                    select(ISPOperator.slug).where(
+                        ISPOperator.billing_status == "active",
+                        ISPOperator.monthly_fee_ghs <= 0,
+                    )
+                )
+            ).scalars().all()
+            if skipped:
+                logger.info(
+                    "invoice_generation_skipped_zero_fee",
+                    operators=list(skipped),
+                    count=len(skipped),
+                )
 
             generated = 0
             for op in operators:
