@@ -628,6 +628,53 @@ class OperatorInvoice(Base):
     paystack_payment_url = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    # amount_ghs above is the sum of these; see OperatorInvoiceLineItem.
+    line_items = relationship(
+        "OperatorInvoiceLineItem",
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+        order_by="OperatorInvoiceLineItem.sort_order",
+    )
+
+
+class OperatorInvoiceLineItem(Base):
+    """One charge on an invoice. The invoice's amount_ghs is the sum of these.
+
+    Add lines only through `billing.service.add_line_item`, which recomputes the
+    parent invoice's total in the same flush — assigning `invoice.amount_ghs`
+    directly, or inserting a line by hand, lets the stored total drift away from
+    what the lines actually sum to.
+
+    `kind` carries sms_usage and adjustment for the SMS billing feature; nothing
+    writes them yet. See [[OperatorInvoice]].
+    """
+    __tablename__ = "operator_invoice_line_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    invoice_id = Column(
+        UUID(as_uuid=True), ForeignKey("operator_invoices.id", ondelete="CASCADE"), nullable=False
+    )
+    kind = Column(
+        ENUM("subscription", "sms_usage", "adjustment", name="invoice_line_item_kind", create_type=False),
+        nullable=False,
+    )
+    description = Column(Text, nullable=False)
+    quantity = Column(Numeric(12, 4), nullable=False, server_default="1")
+    # 4dp, matching provider_catalog.platform_rate_per_message.
+    unit_price_ghs = Column(Numeric(10, 4), nullable=False)
+    # 2dp — money, and what the invoice total sums.
+    amount_ghs = Column(Numeric(10, 2), nullable=False)
+    line_metadata = Column("metadata", JSONB, nullable=True)
+    sort_order = Column(Integer, nullable=False, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    invoice = relationship("OperatorInvoice", back_populates="line_items")
+
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="ck_invoice_line_items_quantity_non_negative"),
+    )
+
 
 class OperatorBillingEvent(Base):
     __tablename__ = "operator_billing_events"
