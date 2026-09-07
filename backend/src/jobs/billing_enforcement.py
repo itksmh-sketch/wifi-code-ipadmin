@@ -108,6 +108,9 @@ async def enforce_billing(ctx=None):
 
                     op.status = "suspended"
                     op.billing_status = "past_due"
+                    # Tags this as billing-caused, so a later payment may lift it.
+                    # A suspension without this tag is never auto-reactivated.
+                    op.suspension_reason = "billing"
 
                     event = OperatorBillingEvent(
                         isp_operator_id=op.id,

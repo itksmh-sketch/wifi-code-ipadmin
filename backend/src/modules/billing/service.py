@@ -28,6 +28,24 @@ async def get_next_invoice_number(db: AsyncSession) -> str:
     return f"INV-{year}-{str(count + 1).zfill(3)}"
 
 
+# Paystack charges in the currency's minor unit: GHS -> pesewas, x100.
+PESEWAS_PER_GHS = Decimal("100")
+# Paystack rejects anything smaller; the operator-side provider enforces the same
+# floor (see modules/payments/providers/paystack.py).
+PAYSTACK_MINIMUM_GHS = Decimal("1.00")
+
+
+def ghs_to_pesewas(amount_ghs: Decimal) -> int:
+    """GHS -> pesewas, the unit Paystack quotes and reports in.
+
+    THE single conversion for platform billing. Charge initiation and webhook
+    amount verification must agree exactly: if one truncated where the other
+    rounded, a genuinely underpaid charge could pass verification as
+    "close enough", or a correct payment could be rejected.
+    """
+    return int((Decimal(amount_ghs) * PESEWAS_PER_GHS).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
 def line_amount(quantity: Decimal, unit_price_ghs: Decimal) -> Decimal:
     """quantity x unit price, rounded to the 2dp the amount column stores.
 
@@ -156,13 +174,32 @@ async def initiate_invoice_payment(
     operator: ISPOperator,
 ) -> str:
     """Returns the Paystack authorization_url."""
-    settings = get_settings()
-    if not settings.platform_billing_paystack_secret_key:
+    # Resolved from platform_payment_credentials, falling back to .env — the same
+    # source the webhook verifies signatures with, so initiation and verification
+    # can never end up on different keys.
+    from src.modules.platform.payment_credentials_service import resolve_paystack_keys
+    from src.modules.platform.settings_service import get_setting
+
+    keys = await resolve_paystack_keys(db)
+    if not keys.is_configured:
         raise ValueError("Platform billing Paystack keys not configured")
 
-    amount_pesewas = int(invoice.amount_ghs * 100)
+    # Refuse below Paystack's floor here rather than sending a doomed request:
+    # a zero-amount invoice is the shape the operator-creation bug produced, and
+    # it fails at Paystack with an opaque error the operator cannot act on.
+    if invoice.amount_ghs < PAYSTACK_MINIMUM_GHS:
+        raise ValueError(
+            f"Invoice {invoice.invoice_number} is GHS {invoice.amount_ghs}, below Paystack's "
+            f"GHS {PAYSTACK_MINIMUM_GHS} minimum charge — it cannot be paid online."
+        )
+
+    amount_pesewas = ghs_to_pesewas(invoice.amount_ghs)
     reference = f"INV-{invoice.id}"
-    callback_url = f"{settings.platform_app_url}/billing/payment-callback"
+    # /api/v1 prefix included: the billing router is mounted under it, so the
+    # bare "/billing/payment-callback" this used to send returned 404 and every
+    # payer landed on an error page after paying.
+    app_url = (await get_setting(db, "platform_app_url")).rstrip("/")
+    callback_url = f"{app_url}/api/v1/billing/payment-callback"
 
     payload = {
         "email": operator.contact_email,
@@ -179,7 +216,7 @@ async def initiate_invoice_payment(
         resp = await client.post(
             "/transaction/initialize",
             json=payload,
-            headers={"Authorization": f"Bearer {settings.platform_billing_paystack_secret_key}"},
+            headers={"Authorization": f"Bearer {keys.secret_key}"},
         )
 
     data = resp.json()
@@ -199,32 +236,74 @@ async def mark_invoice_paid(
     db: AsyncSession,
     invoice: OperatorInvoice,
     payment_reference: str,
+    amount_charged_ghs: Decimal | None = None,
 ) -> OperatorInvoice:
     now = datetime.now(timezone.utc)
     invoice.status = "paid"
     invoice.paid_at = now
     invoice.payment_reference = payment_reference
 
+    # What was actually charged is recorded even when it exceeds the invoice.
+    # Overpayment is accepted rather than credited — there is no credit balance —
+    # so the event metadata is the only record that the excess happened.
+    metadata = {"invoice_number": invoice.invoice_number, "payment_reference": payment_reference}
+    if amount_charged_ghs is not None:
+        metadata["amount_charged_ghs"] = str(amount_charged_ghs)
+        metadata["invoice_amount_ghs"] = str(invoice.amount_ghs)
+
     event = OperatorBillingEvent(
         isp_operator_id=invoice.isp_operator_id,
         event_type="invoice_paid",
         description=f"Invoice {invoice.invoice_number} paid. Reference: {payment_reference}.",
-        event_metadata={"invoice_number": invoice.invoice_number, "payment_reference": payment_reference},
+        event_metadata=metadata,
     )
     db.add(event)
     await db.flush()
     return invoice
 
 
+async def normalise_billing_status(db: AsyncSession, operator: ISPOperator) -> bool:
+    """Put a paid-up operator back to billing_status 'active'. Caller commits.
+
+    Runs on *any* successful payment, independent of suspension. Previously this
+    only happened as a side effect of reactivation, so an operator who paid
+    inside the grace period — past_due but not yet suspended — stayed past_due
+    forever, and generate_monthly_invoices (which selects billing_status ==
+    'active') silently never invoiced them again.
+
+    Returns True if it changed anything.
+    """
+    if operator.billing_status == "active":
+        return False
+    operator.billing_status = "active"
+    await db.flush()
+    return True
+
+
+def is_billing_suspension(operator: ISPOperator) -> bool:
+    """Whether a payment is allowed to lift this operator's suspension.
+
+    Only a suspension raised by the billing system. NULL means we do not know
+    why they are suspended, and unknown is treated as 'no' — wrongly reactivating
+    an operator suspended for abuse is silent and bad, whereas leaving a paid-up
+    operator suspended is visible and manually recoverable.
+    """
+    return operator.status == "suspended" and operator.suspension_reason == "billing"
+
+
 async def reactivate_operator(db: AsyncSession, operator: ISPOperator) -> ISPOperator:
+    """Lift a *billing* suspension. Callers must gate on is_billing_suspension()."""
     operator.status = "approved"
     operator.billing_status = "active"
+    # Clear the tag with the suspension it describes, so an active operator never
+    # carries a stale reason.
+    operator.suspension_reason = None
 
     event = OperatorBillingEvent(
         isp_operator_id=operator.id,
         event_type="reactivated",
         description=f"{operator.name} reactivated after payment.",
-        event_metadata={},
+        event_metadata={"reason": "billing_suspension_cleared_by_payment"},
     )
     db.add(event)
     await db.flush()

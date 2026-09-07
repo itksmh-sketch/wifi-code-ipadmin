@@ -41,6 +41,14 @@ class ISPOperator(Base):
     )
     trial_ends_at = Column(DateTime(timezone=True), nullable=True)
     onboarding_checklist = Column(JSONB, nullable=True, server_default="'{}'")
+    # Why this operator is suspended, so a payment can reverse a billing
+    # suspension without clearing one imposed for abuse. NULL means unknown, and
+    # unknown is treated as "do not auto-reactivate". Only meaningful while
+    # status == 'suspended'; cleared on reactivation.
+    suspension_reason = Column(
+        ENUM("billing", "manual", name="operator_suspension_reason", create_type=False),
+        nullable=True,
+    )
     # Captive-portal branding (all nullable; defaults applied at read time so an
     # unconfigured operator renders identically to the original hardcoded portal).
     portal_display_name = Column(Text, nullable=True)

@@ -250,6 +250,7 @@ async def update_operator_status(
     if not operator:
         raise HTTPException(status_code=404, detail="Operator not found")
 
+    previous_status = operator.status
     operator.status = body.status
     operator.updated_at = datetime.now(timezone.utc)
     if body.status == "approved" and not operator.approved_at:
@@ -257,6 +258,32 @@ async def update_operator_status(
         operator.approved_by_platform_owner_id = owner.id
     if body.status == "cancelled":
         operator.billing_status = "cancelled"
+
+    # A suspension the platform owner imposed is NOT reversible by paying an
+    # invoice. Tagging it is what stops the billing webhook from lifting it.
+    if body.status == "suspended":
+        operator.suspension_reason = "manual"
+    elif previous_status == "suspended":
+        operator.suspension_reason = None
+
+    # Manual status changes previously left no trace at all, so the audit trail
+    # covered only billing-driven suspensions — half the story, and the half you
+    # least need when explaining why an operator's status changed.
+    if body.status == "suspended" and previous_status != "suspended":
+        db.add(OperatorBillingEvent(
+            isp_operator_id=operator.id,
+            event_type="suspended",
+            description=f"{operator.name} suspended by platform owner.",
+            event_metadata={"reason": "manual", "suspended_by_platform_owner_id": str(owner.id)},
+        ))
+    elif previous_status == "suspended" and body.status != "suspended":
+        db.add(OperatorBillingEvent(
+            isp_operator_id=operator.id,
+            event_type="reactivated",
+            description=f"{operator.name} un-suspended by platform owner (status set to {body.status}).",
+            event_metadata={"reason": "manual", "reactivated_by_platform_owner_id": str(owner.id)},
+        ))
+
     await db.commit()
     await db.refresh(operator)
     return await _operator_row(db, operator)
@@ -891,34 +918,6 @@ def _validate_paystack_keys(public_key: str, secret_key: str) -> None:
         raise HTTPException(status_code=400, detail="Paystack secret key must start with sk_test_ or sk_live_")
 
 
-# --- PHASE_3_GATE -----------------------------------------------------------
-# Temporary. Delete this block and its single call site (grep PHASE_3_GATE) once
-# the platform-billing webhook verifies the charged amount and currency.
-#
-# Until it does, the webhook treats any charge.success carrying a valid signature
-# as settling its invoice in full — a GHS 1 payment would clear a GHS 500 invoice
-# and reactivate a suspended operator. That is only unexploitable right now
-# because no live keys exist anywhere. Storing a live key is therefore the single
-# action that opens the hole, so it is refused here rather than merely discouraged
-# in the UI. Test-mode keys are unaffected: they move no real money, so Phase 1
-# stays fully exercisable today.
-def _reject_live_keys(public_key: str, secret_key: str) -> None:
-    live = [
-        name for name, value in (("public", public_key), ("secret", secret_key))
-        if value.startswith(("pk_live_", "sk_live_"))
-    ]
-    if live:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Live-mode Paystack {' and '.join(live)} key rejected: the platform-billing "
-                "webhook does not yet verify the charged amount or currency, so a live key "
-                "would let an underpayment settle an invoice in full. Use test-mode keys "
-                "(pk_test_/sk_test_) until that verification ships."
-            ),
-        )
-# --- end PHASE_3_GATE -------------------------------------------------------
-
 
 async def _credential_response(db: AsyncSession) -> PlatformPaymentCredentialResponse:
     """Masked view of whichever keys are actually in force.
@@ -978,7 +977,6 @@ async def update_platform_payment_credentials(
     from src.modules.platform import payment_credentials_service as creds_service
 
     _validate_paystack_keys(body.public_key, body.secret_key)
-    _reject_live_keys(body.public_key, body.secret_key)  # PHASE_3_GATE
 
     row = await creds_service.get_credential(db, body.provider.value)
     if row is None:
