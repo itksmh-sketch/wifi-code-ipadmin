@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.db.base import async_session_factory
 from src.db.models import ISPOperator, OperatorInvoice
-from src.modules.billing.service import create_invoice
+from src.modules.billing.service import PAYSTACK_MINIMUM_GHS, create_invoice
 from src.modules.notifications import dispatcher as notify
 
 logger = structlog.get_logger(__name__)
@@ -52,11 +52,12 @@ async def generate_monthly_invoices(ctx=None):
                 await db.execute(
                     select(ISPOperator).where(
                         ISPOperator.billing_status == "active",
-                        # A zero fee produces a GHS 0.00 invoice, which Paystack
-                        # cannot charge and the operator therefore cannot pay. It
-                        # just runs through the grace period and suspends them.
-                        # Comped and test operators are skipped, not billed.
-                        ISPOperator.monthly_fee_ghs > 0,
+                        # Billable and payable must be the same threshold. Anything
+                        # below Paystack's floor — zero, or GHS 0.50 — produces an
+                        # invoice that cannot be charged, runs through the grace
+                        # period and suspends the operator. Comped and sub-minimum
+                        # operators are skipped, not billed.
+                        ISPOperator.monthly_fee_ghs >= PAYSTACK_MINIMUM_GHS,
                     )
                 )
             ).scalars().all()
@@ -65,13 +66,13 @@ async def generate_monthly_invoices(ctx=None):
                 await db.execute(
                     select(ISPOperator.slug).where(
                         ISPOperator.billing_status == "active",
-                        ISPOperator.monthly_fee_ghs <= 0,
+                        ISPOperator.monthly_fee_ghs < PAYSTACK_MINIMUM_GHS,
                     )
                 )
             ).scalars().all()
             if skipped:
                 logger.info(
-                    "invoice_generation_skipped_zero_fee",
+                    "invoice_generation_skipped_unpayable_fee",
                     operators=list(skipped),
                     count=len(skipped),
                 )

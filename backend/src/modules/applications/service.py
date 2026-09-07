@@ -4,7 +4,6 @@ import secrets
 import string
 import uuid
 from datetime import datetime, timezone, timedelta
-from decimal import Decimal
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +17,7 @@ from src.db.models import (
     OperatorPaymentCredential,
 )
 from src.utils.auth import hash_password
+from src.modules.billing.service import get_default_monthly_fee
 from src.modules.notifications import dispatcher as notify
 from src.modules.applications.schemas import ApplicationSubmit
 
@@ -79,12 +79,16 @@ async def approve_application(
     db: AsyncSession,
     app: OperatorApplication,
     platform_owner_id: uuid.UUID,
-    monthly_fee_ghs: Decimal,
 ) -> tuple[ISPOperator, str]:
-    """Returns (operator, temp_password)."""
+    """Returns (operator, temp_password).
+
+    The operator's monthly fee is stamped from the platform default at approval
+    time — never supplied by the caller — and stays fixed at that value.
+    """
     settings = get_settings()
     now = datetime.now(timezone.utc)
 
+    monthly_fee_ghs = await get_default_monthly_fee(db)
     base_slug = await _unique_slug(db, _generate_slug(app.isp_name))
     temp_password = _generate_temp_password()
 
@@ -124,7 +128,7 @@ async def approve_application(
         isp_operator_id=operator.id,
         event_type="trial_started",
         description=f"Trial started for {operator.name}. Ends {operator.trial_ends_at.date()}.",
-        event_metadata={"trial_days": settings.trial_days},
+        event_metadata={"trial_days": settings.trial_days, "monthly_fee_ghs": str(monthly_fee_ghs)},
     )
     db.add(event)
 

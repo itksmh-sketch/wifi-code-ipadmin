@@ -91,9 +91,11 @@
   <!-- Approve -->
   <div id="modal-approve" class="card" style="display:none;max-width:420px;width:100%;padding:24px">
     <div class="card-title" style="margin-bottom:6px">Approve application</div>
-    <p class="text-muted" id="approve-sub" style="margin:0 0 14px"></p>
-    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Monthly fee (GHS)</label>
-    <input id="approve-fee" type="number" min="0" step="0.01" value="200.00" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:16px">
+    <p class="text-muted" id="approve-sub" style="margin:0 0 10px"></p>
+    <p class="text-muted" style="margin:0 0 16px">
+      The operator is billed the current platform <strong>Default Monthly Fee</strong>. Change an
+      individual operator's fee on the Billing page after approval.
+    </p>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btn" onclick="closeModals()">Cancel</button>
       <button class="btn primary" id="approve-submit">Approve operator</button>
@@ -311,7 +313,6 @@ function openApprove(id) {
   currentAppId = id;
   const app = allApps.find(a => a.id === id);
   document.getElementById('approve-sub').textContent = app ? `${app.isp_name} — ${app.email}` : '';
-  document.getElementById('approve-fee').value = '200.00';
   showOverlay('modal-approve');
 }
 
@@ -325,10 +326,9 @@ function openReject(id) {
 
 document.getElementById('approve-submit').addEventListener('click', async () => {
   if (!currentAppId) return;
-  const fee = Number(document.getElementById('approve-fee').value);
+  // No body — the operator's fee is stamped from the platform default server-side.
   const res = await api(`/api/v1/platform/applications/${currentAppId}/approve`, {
     method: 'PUT',
-    body: JSON.stringify({ monthly_fee_ghs: fee }),
   });
   const data = await res.json();
   if (!res.ok) { alert(data.detail || 'Failed to approve'); return; }

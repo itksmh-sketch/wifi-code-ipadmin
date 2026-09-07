@@ -2,7 +2,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, nulls_last, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
@@ -33,7 +33,8 @@ from src.modules.mikrotik import setup_status as setup_store
 # drill-down can never disagree with what an operator's own dashboard shows.
 from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 from src.middleware.rate_limit import enforce_rate_limit
-from src.schemas import LoginRequest, PlatformAdminCreate, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse
+from src.schemas import DefaultMonthlyFeeUpdate, LoginRequest, PlatformAdminCreate, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse
+from src.modules.billing.service import DEFAULT_MONTHLY_FEE_KEY, get_default_monthly_fee
 from src.utils.encryption import encrypt_secret
 from src.utils.auth import (
     create_platform_owner_access_token,
@@ -169,6 +170,9 @@ async def create_operator(
 
     now = datetime.now(timezone.utc)
     on_trial = body.trial_days is not None
+    # Stamped from the platform default — never client-supplied. The resolver
+    # guarantees a value the isp_operators CHECK accepts (0 or >= GHS 1.00).
+    monthly_fee_ghs = await get_default_monthly_fee(db)
     operator = ISPOperator(
         name=body.name,
         slug=body.slug,
@@ -177,7 +181,7 @@ async def create_operator(
         status="approved",
         approved_at=now,
         approved_by_platform_owner_id=owner.id,
-        monthly_fee_ghs=body.monthly_fee_ghs,
+        monthly_fee_ghs=monthly_fee_ghs,
         billing_status="trial" if on_trial else "active",
         trial_ends_at=(now + timedelta(days=body.trial_days)) if on_trial else None,
     )
@@ -190,7 +194,7 @@ async def create_operator(
                 isp_operator_id=operator.id,
                 event_type="trial_started",
                 description=f"Trial started for {operator.name}. Ends {operator.trial_ends_at.date()}.",
-                event_metadata={"trial_days": body.trial_days, "monthly_fee_ghs": str(body.monthly_fee_ghs)},
+                event_metadata={"trial_days": body.trial_days, "monthly_fee_ghs": str(monthly_fee_ghs)},
             )
         )
 
@@ -568,18 +572,19 @@ async def operator_infrastructure(
 # ---------------------------------------------------------------------------
 # Platform billing endpoints
 #
-# These have no UI at present. Their only consumer was the React platform page
-# frontend/src/pages/platform/PlatformBilling.jsx, which read /billing/summary
-# and /billing/operators into a summary + per-operator table (its waive button
-# was never implemented — it alerted "use the API directly"). That page was
-# deleted when the React platform-owner portal was retired in favour of the
-# vanilla portal at /platform/*; see git history for the markup it rendered.
+# Consumed by the vanilla platform-billing page at /platform/billing (feature
+# #3, Phase 5): /billing/summary + /billing/operators feed the summary strip and
+# operators table, /billing/invoices the paginated invoices table,
+# /operators/{id}/billing the inline monthly-fee editor, and /invoices/{id}/waive
+# the waive action.
 #
-# /billing/summary, /billing/operators, /operators/{id}/billing and
-# /invoices/{id}/waive are deliberately kept: they are the foundation for the
-# vanilla platform-billing page (feature #3), which is where the retired
-# React page's display should be rebuilt — this time with a working waive.
+# The original consumer was the React page frontend/src/pages/platform/
+# PlatformBilling.jsx (summary + per-operator table, waive never implemented —
+# it alerted "use the API directly"), deleted when the React platform-owner
+# portal was retired in favour of the vanilla portal; see git history.
 # ---------------------------------------------------------------------------
+
+_INVOICES_PAGE_SIZE_MAX = 200
 
 @router.get("/billing/summary")
 async def platform_billing_summary(
@@ -613,13 +618,48 @@ async def platform_billing_summary(
             )
         )
     ).scalar() or Decimal("0")
+    # Same "unpaid" definition the per-operator /billing/operators query uses.
+    total_outstanding = (
+        await db.execute(
+            select(func.coalesce(func.sum(OperatorInvoice.amount_ghs), 0)).where(
+                OperatorInvoice.status.in_(["issued", "overdue"])
+            )
+        )
+    ).scalar() or Decimal("0")
     return {
         "total_active_operators": total_active,
         "operators_on_trial": on_trial,
         "operators_overdue": overdue,
         "monthly_recurring_revenue_ghs": float(mrr),
         "revenue_collected_this_month_ghs": float(collected),
+        "total_outstanding_ghs": float(total_outstanding),
     }
+
+
+@router.get("/billing/default-fee")
+async def get_billing_default_fee(
+    db: AsyncSession = Depends(get_db),
+    _: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """The platform-wide default monthly fee. New operators are created with
+    this value (both onboarding paths); existing operators are unaffected by a
+    change here — edit those on this page's operators table."""
+    return {"default_monthly_fee_ghs": float(await get_default_monthly_fee(db))}
+
+
+@router.put("/billing/default-fee")
+async def set_billing_default_fee(
+    body: DefaultMonthlyFeeUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Set the default. Validated to 0 or >= GHS 1.00 (validate_monthly_fee), so
+    the stored value is always one an operator's CHECK constraint accepts."""
+    from src.modules.platform.settings_service import set_setting
+
+    await set_setting(db, DEFAULT_MONTHLY_FEE_KEY, f"{body.default_monthly_fee_ghs:.2f}")
+    await db.commit()
+    return {"default_monthly_fee_ghs": float(await get_default_monthly_fee(db))}
 
 
 @router.get("/billing/operators")
@@ -691,6 +731,75 @@ async def platform_billing_operators(
             "outstanding_invoice_number": oldest.invoice_number if oldest else None,
         })
     return rows
+
+
+@router.get("/billing/invoices")
+async def platform_billing_invoices(
+    page: int = 1,
+    page_size: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Paginated list of every operator invoice, newest first — feeds the
+    platform billing page's invoices table.
+
+    Ordered by issued_at DESC (NULLS LAST), then id DESC. issued_at is stamped
+    once per invoice in create_invoice(); created_at is func.now() (transaction
+    time) and is identical for a whole cron batch, so it cannot order within
+    one. id is the unique final tiebreaker, making the order total and
+    reproducible.
+
+    `page` floors at 1; `page_size` is clamped to 1..200 and never trusts the
+    client. A `page` past the last one returns an empty list — the normal
+    "paged past the end" case — not an error.
+
+    There is deliberately no create endpoint: invoice numbering is not safe
+    against a manual call racing the monthly cron (feature #3).
+    """
+    page = max(1, page)
+    page_size = max(1, min(page_size, _INVOICES_PAGE_SIZE_MAX))
+
+    total_count = (
+        await db.execute(select(func.count()).select_from(OperatorInvoice))
+    ).scalar() or 0
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+
+    rows = (
+        await db.execute(
+            select(OperatorInvoice, ISPOperator.name, ISPOperator.slug)
+            .join(ISPOperator, OperatorInvoice.isp_operator_id == ISPOperator.id)
+            .order_by(
+                nulls_last(OperatorInvoice.issued_at.desc()),
+                OperatorInvoice.id.desc(),
+            )
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        )
+    ).all()
+
+    return {
+        "invoices": [
+            {
+                "id": str(inv.id),
+                "invoice_number": inv.invoice_number,
+                "operator_id": str(inv.isp_operator_id),
+                "operator_name": name,
+                "operator_slug": slug,
+                "period_start": inv.period_start.isoformat() if inv.period_start else None,
+                "period_end": inv.period_end.isoformat() if inv.period_end else None,
+                "amount_ghs": float(inv.amount_ghs),
+                "status": inv.status,
+                "issued_at": inv.issued_at.isoformat() if inv.issued_at else None,
+                "due_at": inv.due_at.isoformat() if inv.due_at else None,
+                "paid_at": inv.paid_at.isoformat() if inv.paid_at else None,
+            }
+            for inv, name, slug in rows
+        ],
+        "page": page,
+        "page_size": page_size,
+        "total_count": total_count,
+        "total_pages": total_pages,
+    }
 
 
 @router.put("/operators/{operator_id}/billing")

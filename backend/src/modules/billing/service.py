@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 import uuid
 from datetime import datetime, timezone, timedelta, date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import httpx
 from sqlalchemy import select, func
@@ -13,6 +13,7 @@ from src.db.models import (
     OperatorInvoice,
     OperatorInvoiceLineItem,
     OperatorBillingEvent,
+    PlatformSetting,
 )
 
 
@@ -33,6 +34,62 @@ PESEWAS_PER_GHS = Decimal("100")
 # Paystack rejects anything smaller; the operator-side provider enforces the same
 # floor (see modules/payments/providers/paystack.py).
 PAYSTACK_MINIMUM_GHS = Decimal("1.00")
+
+# platform_settings key holding the platform-wide default monthly fee. Read by
+# both onboarding paths (create_operator, approve_application) to stamp a fee on
+# a new operator; a new operator never carries a client-supplied fee.
+DEFAULT_MONTHLY_FEE_KEY = "default_monthly_fee_ghs"
+# Last-resort value if every configured source is missing or unusable. Kept in
+# step with config.default_monthly_fee_ghs.
+_DEFAULT_MONTHLY_FEE_FALLBACK = Decimal("200.00")
+
+
+def _coerce_payable_fee(raw) -> Decimal | None:
+    """Parse `raw` to a fee that satisfies the isp_operators CHECK
+    (``monthly_fee_ghs = 0 OR monthly_fee_ghs >= 1.00``).
+
+    Returns None — not a raised error — when `raw` is absent, unparseable,
+    negative, or lands in the unpayable band ``(0, 1.00)``, so the caller can
+    fall through to the next source. This is the guarantee that a stray value in
+    platform_settings or a bad DEFAULT_MONTHLY_FEE_GHS in the environment can
+    never reach ``ISPOperator(monthly_fee_ghs=...)`` and trip the constraint.
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not value.is_finite() or value < 0:
+        return None
+    if Decimal(0) < value < PAYSTACK_MINIMUM_GHS:
+        return None
+    # Numeric(10, 2) — validation above already guarantees the result stays in
+    # {0} ∪ [1.00, ∞), so rounding to 2dp cannot push it into the banned band.
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+async def get_default_monthly_fee(db: AsyncSession) -> Decimal:
+    """The fee a newly-created operator is stamped with.
+
+    Resolution order — platform_settings row, then config/.env, then the
+    hard-coded fallback — with every candidate passed through
+    :func:`_coerce_payable_fee`. The return value is therefore *always* either
+    ``Decimal("0.00")`` or ``>= Decimal("1.00")``: operator creation can never
+    fail with a raw CHECK-constraint error.
+    """
+    stored = (
+        await db.execute(
+            select(PlatformSetting.value).where(PlatformSetting.key == DEFAULT_MONTHLY_FEE_KEY)
+        )
+    ).scalar_one_or_none()
+    resolved = _coerce_payable_fee(stored)
+    if resolved is not None:
+        return resolved
+    resolved = _coerce_payable_fee(get_settings().default_monthly_fee_ghs)
+    if resolved is not None:
+        return resolved
+    return _DEFAULT_MONTHLY_FEE_FALLBACK
 
 
 def ghs_to_pesewas(amount_ghs: Decimal) -> int:

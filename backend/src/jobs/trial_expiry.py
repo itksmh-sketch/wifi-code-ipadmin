@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.db.base import async_session_factory
 from src.db.models import ISPOperator, OperatorBillingEvent, OperatorInvoice
-from src.modules.billing.service import create_invoice
+from src.modules.billing.service import PAYSTACK_MINIMUM_GHS, create_invoice
 from src.modules.notifications import dispatcher as notify
 
 logger = structlog.get_logger(__name__)
@@ -88,6 +88,26 @@ async def handle_trial_expiry(ctx=None):
                             event_metadata={},
                         )
                         db.add(event)
+
+                        # Same guard as generate_monthly_invoices: an invoice below
+                        # Paystack's floor can never be paid, so it would just run
+                        # through the grace period and suspend the operator. The
+                        # trial still ends — they are simply not invoiced.
+                        if op.monthly_fee_ghs < PAYSTACK_MINIMUM_GHS:
+                            logger.info(
+                                "trial_expiry_skipped_unpayable_fee",
+                                operator=op.slug,
+                                monthly_fee_ghs=str(op.monthly_fee_ghs),
+                            )
+                            try:
+                                await notify.notify_trial_expired(
+                                    email=op.contact_email,
+                                    phone=op.contact_phone or "",
+                                    isp_name=op.name,
+                                )
+                            except Exception as exc:
+                                logger.error("trial_expired_notify_error operator=%s error=%s", op.slug, exc)
+                            continue
 
                         # First invoice: current calendar month
                         today = now.date()

@@ -26,6 +26,21 @@
     .badge.unset{background:rgba(148,163,184,.1);border-color:var(--border);color:var(--muted)}
     .badge.off{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.45);color:#fcd34d}
     .divider{height:1px;background:var(--border);margin:20px 0}
+
+    /* Invoice-status badges reuse the operator-status palette already in app.css:
+       paid→active, issued→pending, overdue→past_due, draft/waived→cancelled. */
+    .num{font-variant-numeric:tabular-nums}
+    .fee-cell{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+    .fee-cell input{width:104px;padding:6px 9px;font-size:13px}
+    .fee-err{width:100%;margin-top:2px}
+    td .amt-owed{color:#fca5a5;font-weight:600}
+    .modal-overlay{position:fixed;inset:0;background:rgba(4,7,14,.6);z-index:60;display:none;
+      align-items:center;justify-content:center;padding:20px}
+    .modal-overlay.show{display:flex}
+    .modal{max-width:440px;width:100%}
+    .inv-pager{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:12px}
+    .btn:disabled{opacity:.4;cursor:not-allowed}
+    .btn:disabled:hover{background:#0f172a}
   </style>
 </head>
 <body>
@@ -49,7 +64,125 @@
 
   <div id="msg" class="notice bad" style="display:none;margin-bottom:16px"></div>
 
-  <div id="main" style="display:none">
+  <!-- ── Summary strip ─────────────────────────────────────────────────────── -->
+  <div id="summary-err" class="notice bad" style="display:none;margin-bottom:12px"></div>
+  <div class="stats-grid">
+    <div class="stat-card"><div class="stat-label">Monthly recurring revenue</div><div class="stat-value num" id="sum-mrr">—</div></div>
+    <div class="stat-card"><div class="stat-label">Collected this month</div><div class="stat-value num" id="sum-collected">—</div></div>
+    <div class="stat-card"><div class="stat-label">Total outstanding</div><div class="stat-value num" id="sum-outstanding">—</div></div>
+    <div class="stat-card"><div class="stat-label">Overdue operators</div><div class="stat-value num" id="sum-overdue">—</div></div>
+  </div>
+
+  <!-- ── Default monthly fee ───────────────────────────────────────────────── -->
+  <div class="card" id="default-fee-card" style="margin-bottom:18px;max-width:720px">
+    <div class="card-header">
+      <span class="card-title">Default Monthly Fee</span>
+    </div>
+    <div id="df-err" class="notice bad" style="display:none;margin-bottom:12px"></div>
+    <div id="df-view" class="fee-cell">
+      <span class="num" id="df-value" style="font-size:20px;font-weight:700">—</span>
+      <button class="btn sm" type="button" id="df-edit">Edit</button>
+    </div>
+    <div id="df-editor" class="fee-cell" style="display:none">
+      <input type="number" min="0" step="0.01" id="df-input">
+      <button class="btn sm primary" type="button" id="df-save">Save</button>
+      <button class="btn sm" type="button" id="df-cancel">Cancel</button>
+      <div class="notice bad fee-err" id="df-editor-err" style="display:none"></div>
+    </div>
+    <p class="text-muted" style="margin:12px 0 0">
+      New operators are created with this fee — set it once here instead of per operator, on both
+      onboarding paths (add directly, or approve an application). Changing it does <strong>not</strong>
+      re-price existing operators; use an operator's <strong>Edit</strong> or <strong>Reset to
+      default</strong> in the table below. Must be 0 (exempt) or at least GHS 1.00.
+    </p>
+  </div>
+
+  <!-- ── Operators ─────────────────────────────────────────────────────────── -->
+  <div class="card" style="margin-bottom:18px">
+    <div class="card-header" style="flex-wrap:wrap;gap:10px">
+      <span class="card-title">Operator billing</span>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="ops-search" type="search" placeholder="Filter by name or slug…"
+               style="width:190px;padding:7px 11px;font-size:13px">
+        <select id="ops-status" style="width:auto;padding:7px 11px;font-size:13px">
+          <option value="">All statuses</option>
+          <option value="trial">Trial</option>
+          <option value="active">Active</option>
+          <option value="past_due">Past due</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+        <span class="text-muted" id="ops-count"></span>
+      </div>
+    </div>
+    <div id="ops-err" class="notice bad" style="display:none;margin-bottom:12px"></div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Operator</th>
+            <th>Status</th>
+            <th>Monthly fee</th>
+            <th>Trial ends</th>
+            <th>Outstanding</th>
+            <th>Next due</th>
+            <th>Last paid</th>
+          </tr>
+        </thead>
+        <tbody id="ops-tbody">
+          <tr><td colspan="7" class="text-muted" style="padding:20px 0;text-align:center">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="ops-empty" class="text-muted" style="display:none;padding:20px 0;text-align:center">No operators yet.</div>
+    <p class="text-muted" style="margin:12px 0 0">
+      The monthly fee is what the operator is invoiced each month. Use <strong>0</strong> to exempt an
+      operator from billing; otherwise it must be at least <strong>GHS 1.00</strong> — Paystack cannot
+      charge less, so a smaller invoice could never be paid.
+    </p>
+  </div>
+
+  <!-- ── Invoices ──────────────────────────────────────────────────────────── -->
+  <div class="card" style="margin-bottom:18px">
+    <div class="card-header">
+      <span class="card-title">Invoices</span>
+      <span class="text-muted" id="inv-count"></span>
+    </div>
+    <div id="inv-err" class="notice bad" style="display:none;margin-bottom:12px"></div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Invoice #</th>
+            <th>Operator</th>
+            <th>Period</th>
+            <th>Amount</th>
+            <th>Status</th>
+            <th>Due</th>
+            <th>Paid</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="inv-tbody">
+          <tr><td colspan="8" class="text-muted" style="padding:20px 0;text-align:center">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="inv-empty" class="text-muted" style="display:none;padding:20px 0;text-align:center">No invoices yet.</div>
+    <div id="inv-pager" class="inv-pager" style="display:none">
+      <button class="btn sm" type="button" id="inv-prev">← Previous</button>
+      <span class="text-muted" id="inv-pageinfo"></span>
+      <button class="btn sm" type="button" id="inv-next">Next →</button>
+    </div>
+    <p class="text-muted" style="margin:12px 0 0">
+      Invoices are generated automatically by the monthly billing job — there is no manual trigger, as
+      invoice numbering is not safe against a manual run racing the cron.
+    </p>
+  </div>
+
+  <!-- ── Payment Keys (Phase 1 — markup and logic unchanged) ───────────────── -->
+  <div id="keys-loading" style="text-align:center;padding:40px 0;color:var(--muted)">Loading payment keys…</div>
+
+  <div id="keys-card-body" style="display:none">
     <div class="card" style="max-width:720px">
       <div class="card-header">
         <h2 class="card-title">Payment Keys</h2>
@@ -111,16 +244,26 @@
         </div>
       </form>
     </div>
-
-    <p class="text-muted" style="max-width:720px;margin-top:16px">
-      Invoice list, billing summary and per-operator fees land on this page in a later phase.
-    </p>
   </div>
-
-  <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
 </div>
 
 <div id="toast"></div>
+
+<!-- Waive confirmation -->
+<div class="modal-overlay" id="waive-overlay">
+  <div class="card modal">
+    <div class="card-title" style="margin-bottom:6px">Waive invoice</div>
+    <p class="text-muted" id="waive-sub" style="margin:0 0 8px"></p>
+    <p style="margin:0 0 16px;font-size:13px">
+      The invoice is marked <strong>waived</strong> and will never be charged. A billing event is
+      recorded against the operator. This cannot be undone.
+    </p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" id="waive-cancel">Cancel</button>
+      <button class="btn danger" id="waive-confirm">Waive invoice</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const token = localStorage.getItem('platform_access_token');
@@ -149,12 +292,36 @@ async function api(path, opts = {}) {
   return res;
 }
 
+// FastAPI returns either a string `detail` (our HTTPException raises) or a list
+// of validation errors (422 — the shared fee validator, or Field(ge=0)). Turn
+// both into one human sentence, dropping pydantic's "Value error, " prefix.
+async function readError(res, fallback) {
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* non-JSON body */ }
+  if (data && typeof data.detail === 'string') return data.detail;
+  if (data && Array.isArray(data.detail) && data.detail.length) {
+    return data.detail
+      .map(e => (e && e.msg ? String(e.msg) : String(e)))
+      .join('; ')
+      .replace(/Value error, /g, '');
+  }
+  if (data && data.detail && data.detail.msg) return String(data.detail.msg);
+  return fallback;
+}
+
+// #msg is the Payment Keys card's error line (kept from Phase 1).
 function showError(text) {
   const msg = document.getElementById('msg');
   msg.textContent = text;
   msg.style.display = 'block';
 }
 function hideError() { document.getElementById('msg').style.display = 'none'; }
+
+function sectionError(id, text) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.style.display = text ? 'block' : 'none';
+}
 
 let toastTimer = null;
 function showToast(text, bad) {
@@ -170,6 +337,454 @@ function esc(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// GHS money. 0 is a real value (an exempt operator, a waived invoice), so only a
+// null/undefined/unparseable input collapses to a dash.
+function fmtMoney(n) {
+  if (n == null || n === '' || isNaN(Number(n))) return '—';
+  return 'GHS ' + Number(n).toLocaleString('en-GH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtDay(s) {
+  if (!s) return '—';
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Summary strip
+// ─────────────────────────────────────────────────────────────────────────────
+async function loadSummary() {
+  try {
+    const res = await api('/api/v1/platform/billing/summary');
+    if (!res.ok) throw new Error(await readError(res, 'Failed to load billing summary.'));
+    const d = await res.json();
+    document.getElementById('sum-mrr').textContent = fmtMoney(d.monthly_recurring_revenue_ghs);
+    document.getElementById('sum-collected').textContent = fmtMoney(d.revenue_collected_this_month_ghs);
+    document.getElementById('sum-outstanding').textContent = fmtMoney(d.total_outstanding_ghs);
+    document.getElementById('sum-overdue').textContent =
+      (d.operators_overdue == null ? '—' : String(d.operators_overdue));
+    sectionError('summary-err', '');
+  } catch (e) {
+    ['sum-mrr', 'sum-collected', 'sum-outstanding', 'sum-overdue'].forEach(id => {
+      document.getElementById(id).textContent = '—';
+    });
+    sectionError('summary-err', e.message || 'Failed to load billing summary.');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Default monthly fee
+// ─────────────────────────────────────────────────────────────────────────────
+let defaultFeeGhs = null;   // also read by the per-operator "Reset to default" button
+
+// Same shape as the per-operator fee guard; the endpoint stays the source of truth.
+function feeInputError(raw) {
+  if (raw === '' || isNaN(Number(raw)) || Number(raw) < 0) return 'Enter a fee of 0 or more.';
+  if (Number(raw) > 0 && Number(raw) < 1) {
+    return 'Monthly fee must be 0 (exempt from billing) or at least GHS 1.00 — '
+      + 'Paystack cannot charge less, so a smaller invoice could never be paid.';
+  }
+  return '';
+}
+
+async function loadDefaultFee() {
+  try {
+    const res = await api('/api/v1/platform/billing/default-fee');
+    if (!res.ok) throw new Error(await readError(res, 'Failed to load the default fee.'));
+    const d = await res.json();
+    defaultFeeGhs = Number(d.default_monthly_fee_ghs);
+    document.getElementById('df-value').textContent = fmtMoney(defaultFeeGhs);
+    sectionError('df-err', '');
+  } catch (e) {
+    defaultFeeGhs = null;
+    document.getElementById('df-value').textContent = '—';
+    sectionError('df-err', e.message || 'Failed to load the default fee.');
+  }
+}
+
+function dfExitEdit() {
+  document.getElementById('df-editor').style.display = 'none';
+  document.getElementById('df-view').style.display = 'flex';
+}
+
+document.getElementById('df-edit').addEventListener('click', () => {
+  document.getElementById('df-input').value = defaultFeeGhs != null ? defaultFeeGhs.toFixed(2) : '';
+  document.getElementById('df-editor-err').style.display = 'none';
+  document.getElementById('df-view').style.display = 'none';
+  document.getElementById('df-editor').style.display = 'flex';
+  const input = document.getElementById('df-input');
+  input.focus();
+  input.select();
+});
+document.getElementById('df-cancel').addEventListener('click', dfExitEdit);
+
+document.getElementById('df-save').addEventListener('click', async () => {
+  const errBox = document.getElementById('df-editor-err');
+  const btn = document.getElementById('df-save');
+  const raw = document.getElementById('df-input').value.trim();
+  errBox.style.display = 'none';
+
+  const localErr = feeInputError(raw);
+  if (localErr) { errBox.textContent = localErr; errBox.style.display = 'block'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const res = await api('/api/v1/platform/billing/default-fee', {
+      method: 'PUT',
+      body: JSON.stringify({ default_monthly_fee_ghs: Number(raw) }),
+    });
+    if (!res.ok) {
+      errBox.textContent = await readError(res, 'Could not save the default fee.');
+      errBox.style.display = 'block';
+      return;
+    }
+    const d = await res.json();
+    defaultFeeGhs = Number(d.default_monthly_fee_ghs);
+    document.getElementById('df-value').textContent = fmtMoney(defaultFeeGhs);
+    dfExitEdit();
+    showToast(`Default monthly fee set to ${fmtMoney(defaultFeeGhs)}`);
+  } catch (e) {
+    errBox.textContent = 'Network error — the default fee was not saved.';
+    errBox.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save';
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Operators
+// ─────────────────────────────────────────────────────────────────────────────
+let operators = [];
+
+function opStatusBadge(status) {
+  // Every operator billing_status (trial/active/past_due/cancelled/suspended)
+  // has a matching .badge.<status> rule in app.css.
+  const s = status || 'unknown';
+  return `<span class="badge ${esc(s)}">${esc(s)}</span>`;
+}
+
+function feeCellHtml(op) {
+  return `<div class="fee-cell" data-fee-view>
+      <span class="num">${fmtMoney(op.monthly_fee_ghs)}</span>
+      <button class="btn sm" type="button" data-fee-edit>Edit</button>
+    </div>`;
+}
+
+// Client-side filter over the already-loaded list (the operators endpoint isn't
+// paginated). Search matches name or slug; status is an exact billing_status.
+function filteredOperators() {
+  const q = document.getElementById('ops-search').value.trim().toLowerCase();
+  const status = document.getElementById('ops-status').value;
+  return operators.filter(op => {
+    if (status && op.billing_status !== status) return false;
+    if (q && !(`${op.name} ${op.slug}`.toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function renderOperators() {
+  const tbody = document.getElementById('ops-tbody');
+  const empty = document.getElementById('ops-empty');
+  const countEl = document.getElementById('ops-count');
+  const rows = filteredOperators();
+  const filtering = !!(document.getElementById('ops-search').value.trim()
+                       || document.getElementById('ops-status').value);
+
+  if (!operators.length) {
+    countEl.textContent = '';
+    tbody.innerHTML = '';
+    empty.textContent = 'No operators yet.';
+    empty.style.display = 'block';
+    return;
+  }
+  countEl.textContent = filtering
+    ? `${rows.length} of ${operators.length}`
+    : `${operators.length} operator${operators.length === 1 ? '' : 's'}`;
+  if (!rows.length) {
+    tbody.innerHTML = '';
+    empty.textContent = 'No operators match this filter.';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  tbody.innerHTML = rows.map(op => {
+    const owed = Number(op.outstanding_amount_ghs) > 0;
+    const owedText = owed
+      ? `<span class="amt-owed">${esc(fmtMoney(op.outstanding_amount_ghs))}</span>` +
+        (op.outstanding_invoice_count > 1 ? ` <span class="text-muted">(${esc(op.outstanding_invoice_count)})</span>` : '')
+      : '<span class="text-muted">—</span>';
+    return `<tr data-op-id="${esc(op.id)}">
+      <td>
+        <div style="font-weight:600"><a href="/platform/operators/${esc(op.id)}">${esc(op.name)}</a></div>
+        <div class="text-muted">${esc(op.slug)}</div>
+      </td>
+      <td>${opStatusBadge(op.billing_status)}</td>
+      <td data-fee-slot>${feeCellHtml(op)}</td>
+      <td>${fmtDay(op.trial_ends_at)}</td>
+      <td>${owedText}</td>
+      <td>${fmtDay(op.next_due_at)}</td>
+      <td>${fmtDay(op.last_paid_at)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function opById(id) { return operators.find(o => o.id === id); }
+
+function enterFeeEdit(slot, op) {
+  // "Reset to default" just fills the input with the current platform default —
+  // the admin still reviews and clicks Save. It's a one-time convenience, not a
+  // standing link, so it only shows when the default actually loaded.
+  const resetBtn = defaultFeeGhs != null
+    ? `<button class="btn sm" type="button" data-fee-reset>Reset to default</button>`
+    : '';
+  slot.innerHTML = `<div class="fee-cell">
+      <input type="number" min="0" step="0.01" value="${esc(Number(op.monthly_fee_ghs).toFixed(2))}" data-fee-input>
+      <button class="btn sm primary" type="button" data-fee-save>Save</button>
+      <button class="btn sm" type="button" data-fee-cancel>Cancel</button>
+      ${resetBtn}
+      <div class="notice bad fee-err" style="display:none"></div>
+    </div>`;
+  const input = slot.querySelector('[data-fee-input]');
+  input.focus();
+  input.select();
+}
+
+function resetFeeToDefault(slot) {
+  if (defaultFeeGhs == null) return;
+  const input = slot.querySelector('[data-fee-input]');
+  input.value = Number(defaultFeeGhs).toFixed(2);
+  slot.querySelector('.fee-err').style.display = 'none';
+  input.focus();
+}
+
+function exitFeeEdit(slot, op) {
+  slot.innerHTML = feeCellHtml(op);
+}
+
+async function saveFee(slot, op) {
+  const input = slot.querySelector('[data-fee-input]');
+  const errBox = slot.querySelector('.fee-err');
+  const saveBtn = slot.querySelector('[data-fee-save]');
+  const raw = input.value.trim();
+  errBox.style.display = 'none';
+
+  // Local mirror of the server rule; the endpoint stays the source of truth
+  // (the catch below surfaces its message if this check is ever out of step).
+  const localErr = feeInputError(raw);
+  if (localErr) {
+    errBox.textContent = localErr;
+    errBox.style.display = 'block';
+    return;
+  }
+
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving…';
+  try {
+    const res = await api(`/api/v1/platform/operators/${op.id}/billing`, {
+      method: 'PUT',
+      body: JSON.stringify({ monthly_fee_ghs: Number(raw) }),
+    });
+    if (!res.ok) {
+      errBox.textContent = await readError(res, 'Could not save the fee.');
+      errBox.style.display = 'block';
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save';
+      return;
+    }
+    const data = await res.json();
+    op.monthly_fee_ghs = data.monthly_fee_ghs;
+    exitFeeEdit(slot, op);
+    showToast(`${op.name}: monthly fee set to ${fmtMoney(op.monthly_fee_ghs)}`);
+    loadSummary();   // MRR shifts when a fee changes
+  } catch (e) {
+    errBox.textContent = 'Network error — the fee was not saved.';
+    errBox.style.display = 'block';
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save';
+  }
+}
+
+document.getElementById('ops-tbody').addEventListener('click', ev => {
+  const btn = ev.target.closest('button');
+  if (!btn) return;
+  const row = ev.target.closest('tr[data-op-id]');
+  if (!row) return;
+  const op = opById(row.getAttribute('data-op-id'));
+  if (!op) return;
+  const slot = row.querySelector('[data-fee-slot]');
+  if (btn.hasAttribute('data-fee-edit')) enterFeeEdit(slot, op);
+  else if (btn.hasAttribute('data-fee-cancel')) exitFeeEdit(slot, op);
+  else if (btn.hasAttribute('data-fee-save')) saveFee(slot, op);
+  else if (btn.hasAttribute('data-fee-reset')) resetFeeToDefault(slot);
+});
+
+document.getElementById('ops-search').addEventListener('input', renderOperators);
+document.getElementById('ops-status').addEventListener('change', renderOperators);
+
+async function loadOperators() {
+  try {
+    const res = await api('/api/v1/platform/billing/operators');
+    if (!res.ok) throw new Error(await readError(res, 'Failed to load operators.'));
+    operators = await res.json();
+    sectionError('ops-err', '');
+    renderOperators();
+  } catch (e) {
+    operators = [];
+    document.getElementById('ops-tbody').innerHTML = '';
+    document.getElementById('ops-empty').style.display = 'none';
+    sectionError('ops-err', e.message || 'Failed to load operators.');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Invoices  (server-paginated: page / page_size / total_count / total_pages)
+// ─────────────────────────────────────────────────────────────────────────────
+let invoices = [];
+const INV_PAGE_SIZE = 50;
+let invMeta = { page: 1, page_size: INV_PAGE_SIZE, total_count: 0, total_pages: 1 };
+
+function invStatusBadge(status) {
+  const cls = { paid: 'active', issued: 'pending', overdue: 'past_due', waived: 'cancelled', draft: 'cancelled' }[status] || 'cancelled';
+  return `<span class="badge ${cls}">${esc(status || 'unknown')}</span>`;
+}
+
+function renderInvoices() {
+  const tbody = document.getElementById('inv-tbody');
+  const empty = document.getElementById('inv-empty');
+  const n = invMeta.total_count || 0;
+  document.getElementById('inv-count').textContent = n ? `${n} invoice${n === 1 ? '' : 's'}` : '';
+  if (!invoices.length) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  tbody.innerHTML = invoices.map(inv => {
+    const waivable = inv.status !== 'paid' && inv.status !== 'waived';
+    return `<tr>
+      <td class="num">${esc(inv.invoice_number)}</td>
+      <td>
+        <a href="/platform/operators/${esc(inv.operator_id)}">${esc(inv.operator_name)}</a>
+        <div class="text-muted">${esc(inv.operator_slug)}</div>
+      </td>
+      <td>${fmtDay(inv.period_start)} – ${fmtDay(inv.period_end)}</td>
+      <td class="num">${esc(fmtMoney(inv.amount_ghs))}</td>
+      <td>${invStatusBadge(inv.status)}</td>
+      <td>${fmtDay(inv.due_at)}</td>
+      <td>${fmtDay(inv.paid_at)}</td>
+      <td>${waivable
+        ? `<button class="btn sm danger" type="button" data-waive data-inv-id="${esc(inv.id)}" data-inv-num="${esc(inv.invoice_number)}">Waive</button>`
+        : ''}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderInvPager() {
+  const pager = document.getElementById('inv-pager');
+  const total = Math.max(1, invMeta.total_pages || 1);
+  if ((invMeta.total_count || 0) === 0) { pager.style.display = 'none'; return; }
+  pager.style.display = 'flex';
+  document.getElementById('inv-pageinfo').textContent = `Page ${invMeta.page} of ${total}`;
+  document.getElementById('inv-prev').disabled = invMeta.page <= 1;
+  document.getElementById('inv-next').disabled = invMeta.page >= total;
+}
+
+// Always hits the endpoint — paging is a server round-trip, never a re-slice of
+// a cached list.
+async function loadInvoices(page) {
+  const want = Math.max(1, page || invMeta.page || 1);
+  try {
+    const res = await api(`/api/v1/platform/billing/invoices?page=${want}&page_size=${INV_PAGE_SIZE}`);
+    if (!res.ok) throw new Error(await readError(res, 'Failed to load invoices.'));
+    const data = await res.json();
+    invoices = data.invoices || [];
+    invMeta = {
+      page: data.page || 1,
+      page_size: data.page_size || INV_PAGE_SIZE,
+      total_count: data.total_count || 0,
+      total_pages: data.total_pages || 1,
+    };
+    // Walked off the end (e.g. waived the only row on the last page) — step back.
+    if (!invoices.length && invMeta.page > 1 && invMeta.total_count > 0) {
+      return loadInvoices(Math.min(invMeta.page - 1, invMeta.total_pages));
+    }
+    sectionError('inv-err', '');
+    renderInvoices();
+    renderInvPager();
+  } catch (e) {
+    invoices = [];
+    document.getElementById('inv-tbody').innerHTML = '';
+    document.getElementById('inv-empty').style.display = 'none';
+    document.getElementById('inv-pager').style.display = 'none';
+    sectionError('inv-err', e.message || 'Failed to load invoices.');
+  }
+}
+
+document.getElementById('inv-prev').addEventListener('click', () => {
+  if (invMeta.page > 1) loadInvoices(invMeta.page - 1);
+});
+document.getElementById('inv-next').addEventListener('click', () => {
+  if (invMeta.page < Math.max(1, invMeta.total_pages || 1)) loadInvoices(invMeta.page + 1);
+});
+
+// ── Waive flow ──────────────────────────────────────────────────────────────
+let pendingWaive = null;
+
+function openWaive(id, number) {
+  pendingWaive = id;
+  document.getElementById('waive-sub').textContent = `Invoice ${number}`;
+  document.getElementById('waive-overlay').classList.add('show');
+}
+function closeWaive() {
+  pendingWaive = null;
+  document.getElementById('waive-overlay').classList.remove('show');
+  const btn = document.getElementById('waive-confirm');
+  btn.disabled = false;
+  btn.textContent = 'Waive invoice';
+}
+
+document.getElementById('inv-tbody').addEventListener('click', ev => {
+  const btn = ev.target.closest('button[data-waive]');
+  if (!btn) return;
+  openWaive(btn.getAttribute('data-inv-id'), btn.getAttribute('data-inv-num'));
+});
+document.getElementById('waive-cancel').addEventListener('click', closeWaive);
+document.getElementById('waive-overlay').addEventListener('click', ev => {
+  if (ev.target.id === 'waive-overlay') closeWaive();
+});
+
+document.getElementById('waive-confirm').addEventListener('click', async () => {
+  if (!pendingWaive) return;
+  const id = pendingWaive;
+  const btn = document.getElementById('waive-confirm');
+  btn.disabled = true;
+  btn.textContent = 'Waiving…';
+  try {
+    const res = await api(`/api/v1/platform/invoices/${id}/waive`, { method: 'PUT' });
+    if (!res.ok) {
+      showToast(await readError(res, 'Could not waive the invoice.'), true);
+      closeWaive();
+      return;
+    }
+    closeWaive();
+    showToast('Invoice waived');
+    // A waive clears outstanding balance and can pull an operator out of overdue.
+    await Promise.all([loadInvoices(), loadOperators(), loadSummary()]);
+  } catch (e) {
+    showToast('Network error — the invoice was not waived.', true);
+    closeWaive();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Payment Keys — Phase 1, logic unchanged. Only the two container element ids
+// moved (loading → keys-loading, main → keys-card-body) so the page can host
+// the sections above.
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Only the last 4 characters ever reach the browser; the dots are decoration,
 // not a truncated secret.
 function masked(last4) {
@@ -177,21 +792,9 @@ function masked(last4) {
   return `<span class="dots">••••••••</span>${esc(last4)}`;
 }
 
-function fmtDate(iso) {
-  if (!iso) return '<span class="text-muted">never</span>';
-  return new Date(iso).toLocaleString();
-}
-
 // The five states this card can be in. Kept as one resolver so every state —
 // including the legitimate "stored but switched off", which a provider switch
 // puts you in deliberately — explains itself rather than looking like a fault.
-//
-//   is_stored  is_active  is_configured
-//   false      false      false          nothing anywhere
-//   false      false      true           .env supplying the keys
-//   true       true       true           stored row in force
-//   true       false      true           stored row off, .env in force
-//   true       false      false          stored row off, nothing in force
 function describeState(d) {
   if (d.is_stored && d.is_active) {
     return {
@@ -274,17 +877,22 @@ function render(d) {
   // before the first save, so every save persisted an inactive row.
   document.getElementById('is_active').checked = d.is_stored ? d.is_active : true;
 
-  document.getElementById('loading').style.display = 'none';
-  document.getElementById('main').style.display = 'block';
+  document.getElementById('keys-loading').style.display = 'none';
+  document.getElementById('keys-card-body').style.display = 'block';
 }
 
-async function load() {
+function fmtDate(iso) {
+  if (!iso) return '<span class="text-muted">never</span>';
+  return new Date(iso).toLocaleString();
+}
+
+async function loadKeys() {
   try {
     const res = await api('/api/v1/platform/payment-credentials');
     if (!res.ok) throw new Error('Failed to load');
     render(await res.json());
   } catch (e) {
-    document.getElementById('loading').textContent =
+    document.getElementById('keys-loading').textContent =
       'Failed to load payment keys. If the platform_payment_credentials migration has not run yet, this is expected.';
   }
 }
@@ -345,7 +953,7 @@ document.getElementById('test-btn').addEventListener('click', async () => {
     if (!res.ok) {
       showError(data.detail || 'Test failed.');
       showToast('Test failed', true);
-      await load();
+      await loadKeys();
     } else {
       render(data);
       showToast('Paystack connection OK');
@@ -358,7 +966,11 @@ document.getElementById('test-btn').addEventListener('click', async () => {
   }
 });
 
-load();
+loadSummary();
+loadDefaultFee();
+loadOperators();
+loadInvoices();
+loadKeys();
 </script>
 </body>
 </html>

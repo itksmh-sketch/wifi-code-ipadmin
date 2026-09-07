@@ -15,7 +15,6 @@ from src.modules.applications import service
 from src.modules.applications.schemas import (
     ApplicationSubmit,
     ApplicationResponse,
-    ApplicationApprove,
     ApplicationReject,
 )
 
@@ -73,19 +72,18 @@ async def get_application(
 @platform_router.put("/applications/{application_id}/approve", status_code=200)
 async def approve_application(
     application_id: uuid.UUID,
-    body: ApplicationApprove,
     db: AsyncSession = Depends(get_db),
     owner: PlatformOwner = Depends(get_platform_owner_context),
 ):
+    # No request body: the new operator's monthly fee is stamped from the
+    # platform default inside service.approve_application, never client-supplied.
     app = (await db.execute(select(OperatorApplication).where(OperatorApplication.id == application_id))).scalar_one_or_none()
     if not app:
         raise HTTPException(404, "Application not found")
     if app.status != "pending":
         raise HTTPException(400, f"Application is already {app.status}")
 
-    operator, temp_password = await service.approve_application(
-        db, app, owner.id, body.monthly_fee_ghs
-    )
+    operator, temp_password = await service.approve_application(db, app, owner.id)
     return {
         "operator_id": str(operator.id),
         "slug": operator.slug,

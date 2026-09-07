@@ -1,7 +1,6 @@
 from __future__ import annotations
 import uuid
 from datetime import datetime
-from decimal import Decimal
 from typing import Optional
 from pydantic import BaseModel, field_validator
 import re
@@ -60,10 +59,6 @@ class ApplicationResponse(BaseModel):
     reviewed_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
-
-
-class ApplicationApprove(BaseModel):
-    monthly_fee_ghs: Decimal = Decimal("200.00")
 
 
 class ApplicationReject(BaseModel):

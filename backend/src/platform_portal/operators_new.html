@@ -45,19 +45,12 @@
       <div class="spacer"></div>
       <div style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Billing</div>
 
-      <div class="field-row">
-        <div>
-          <label>Monthly Fee (GHS) *</label>
-          <input id="monthly_fee_ghs" type="number" step="0.01" min="0" required placeholder="e.g. 250.00">
-        </div>
-        <div>
-          <label>Trial Days <span style="font-weight:400;color:var(--muted)">(blank = bill immediately)</span></label>
-          <input id="trial_days" type="number" step="1" min="1" max="365" placeholder="e.g. 14">
-        </div>
-      </div>
+      <label>Trial Days <span style="font-weight:400;color:var(--muted)">(blank = bill immediately)</span></label>
+      <input id="trial_days" type="number" step="1" min="1" max="365" placeholder="e.g. 14">
+
       <p class="text-muted" style="margin:8px 0 0">
-        The monthly fee is what this operator is invoiced each month. A fee of 0 produces invoices that
-        cannot be paid and will suspend the operator once the grace period lapses — set the real amount.
+        The monthly fee is set from the platform <strong>Default Monthly Fee</strong> (change it on the
+        Billing page). Adjust an individual operator's fee there after they're created.
       </p>
 
       <div class="spacer"></div>
@@ -128,7 +121,6 @@
     const contact_phone = document.getElementById('contact_phone').value.trim();
     const admin_email = document.getElementById('admin_email').value.trim();
     const admin_password = document.getElementById('admin_password').value;
-    const monthly_fee_raw = document.getElementById('monthly_fee_ghs').value.trim();
     const trial_days_raw = document.getElementById('trial_days').value.trim();
 
     if (!name || name.length < 3) { showMsg('Business name must be at least 3 characters.'); return; }
@@ -137,9 +129,6 @@
     if (!contact_phone) { showMsg('Contact phone is required.'); return; }
     if (!admin_email) { showMsg('Admin email is required.'); return; }
     if (admin_password.length < 8) { showMsg('Admin password must be at least 8 characters.'); return; }
-    if (monthly_fee_raw === '' || isNaN(Number(monthly_fee_raw)) || Number(monthly_fee_raw) < 0) {
-      showMsg('Monthly fee is required and must be 0 or more.'); return;
-    }
     if (trial_days_raw !== '' && (!Number.isInteger(Number(trial_days_raw)) || Number(trial_days_raw) < 1 || Number(trial_days_raw) > 365)) {
       showMsg('Trial days must be a whole number between 1 and 365, or left blank.'); return;
     }
@@ -161,7 +150,6 @@
           contact_phone,
           initial_admin_email: admin_email,
           initial_admin_password: admin_password,
-          monthly_fee_ghs: Number(monthly_fee_raw),
           trial_days: trial_days_raw === '' ? null : Number(trial_days_raw),
         }),
       });

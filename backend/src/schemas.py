@@ -2,6 +2,8 @@ from pydantic import BaseModel, BeforeValidator, Field, field_validator
 from typing import Annotated, Optional
 from datetime import datetime
 from decimal import Decimal
+# Single definition of the payable floor, shared with the billing jobs.
+from src.modules.billing.service import PAYSTACK_MINIMUM_GHS
 import uuid
 from enum import Enum
 
@@ -388,6 +390,31 @@ class PaymentCredentialResponse(BaseModel):
     last_validation_error: Optional[str] = None
 
 
+def validate_monthly_fee(value: Optional[Decimal]) -> Optional[Decimal]:
+    """A fee is either 0 (exempt) or at least Paystack's minimum (payable).
+
+    Between those, an invoice is generated that can never be charged: it runs
+    through the grace period and suspends the operator. Enforced here so the
+    state is unreachable through the API, not merely skipped by the cron.
+    """
+    if value is None:
+        return value
+    if Decimal(0) < value < PAYSTACK_MINIMUM_GHS:
+        raise ValueError(
+            f"Monthly fee must be 0 (exempt from billing) or at least "
+            f"GHS {PAYSTACK_MINIMUM_GHS} — Paystack cannot charge less, so an "
+            f"invoice for GHS {value} could never be paid."
+        )
+    return value
+
+
+class DefaultMonthlyFeeUpdate(BaseModel):
+    """Body for PUT /platform/billing/default-fee — the platform-wide default a
+    new operator's fee is stamped from at creation."""
+    default_monthly_fee_ghs: Decimal = Field(ge=0)
+    _check_fee = field_validator("default_monthly_fee_ghs")(validate_monthly_fee)
+
+
 class PlatformOperatorCreate(BaseModel):
     name: str
     slug: str
@@ -395,13 +422,13 @@ class PlatformOperatorCreate(BaseModel):
     contact_phone: Optional[str] = None
     initial_admin_email: str
     initial_admin_password: str
-    # Required: an operator created without a fee gets GHS 0.00 invoices, which
-    # cannot be paid (Paystack rejects a zero charge) and therefore run straight
-    # through the grace period into suspension.
-    monthly_fee_ghs: Decimal = Field(ge=0)
-    # Omit for the historical behaviour — billing starts immediately. Supply a
-    # day count to put the operator on a trial first, matching the self-service
-    # application path.
+    # No fee here: the operator's monthly_fee_ghs is stamped server-side from the
+    # platform default (billing.service.get_default_monthly_fee). Change an
+    # individual operator's fee afterwards on the billing page.
+    #
+    # Omit trial_days for the historical behaviour — billing starts immediately.
+    # Supply a day count to put the operator on a trial first, matching the
+    # self-service application path.
     trial_days: Optional[int] = Field(default=None, ge=1, le=365)
 
 
@@ -412,6 +439,7 @@ class PlatformOperatorBillingUpdate(BaseModel):
     query string — a JSON body was silently ignored.
     """
     monthly_fee_ghs: Optional[Decimal] = Field(default=None, ge=0)
+    _check_fee = field_validator("monthly_fee_ghs")(validate_monthly_fee)
     extend_trial_days: Optional[int] = Field(default=None, ge=1, le=365)
 
 
