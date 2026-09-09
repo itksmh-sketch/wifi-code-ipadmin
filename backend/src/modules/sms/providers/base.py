@@ -10,3 +10,14 @@ class SMSProvider(ABC):
     async def send(self, to: str, message: str) -> SMSSendResult:
         ...
 
+    async def verify_credentials(self) -> None:
+        """Check the stored credentials authenticate against the provider.
+
+        Return on success; raise (any exception) on failure — the message is
+        surfaced to the operator as the "test connection" result. Not every SMS
+        gateway exposes a no-cost verification call; a provider without one
+        inherits this and the credential ``/test`` endpoint reports that testing
+        is unavailable rather than sending a chargeable message.
+        """
+        raise NotImplementedError
+

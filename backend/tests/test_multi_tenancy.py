@@ -280,6 +280,66 @@ def test_payment_credentials_rejects_unavailable_and_unknown_fields():
     assert status == 400 and "bogus" in json.dumps(body)
 
 
+def test_sms_credentials_unavailable_provider_is_404():
+    # Both SMS providers ship is_available=false until the deliberate flip.
+    admin = _login_admin()
+    status, _ = _request(
+        "PUT", "/api/v1/sms-credentials/hubtel", token=admin,
+        body={"values": {"client_id": "x", "client_secret": "y", "from": "MyISP"}},
+    )
+    assert status == 404
+
+
+def test_sms_credentials_crud_roundtrip_and_redaction():
+    """The /sms-credentials CRUD is the shared credentials core with model=
+    OperatorSMSCredential. Temporarily make Hubtel available, exercise the five
+    endpoints, restore the flag."""
+    owner = _login_platform_owner()
+    admin = _login_admin()
+
+    status, catalog = _request("GET", "/api/v1/platform/providers", token=owner)
+    assert status == 200, catalog
+    hubtel = next(r for r in catalog["sms"] if r["provider_key"] == "hubtel")
+
+    client_secret = "hubtel_secret_roundtrip_4242"
+    try:
+        _request(
+            "PUT", f"/api/v1/platform/providers/{hubtel['id']}", token=owner,
+            body={"is_available": True},
+        )
+
+        status, saved = _request(
+            "PUT", "/api/v1/sms-credentials/hubtel", token=admin,
+            body={
+                "values": {"client_id": "hubtel_cid_01", "client_secret": client_secret, "from": "MyISP"},
+                "activate": True,
+            },
+        )
+        assert status == 200, saved
+        assert saved["active_provider"] == "hubtel"
+        entry = next(e for e in saved["configured"] if e["provider"] == "hubtel")
+        assert entry["is_active"] is True
+        assert entry["field_hints"]["client_secret"] == "••••4242"
+        assert entry["field_hints"]["client_id"] == "••••d_01"
+        assert client_secret not in json.dumps(saved)
+
+        # unknown field -> 400, nothing written
+        status, body = _request(
+            "PUT", "/api/v1/sms-credentials/hubtel", token=admin,
+            body={"values": {"client_id": "a", "client_secret": "b", "from": "c", "bogus": "z"}},
+        )
+        assert status == 400 and "bogus" in json.dumps(body)
+
+        # can't delete the active provider
+        status, _ = _request("DELETE", "/api/v1/sms-credentials/hubtel", token=admin)
+        assert status == 409
+    finally:
+        _request(
+            "PUT", f"/api/v1/platform/providers/{hubtel['id']}", token=owner,
+            body={"is_available": False},
+        )
+
+
 def test_slug_scoped_paystack_webhook_uses_operator_secret():
     admin = _login_admin()
     status, _ = _request(
