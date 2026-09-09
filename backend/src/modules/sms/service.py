@@ -68,13 +68,25 @@ class SMSService:
 
 
 def build_sms_service(settings: Settings) -> SMSService:
+    """The process-wide SMS service — the PLATFORM's own gateway, used for
+    onboarding/billing notifications (see notifications.dispatcher). Operator
+    voucher-delivery SMS is resolved per-operator instead; see
+    src/modules/sms/provider_resolver.py."""
     name = (settings.sms_provider or "").strip().lower()
     provider: SMSProvider | None = None
 
     if name == "hubtel":
-        provider = HubtelSMSProvider(settings)
+        provider = HubtelSMSProvider(
+            client_id=settings.hubtel_client_id,
+            client_secret=settings.hubtel_client_secret,
+            sender_id=settings.hubtel_from,
+        )
     elif name in {"africastalking", "africas_talking", "africas-talking"}:
-        provider = AfricasTalkingSMSProvider(settings)
+        provider = AfricasTalkingSMSProvider(
+            api_key=settings.africastalking_api_key,
+            username=settings.africastalking_username,
+            sender_id=settings.africastalking_from,
+        )
     elif name:
         logger.warning("sms_provider_unrecognized value=%s sms_disabled=true", name)
         provider = None
