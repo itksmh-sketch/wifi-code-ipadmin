@@ -13,7 +13,9 @@ from src.modules.payments.providers.base import PaymentProvider
 from src.modules.payments.providers.registry import build_payment_provider
 from src.modules.payments.provider_resolver import resolve_active_payment_provider
 from src.modules.payments.types import PaymentMethod, PaymentNextAction, PaymentStatus
-from src.modules.sms.service import SMSService, build_voucher_sms_message
+from src.modules.sms.provider_resolver import resolve_active_sms_provider
+from src.modules.sms.providers.registry import build_sms_provider
+from src.modules.sms.service import build_voucher_sms_message
 from src.modules.vouchers.engine import (
     generate_voucher_code,
     generate_voucher_password,
@@ -24,12 +26,11 @@ logger = logging.getLogger("payments.service")
 
 
 class PaymentService:
-    def __init__(self, sms_service: SMSService | None = None) -> None:
-        # Which provider brokers a charge is resolved per-transaction from the
-        # operator's active operator_payment_credentials row — see
-        # provider_for_transaction. The payment method still captures the
-        # customer-selected network/channel and is passed through to the provider.
-        self._sms_service = sms_service
+    """Stateless. Which provider brokers a charge is resolved per-transaction
+    from the operator's active ``operator_payment_credentials`` row (see
+    ``provider_for_transaction``); voucher-delivery SMS likewise resolves from
+    the operator's active ``operator_sms_credentials`` row. Nothing
+    provider-specific is held on the instance."""
 
     @staticmethod
     def generate_internal_reference() -> str:
@@ -364,24 +365,37 @@ class PaymentService:
                 await tx_ctx.__aexit__(None, None, None)
 
         await db.refresh(tx)
-        if sms_payload and self._sms_service and self._sms_service.enabled:
+        if sms_payload:
             to, code, plan = sms_payload
-            try:
-                message = build_voucher_sms_message(code=code, plan=plan)
-                result = await self._sms_service.send(to=to, message=message)
-                if result is not None and not result.success:
-                    logger.error(
-                        "sms_send_failed provider=%s to=%s error=%s",
-                        (self._sms_service.settings.sms_provider or ""),
-                        to,
-                        result.error,
-                    )
-            except Exception:
-                logger.exception(
-                    "sms_send_exception provider=%s to=%s",
-                    (self._sms_service.settings.sms_provider or ""),
-                    to,
+            resolved = await resolve_active_sms_provider(db, tx.isp_operator_id)
+            if resolved is None:
+                # No SMS gateway configured for this operator — deliver the
+                # voucher on the success page only (matches the old
+                # sms_provider='' no-op). Never blocks the payment.
+                logger.info(
+                    "voucher_sms_skipped operator=%s reason=no_active_sms_provider",
+                    tx.isp_operator_id,
                 )
+            else:
+                provider_key, credentials = resolved
+                try:
+                    message = build_voucher_sms_message(code=code, plan=plan)
+                    result = await build_sms_provider(provider_key, credentials).send(to=to, message=message)
+                    if result is not None and not result.success:
+                        logger.error(
+                            "voucher_sms_send_failed operator=%s provider=%s to=%s error=%s",
+                            tx.isp_operator_id, provider_key, to, result.error,
+                        )
+                    else:
+                        logger.info(
+                            "voucher_sms_sent operator=%s provider=%s to=%s",
+                            tx.isp_operator_id, provider_key, to,
+                        )
+                except Exception:
+                    logger.exception(
+                        "voucher_sms_exception operator=%s provider=%s to=%s",
+                        tx.isp_operator_id, provider_key, to,
+                    )
         try:
             from src.modules.onboarding import mark_checklist
             await mark_checklist(db, tx.isp_operator_id, "first_sale_made")

@@ -115,6 +115,72 @@ async def test_resolve_successful_payment_uses_select_for_update_and_generates_v
     assert getattr(db.executed[0], "_for_update_arg", None) is not None
 
 
+def _paid_tx_and_plan(phone: str | None):
+    tx = PaymentTransaction(
+        id=uuid.uuid4(),
+        internal_reference=f"ref-sms-{uuid.uuid4().hex[:6]}",
+        status=PaymentStatus.PENDING.value,
+        plan_id=uuid.uuid4(),
+        site_id=uuid.uuid4(),
+        amount_ghs=Decimal("4.00"),
+        payment_method=PaymentMethod.MTN_MOMO.value,
+        provider="mtn",
+        phone_number=phone,
+    )
+    plan = Plan(
+        id=tx.plan_id, name="1 hour", type="time", duration_minutes=60,
+        data_limit_mb=None, download_speed_kbps=1024, upload_speed_kbps=512,
+        price_ghs=Decimal("4.00"),
+    )
+    return tx, plan
+
+
+@pytest.mark.asyncio
+async def test_voucher_sms_uses_operators_active_provider(monkeypatch):
+    tx, plan = _paid_tx_and_plan("233551234987")
+    sent = {}
+
+    class _FakeSMS:
+        async def send(self, *, to, message):
+            sent["to"], sent["message"] = to, message
+            from src.modules.sms.types import SMSSendResult
+            return SMSSendResult(success=True, provider_reference="m1")
+
+    async def _fake_resolve(_db, _operator_id):
+        return ("hubtel", {"client_id": "a", "client_secret": "b", "from": "SID"})
+
+    monkeypatch.setattr("src.modules.payments.service.resolve_active_sms_provider", _fake_resolve)
+    monkeypatch.setattr("src.modules.payments.service.build_sms_provider", lambda k, c: _FakeSMS())
+
+    await _service().resolve_successful_payment(
+        FakeDb([tx, plan]), internal_reference=tx.internal_reference, trigger_source="webhook"
+    )
+    assert sent["to"] == "233551234987"
+    assert "voucher" in sent["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_voucher_sms_skipped_when_operator_has_no_sms_provider(monkeypatch):
+    tx, plan = _paid_tx_and_plan("233551234987")
+    built = {"n": 0}
+
+    async def _fake_resolve(_db, _operator_id):
+        return None
+
+    monkeypatch.setattr("src.modules.payments.service.resolve_active_sms_provider", _fake_resolve)
+    monkeypatch.setattr(
+        "src.modules.payments.service.build_sms_provider",
+        lambda *a, **k: built.__setitem__("n", built["n"] + 1),
+    )
+
+    updated = await _service().resolve_successful_payment(
+        FakeDb([tx, plan]), internal_reference=tx.internal_reference, trigger_source="webhook"
+    )
+    assert updated.status == PaymentStatus.SUCCESS.value
+    assert updated.voucher_id is not None
+    assert built["n"] == 0
+
+
 @pytest.mark.asyncio
 async def test_resolve_successful_payment_is_idempotent_when_already_success():
     tx = PaymentTransaction(
