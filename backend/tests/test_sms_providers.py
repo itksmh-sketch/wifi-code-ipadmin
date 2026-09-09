@@ -140,6 +140,50 @@ async def test_africastalking_http_error_carries_response_reason():
 
 
 @pytest.mark.asyncio
+async def test_africastalking_verify_credentials_ok():
+    seen = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["username"] = request.url.params.get("username")
+        seen["apikey"] = request.headers.get("apiKey")
+        return httpx.Response(200, json={"UserData": {"balance": "KES 1,234.5"}})
+
+    await _at(handler).verify_credentials()  # must not raise
+    assert seen["path"] == "/version1/user"
+    assert seen["username"] == "myapp"
+    assert seen["apikey"] == "key-123"
+
+
+@pytest.mark.asyncio
+async def test_africastalking_verify_credentials_rejects_bad_key():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="Application not found or credentials are invalid")
+
+    with pytest.raises(ValueError, match="credentials are invalid"):
+        await _at(handler).verify_credentials()
+
+
+@pytest.mark.asyncio
+async def test_africastalking_verify_credentials_extracts_errorMessage():
+    # AT's real 401 body shape (confirmed against the live API).
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"errorMessage": "The supplied authentication is invalid"})
+
+    with pytest.raises(ValueError, match="The supplied authentication is invalid"):
+        await _at(handler).verify_credentials()
+
+
+@pytest.mark.asyncio
+async def test_hubtel_verify_credentials_not_implemented():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    with pytest.raises(NotImplementedError):
+        await _hubtel(handler).verify_credentials()
+
+
+@pytest.mark.asyncio
 async def test_africastalking_not_configured_makes_no_call():
     called = {"n": 0}
 

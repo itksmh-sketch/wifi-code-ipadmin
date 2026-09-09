@@ -162,6 +162,11 @@ PROVIDER_CATALOG: list[dict] = [
         "sort_order": 30,
         "credential_schema": {
             "configured_by": "operator",
+            # Africa's Talking exposes GET /version1/user (account/balance) — a
+            # no-cost credential check, so the config UI offers "Test connection".
+            # Hubtel has no documented equivalent, so its row omits this flag and
+            # the UI hides the button (the /test endpoint 400s "not available").
+            "supports_test": True,
             "fields": [
                 {"name": "api_key", "label": "API key", "type": "string", "required": True, "secret": True},
                 {"name": "username", "label": "Username", "type": "string", "required": True, "secret": False},

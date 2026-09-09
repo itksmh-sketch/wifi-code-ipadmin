@@ -49,6 +49,33 @@ class AfricasTalkingSMSProvider(SMSProvider):
             return self._client
         return httpx.AsyncClient(timeout=10.0, base_url="https://api.africastalking.com")
 
+    async def verify_credentials(self) -> None:
+        """GET /version1/user — Africa's Talking's account/balance lookup. No
+        cost, no SMS sent: 200 means the api_key + username authenticate, any
+        other status carries the reason."""
+        if not (self.api_key and self.username):
+            raise ValueError("Africa's Talking API key and username are required")
+        client = await self._get_client()
+        try:
+            resp = await client.get(
+                "/version1/user",
+                params={"username": self.username},
+                headers={"apiKey": self.api_key, "Accept": "application/json"},
+            )
+        except Exception as e:  # noqa: BLE001
+            raise ValueError(f"Could not reach Africa's Talking: {_clip(str(e))}") from e
+        if resp.status_code == 200:
+            return
+        reason = None
+        try:
+            body = resp.json()
+            if isinstance(body, dict):
+                reason = body.get("errorMessage") or body.get("message") or body.get("error")
+        except Exception:
+            reason = None
+        reason = reason or resp.text or f"HTTP {resp.status_code}"
+        raise ValueError(f"Africa's Talking rejected the credentials: {_clip(reason)}")
+
     async def send(self, to: str, message: str) -> SMSSendResult:
         if not (self.api_key and self.username and self.sender_id):
             return SMSSendResult(success=False, error="africastalking_not_configured")
@@ -73,7 +100,7 @@ class AfricasTalkingSMSProvider(SMSProvider):
                 if isinstance(payload, dict):
                     smd = payload.get("SMSMessageData")
                     reason = (smd or {}).get("Message") if isinstance(smd, dict) else None
-                    reason = reason or payload.get("message") or payload.get("error")
+                    reason = reason or payload.get("errorMessage") or payload.get("message") or payload.get("error")
                 reason = reason or resp.text
                 logger.warning("africastalking_sms_send_failed status=%s body=%s", resp.status_code, _clip(reason, 500))
                 err = f"africastalking_http_{resp.status_code}"
