@@ -350,6 +350,11 @@ class PaystackProvider(PaymentProvider):
         failure_reason = None
         authorization_url = None
 
+        # Paystack's Charge API signals the next step through `data.status`. Each
+        # `send_*` status is a request for customer input that must be posted back
+        # to the matching `/charge/submit_*` endpoint (see `submit_*` methods);
+        # mapping any of them to WAIT strands the charge - the portal shows the
+        # prompt text but never renders the input, and the flow times out.
         if status_raw == "success":
             status = PaymentStatus.SUCCESS
             next_action = PaymentNextAction.NONE
@@ -359,15 +364,23 @@ class PaystackProvider(PaymentProvider):
             next_action = PaymentNextAction.NONE
             failure_reason = str(data.get("gateway_response") or data.get("message") or "payment failed")
             message = message or "Payment failed."
-        elif status_raw in {"send_otp", "pay_offline"}:
-            next_action = PaymentNextAction.WAIT
-            message = message or "Check your phone and approve the mobile money payment prompt."
-        elif status_raw == "send_phone":
-            next_action = PaymentNextAction.ENTER_PHONE
-            message = message or "Enter the requested phone number."
+        elif status_raw == "timeout":
+            # The charge attempt expired (commonly: the customer never entered the
+            # OTP/PIN). Paystack's guidance is terminal - show the message and
+            # start a fresh charge - so resolve it to failed rather than polling.
+            status = PaymentStatus.FAILED
+            next_action = PaymentNextAction.NONE
+            failure_reason = str(data.get("message") or data.get("gateway_response") or "payment timed out")
+            message = message or "The payment attempt timed out. Please try again."
+        elif status_raw == "send_otp":
+            next_action = PaymentNextAction.ENTER_OTP
+            message = message or "Enter the one-time password (OTP) sent to your phone."
         elif status_raw == "send_pin":
             next_action = PaymentNextAction.ENTER_PIN
             message = message or "Enter your card or wallet PIN."
+        elif status_raw == "send_phone":
+            next_action = PaymentNextAction.ENTER_PHONE
+            message = message or "Enter the requested phone number."
         elif status_raw == "send_birthday":
             next_action = PaymentNextAction.ENTER_BIRTHDAY
             message = message or "Enter your date of birth."
@@ -378,6 +391,15 @@ class PaystackProvider(PaymentProvider):
             next_action = PaymentNextAction.OPEN_URL
             authorization_url = str(data.get("authorization_url") or data.get("url") or "")
             message = message or "Additional authorization is required."
+        elif status_raw == "pay_offline":
+            # USSD / M-Pesa style: the customer authorizes on their own handset
+            # (dial the USSD code, or approve with their wallet PIN). There is no
+            # input for us to collect - keep polling for the result.
+            next_action = PaymentNextAction.WAIT
+            message = message or "Follow the prompt on your phone to authorize the payment."
+        elif status_raw == "pending":
+            next_action = PaymentNextAction.WAIT
+            message = message or "Payment is processing. This can take a moment to confirm."
         elif data.get("authorization_url"):
             next_action = PaymentNextAction.OPEN_URL
             authorization_url = str(data.get("authorization_url") or "")

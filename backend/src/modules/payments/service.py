@@ -24,6 +24,21 @@ from src.modules.vouchers.engine import (
 
 logger = logging.getLogger("payments.service")
 
+# Charge states where the provider is waiting on customer-entered input
+# (OTP/PIN/phone/birthday/address). Probing the provider's verify endpoint while
+# a charge sits in one of these can make the PSP abandon the in-flight
+# authorization, so the background/portal poll must not call verify() here - only
+# an explicit force (admin action, inbound webhook) may.
+_AWAITING_INPUT_ACTIONS = frozenset(
+    {
+        PaymentNextAction.ENTER_OTP.value,
+        PaymentNextAction.ENTER_PIN.value,
+        PaymentNextAction.ENTER_PHONE.value,
+        PaymentNextAction.ENTER_BIRTHDAY.value,
+        PaymentNextAction.ENTER_ADDRESS.value,
+    }
+)
+
 
 class PaymentService:
     """Stateless. Which provider brokers a charge is resolved per-transaction
@@ -210,6 +225,11 @@ class PaymentService:
         if tx.status in {PaymentStatus.SUCCESS.value, PaymentStatus.FAILED.value}:
             return tx
         if not tx.provider_reference:
+            return tx
+        if not force and tx.next_action in _AWAITING_INPUT_ACTIONS:
+            # The charge is waiting on the customer (OTP/PIN/...). Calling verify()
+            # now can knock over the live authorization; let continue_payment
+            # drive it, or an explicit force resolve a stale one.
             return tx
         if not force and tx.last_status_check_at:
             age = datetime.now(timezone.utc) - tx.last_status_check_at

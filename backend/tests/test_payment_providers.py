@@ -141,7 +141,7 @@ async def test_paystack_card_uses_transaction_initialize():
 
 
 @pytest.mark.asyncio
-async def test_paystack_mobile_money_uses_charge_payload_and_waits_for_approval():
+async def test_paystack_mobile_money_uses_charge_payload():
     seen = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -153,7 +153,7 @@ async def test_paystack_mobile_money_uses_charge_payload_and_waits_for_approval(
                 "status": True,
                 "message": "Charge attempted",
                 "data": {
-                    "status": "send_otp",
+                    "status": "pay_offline",
                     "reference": "ref-momo",
                     "channel": "mobile_money",
                 },
@@ -178,6 +178,64 @@ async def test_paystack_mobile_money_uses_charge_payload_and_waits_for_approval(
     }
     assert result.status == PaymentStatus.PENDING
     assert result.next_action == PaymentNextAction.WAIT
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_paystack_send_otp_maps_to_enter_otp():
+    # Exact /charge response captured from a live-keys test attempt (ref elided).
+    # `send_otp` means the customer must submit the OTP via /charge/submit_otp -
+    # it must surface as ENTER_OTP, not WAIT, or the portal shows the prompt text
+    # with no input box and the charge times out ("transaction was not completed").
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": True,
+                "message": "Charge attempted",
+                "data": {
+                    "reference": "c46fde05-d528-4d81-8c40-5b047c73b2d2",
+                    "status": "send_otp",
+                    "display_text": "Please enter the one-time password sent to your phone",
+                },
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.paystack.co")
+    provider = PaystackProvider(settings=_settings(), client=client)
+
+    result = await provider.initiate(Decimal("2.00"), "233551234987", "plan-1", "site-1", "ref-otp", "mtn_momo")
+
+    assert result.status == PaymentStatus.PENDING
+    assert result.next_action == PaymentNextAction.ENTER_OTP
+    assert result.display_message == "Please enter the one-time password sent to your phone"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_paystack_timeout_resolves_to_failed():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": True,
+                "message": "Charge attempted",
+                "data": {
+                    "reference": "ref-timeout",
+                    "status": "timeout",
+                    "message": "Charge attempt timed out",
+                },
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.paystack.co")
+    provider = PaystackProvider(settings=_settings(), client=client)
+
+    result = await provider.initiate(Decimal("2.00"), "233551234987", "plan-1", "site-1", "ref-timeout", "mtn_momo")
+
+    assert result.status == PaymentStatus.FAILED
+    assert result.next_action == PaymentNextAction.NONE
+    assert result.failure_reason == "Charge attempt timed out"
     await client.aclose()
 
 
@@ -243,7 +301,7 @@ async def test_paystack_pending_uses_helpful_fallback_not_top_level_message():
 
     result = await provider.initiate(Decimal("2.00"), "233555000111", "plan-1", "site-1", "ref-p", "mtn_momo")
     assert result.next_action == PaymentNextAction.WAIT
-    assert result.display_message == "Check your phone and approve the mobile money payment prompt."
+    assert result.display_message == "Follow the prompt on your phone to authorize the payment."
     await client.aclose()
 
 

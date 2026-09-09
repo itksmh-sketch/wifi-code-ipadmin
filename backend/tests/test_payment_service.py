@@ -207,6 +207,57 @@ async def test_resolve_successful_payment_is_idempotent_when_already_success():
     assert len([obj for obj in db.added if isinstance(obj, Voucher)]) == 0
 
 
+def _otp_pending_tx() -> PaymentTransaction:
+    return PaymentTransaction(
+        id=uuid.uuid4(),
+        internal_reference="ref-otp",
+        status=PaymentStatus.PENDING.value,
+        plan_id=uuid.uuid4(),
+        site_id=uuid.uuid4(),
+        amount_ghs=Decimal("2.00"),
+        payment_method=PaymentMethod.MTN_MOMO.value,
+        provider="paystack",
+        provider_reference="charge-ref",
+        next_action=PaymentNextAction.ENTER_OTP.value,
+    )
+
+
+class _VerifyMustNotRunProvider:
+    async def verify(self, *args, **kwargs):
+        raise RuntimeError("verify-called")
+
+
+@pytest.mark.asyncio
+async def test_refresh_skips_verify_while_awaiting_customer_input(monkeypatch):
+    tx = _otp_pending_tx()
+    service = _service()
+
+    async def _fake_provider(db, t):
+        return _VerifyMustNotRunProvider()
+
+    monkeypatch.setattr(service, "provider_for_transaction", _fake_provider)
+
+    out = await service.refresh_transaction_status(FakeDb([]), tx=tx, force=False)
+
+    assert out is tx
+    assert out.status == PaymentStatus.PENDING.value
+    assert out.next_action == PaymentNextAction.ENTER_OTP.value
+
+
+@pytest.mark.asyncio
+async def test_refresh_still_verifies_awaiting_input_tx_when_forced(monkeypatch):
+    tx = _otp_pending_tx()
+    service = _service()
+
+    async def _fake_provider(db, t):
+        return _VerifyMustNotRunProvider()
+
+    monkeypatch.setattr(service, "provider_for_transaction", _fake_provider)
+
+    with pytest.raises(RuntimeError, match="verify-called"):
+        await service.refresh_transaction_status(FakeDb([]), tx=tx, force=True)
+
+
 def _rule(reseller_id, plan_id, value: str, is_active: bool = True) -> _RuleView:
     return _RuleView(
         id=uuid.uuid4(),
