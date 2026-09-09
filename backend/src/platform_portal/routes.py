@@ -53,6 +53,11 @@ async def platform_health_page():
     return FileResponse(_DIR / "health.html")
 
 
+@router.get("/platform/analytics", include_in_schema=False)
+async def platform_analytics_page():
+    return FileResponse(_DIR / "analytics.html")
+
+
 @router.get("/platform", include_in_schema=False)
 async def platform_root_redirect():
     from fastapi.responses import RedirectResponse

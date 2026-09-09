@@ -8,44 +8,27 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
-from src.db.models import ISPOperator, OperatorPaymentCredential, PaymentTransaction, Plan, Voucher
-from src.modules.payments.providers.paystack import PaystackProvider
+from src.db.models import ISPOperator, PaymentTransaction, Plan, Voucher
 from src.modules.payments.providers.base import PaymentProvider
-from src.modules.payments.types import PaymentMethod, PaymentNextAction, PaymentProviderName, PaymentStatus
+from src.modules.payments.providers.registry import build_payment_provider
+from src.modules.payments.provider_resolver import resolve_active_payment_provider
+from src.modules.payments.types import PaymentMethod, PaymentNextAction, PaymentStatus
 from src.modules.sms.service import SMSService, build_voucher_sms_message
 from src.modules.vouchers.engine import (
     generate_voucher_code,
     generate_voucher_password,
     generate_voucher_username,
 )
-from src.utils.encryption import decrypt_secret
 
 logger = logging.getLogger("payments.service")
 
 
 class PaymentService:
-    def __init__(
-        self,
-        mtn_provider: PaymentProvider,
-        vodafone_provider: PaymentProvider,
-        airteltigo_provider: PaymentProvider,
-        paystack_provider: PaymentProvider,
-        sms_service: SMSService | None = None,
-    ) -> None:
-        # Paystack is the only active provider. Payment method still captures the
-        # customer-selected network/channel, but every flow is brokered by Paystack.
-        self._providers = {
-            PaymentMethod.MTN_MOMO: paystack_provider,
-            PaymentMethod.VODAFONE_CASH: paystack_provider,
-            PaymentMethod.AIRTELTIGO: paystack_provider,
-            PaymentMethod.CARD: paystack_provider,
-        }
-        self._provider_names = {
-            PaymentMethod.MTN_MOMO: PaymentProviderName.PAYSTACK.value,
-            PaymentMethod.VODAFONE_CASH: PaymentProviderName.PAYSTACK.value,
-            PaymentMethod.AIRTELTIGO: PaymentProviderName.PAYSTACK.value,
-            PaymentMethod.CARD: PaymentProviderName.PAYSTACK.value,
-        }
+    def __init__(self, sms_service: SMSService | None = None) -> None:
+        # Which provider brokers a charge is resolved per-transaction from the
+        # operator's active operator_payment_credentials row — see
+        # provider_for_transaction. The payment method still captures the
+        # customer-selected network/channel and is passed through to the provider.
         self._sms_service = sms_service
 
     @staticmethod
@@ -61,12 +44,6 @@ class PaymentService:
             return digits
         raise ValueError("Invalid Ghana phone number format")
 
-    def provider_for_method(self, payment_method: PaymentMethod) -> PaymentProvider:
-        provider = self._providers.get(payment_method)
-        if not provider:
-            raise ValueError(f"Unsupported payment method: {payment_method}")
-        return provider
-
     @staticmethod
     def _log_status_change(transaction: PaymentTransaction, old_status: str, new_status: str, trigger_source: str) -> None:
         logger.info(
@@ -78,6 +55,26 @@ class PaymentService:
             new_status,
             trigger_source,
         )
+
+    async def _resolve_failed_initiation(
+        self, db: AsyncSession, *, tx: PaymentTransaction, reason: str
+    ) -> None:
+        """The provider rejected the charge before we got a provider reference.
+        create_pending_transaction already committed the row, so move it to a
+        terminal failed state with the real reason rather than leaving it stuck
+        at pending until reconciliation's 2h timeout sweep."""
+        if tx.status != PaymentStatus.PENDING.value:
+            return
+        old_status = tx.status
+        tx.status = PaymentStatus.FAILED.value
+        tx.failure_reason = reason
+        tx.display_message = reason
+        tx.next_action = PaymentNextAction.NONE.value
+        tx.provider_state = "initiation_failed"
+        tx.completed_at = datetime.now(timezone.utc)
+        self._log_status_change(tx, old_status, tx.status, "initiate")
+        await db.commit()
+        await db.refresh(tx)
 
     async def create_pending_transaction(
         self,
@@ -92,6 +89,9 @@ class PaymentService:
         ip_address: str | None,
     ) -> PaymentTransaction:
         internal_reference = self.generate_internal_reference()
+        # Stamp the transaction with the operator's active provider. Raises if
+        # they have configured none — surfaced to the portal as a 400.
+        provider_key, _ = await resolve_active_payment_provider(db, isp_operator_id)
         tx = PaymentTransaction(
             isp_operator_id=isp_operator_id,
             plan_id=plan_id,
@@ -99,7 +99,7 @@ class PaymentService:
             amount_ghs=amount_ghs,
             currency="GHS",
             payment_method=payment_method.value,
-            provider=self._provider_names[payment_method],
+            provider=provider_key,
             internal_reference=internal_reference,
             phone_number=self.normalize_phone(phone_number) if phone_number else None,
             status=PaymentStatus.PENDING.value,
@@ -126,15 +126,25 @@ class PaymentService:
         if tx.status != PaymentStatus.PENDING.value:
             return tx
 
-        provider = await self.provider_for_transaction(db, tx)
-        result = await provider.initiate(
-            amount_ghs=Decimal(str(tx.amount_ghs)),
-            phone=tx.phone_number,
-            plan_id=str(tx.plan_id),
-            site_id=str(tx.site_id),
-            internal_reference=tx.internal_reference,
-            payment_method=tx.payment_method,
-        )
+        try:
+            provider = await self.provider_for_transaction(db, tx)
+            result = await provider.initiate(
+                amount_ghs=Decimal(str(tx.amount_ghs)),
+                phone=tx.phone_number,
+                plan_id=str(tx.plan_id),
+                site_id=str(tx.site_id),
+                internal_reference=tx.internal_reference,
+                payment_method=tx.payment_method,
+                # INET column -> may be an ipaddress object; providers want a string.
+                client_ip=str(tx.ip_address) if tx.ip_address is not None else None,
+            )
+        except ValueError as exc:
+            # Provider rejected the charge outright (declined, bad number,
+            # unsupported network, misconfigured provider). Resolve the already
+            # committed pending row to failed with the real reason, then re-raise
+            # so the portal route's existing error handling is unchanged.
+            await self._resolve_failed_initiation(db, tx=tx, reason=str(exc))
+            raise
         return await self.apply_provider_result(db, tx=tx, result=result, trigger_source="initiate")
 
     async def continue_payment(
@@ -206,7 +216,9 @@ class PaymentService:
                 return tx
 
         provider = await self.provider_for_transaction(db, tx)
-        result = await provider.verify(tx.provider_reference)
+        result = await provider.verify(
+            tx.provider_reference, expected_amount_ghs=Decimal(str(tx.amount_ghs))
+        )
         return await self.apply_provider_result(db, tx=tx, result=result, trigger_source="poll")
 
     async def apply_webhook_update(
@@ -379,29 +391,12 @@ class PaymentService:
         return tx
 
     async def provider_for_transaction(self, db: AsyncSession, tx: PaymentTransaction) -> PaymentProvider:
-        payment_method = PaymentMethod(tx.payment_method)
-        if self._provider_names[payment_method] != PaymentProviderName.PAYSTACK.value:
-            return self.provider_for_method(payment_method)
-
-        creds = (
-            await db.execute(
-                select(OperatorPaymentCredential).where(
-                    OperatorPaymentCredential.isp_operator_id == tx.isp_operator_id,
-                    OperatorPaymentCredential.provider == PaymentProviderName.PAYSTACK.value,
-                    OperatorPaymentCredential.is_active == True,
-                )
-            )
-        ).scalar_one_or_none()
-        if not creds:
-            raise ValueError("Operator has not configured payment credentials")
+        provider_key, credentials = await resolve_active_payment_provider(db, tx.isp_operator_id)
 
         operator = await db.get(ISPOperator, tx.isp_operator_id)
         slug = operator.slug if operator else ""
         webhook_base = get_settings().webhook_base_url.rstrip("/")
-        callback_url = f"{webhook_base}/api/v1/webhooks/paystack/{slug}" if webhook_base and slug else None
-        return PaystackProvider(
-            secret_key=decrypt_secret(creds.secret_key_encrypted),
-            public_key=decrypt_secret(creds.public_key_encrypted),
-            webhook_secret=decrypt_secret(creds.webhook_secret_encrypted) if creds.webhook_secret_encrypted else None,
-            callback_url=callback_url,
+        callback_url = (
+            f"{webhook_base}/api/v1/webhooks/{provider_key}/{slug}" if webhook_base and slug else None
         )
+        return build_payment_provider(provider_key, credentials, callback_url=callback_url)

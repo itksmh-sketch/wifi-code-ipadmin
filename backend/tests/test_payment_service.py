@@ -75,8 +75,7 @@ class FakeDb:
 
 
 def _service() -> PaymentService:
-    dummy = DummyProvider()
-    return PaymentService(dummy, dummy, dummy, dummy)
+    return PaymentService()
 
 
 @pytest.mark.asyncio

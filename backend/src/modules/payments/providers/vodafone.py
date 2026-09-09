@@ -32,6 +32,7 @@ class VodafoneCashMockProvider(PaymentProvider):
         site_id: str,
         internal_reference: str,
         payment_method: str,
+        client_ip: Optional[str] = None,
     ) -> PaymentInitiationResult:
         await asyncio.sleep(2)
         mocked_payload = {
@@ -49,7 +50,7 @@ class VodafoneCashMockProvider(PaymentProvider):
             status=PaymentStatus.PENDING,
         )
 
-    async def verify(self, provider_reference: str) -> PaymentVerificationResult:
+    async def verify(self, provider_reference: str, expected_amount_ghs: Optional[Decimal] = None) -> PaymentVerificationResult:
         await asyncio.sleep(2)
         suffix = provider_reference[-1].lower()
         if suffix in {"0", "2", "4", "6", "8", "a", "c", "e"}:

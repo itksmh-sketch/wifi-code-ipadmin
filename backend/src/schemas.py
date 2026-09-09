@@ -367,27 +367,26 @@ class PortalAuthenticateResponse(BaseModel):
     password: str
 
 
-class PaymentCredentialProvider(str, Enum):
-    paystack = "paystack"
+class PaymentCredentialUpsert(BaseModel):
+    """Operator writes credentials for one provider. `values` is keyed by the
+    provider's provider_catalog credential_schema field names."""
+    values: dict[str, str]
+    # None -> activate only if the operator has no active provider yet.
+    activate: Optional[bool] = None
 
 
-class PaymentCredentialUpdate(BaseModel):
-    provider: PaymentCredentialProvider = PaymentCredentialProvider.paystack
-    public_key: str
-    secret_key: str
-    webhook_secret: Optional[str] = None
-    is_active: bool = True
-
-
-class PaymentCredentialResponse(BaseModel):
-    provider: str = "paystack"
-    public_key_last4: Optional[str] = None
-    secret_key_last4: Optional[str] = None
-    webhook_secret_last4: Optional[str] = None
-    is_active: bool = False
-    is_configured: bool = False
+class ConfiguredProviderView(BaseModel):
+    provider: str
+    is_active: bool
+    # Field name -> "••••1234" when stored, null when an optional field is not.
+    field_hints: dict[str, Optional[str]]
     last_validated_at: Optional[datetime] = None
     last_validation_error: Optional[str] = None
+
+
+class PaymentCredentialsView(BaseModel):
+    active_provider: Optional[str] = None
+    configured: list[ConfiguredProviderView] = Field(default_factory=list)
 
 
 def validate_monthly_fee(value: Optional[Decimal]) -> Optional[Decimal]:
@@ -494,6 +493,22 @@ class ResellerWalletTransactionResponse(BaseModel):
     created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+
+# --- Provider catalog ---
+
+class OperatorProviderResponse(BaseModel):
+    """Operator-facing catalog row — GET /api/v1/providers?category=…
+
+    Strict subset of ProviderCatalogEntryResponse: no id, no category, and none
+    of the platform-internal state (is_integrated, is_available,
+    platform_rate_per_message, sort_order).
+    """
+    provider_key: str
+    display_name: str
+    description: Optional[str] = None
+    credential_schema: dict = Field(default_factory=dict)
+    is_platform_provided: bool
 
 
 # --- Provider catalog (platform owner only) ---

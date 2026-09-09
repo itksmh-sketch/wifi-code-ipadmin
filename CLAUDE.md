@@ -72,13 +72,28 @@ docker exec hotspot-backend alembic revision --autogenerate -m "description"
 RUN_SEED=true python -m src.db.seeds.seed
 ```
 
-### Tests (integration — require a running server)
+### Tests
+
+**Unit tests** (no server, safe anywhere) — `test_payment_providers`, `test_payment_service`,
+`test_radius_host`, `test_reseller_commission_priority`, `test_voucher_code_length`:
 ```bash
 cd backend
-TEST_BASE_URL=http://localhost:8000 python -m pytest tests/ -v
-TEST_BASE_URL=http://localhost:8000 python -m pytest tests/test_billing.py -v
+python -m pytest tests/test_payment_providers.py tests/test_payment_service.py -v
 ```
-Tests use plain `urllib` and hit a live server. They fail/skip in sandboxes without one — note this rather than treating it as a failure.
+
+**Integration tests** (`test_multi_tenancy`, `test_billing`, `test_branding`, `test_plan_dedup`,
+`test_router_setup`, `test_multi_tenant_security`) — hit a live server via plain `urllib` and
+have **NO teardown**: they POST real operators/admins/routers/plans/invoices and leave them.
+```bash
+cd backend
+ALLOW_INTEGRATION_TESTS=1 TEST_BASE_URL=http://<throwaway-host>:PORT python -m pytest tests/ -v
+```
+- **On this box, `localhost:8000` IS production.** Never point `TEST_BASE_URL` at it (or at
+  `34.122.11.114` / `ip-admin.duckdns.org`) — only at a disposable/CI database.
+- `tests/conftest.py` enforces this: without `ALLOW_INTEGRATION_TESTS=1` **and** a
+  local/throwaway `TEST_BASE_URL`, pytest hard-exits at collection (returncode 2) before any
+  test runs. A run against production requires standing up a separate instance first.
+- In sandboxes with no server they fail/skip — note that rather than treating it as a failure.
 
 ### Frontend
 ```bash

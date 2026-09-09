@@ -1,6 +1,6 @@
 import uuid
 import datetime
-from sqlalchemy import CheckConstraint, Column, String, Text, Integer, Float, Boolean, DateTime, ForeignKey, BigInteger, Numeric, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, Column, String, Text, Integer, Float, Boolean, DateTime, ForeignKey, BigInteger, Numeric, UniqueConstraint, Index, func, text
 from sqlalchemy.dialects.postgresql import UUID, INET, MACADDR, ENUM, JSONB
 from sqlalchemy.orm import relationship
 from src.db.base import Base
@@ -65,20 +65,34 @@ class OperatorPaymentCredential(Base):
     __tablename__ = "operator_payment_credentials"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
-    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id", ondelete="CASCADE"), unique=True, nullable=False)
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id", ondelete="CASCADE"), nullable=False)
     provider = Column(
         ENUM("paystack", "flutterwave", "hubtel", name="operator_payment_provider", create_type=False),
         nullable=False,
         server_default="'paystack'",
     )
-    public_key_encrypted = Column(Text, nullable=False)
-    secret_key_encrypted = Column(Text, nullable=False)
-    webhook_secret_encrypted = Column(Text, nullable=True)
+    # Fernet token wrapping json.dumps({field_name: value}, sort_keys=True), keyed
+    # by provider_catalog.credential_schema.fields[].name for this provider.
+    # Read/written only via payments.provider_resolver.{load,dump}_credentials.
+    # See docs/payment-multi-provider-design.md.
+    credentials_encrypted = Column(Text, nullable=False)
     is_active = Column(Boolean, nullable=False, server_default="true")
     last_validated_at = Column(DateTime(timezone=True), nullable=True)
     last_validation_error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("isp_operator_id", "provider", name="uq_operator_payment_credentials_operator_provider"),
+        # At most one active provider per operator (partial unique index — DDL in
+        # migration 026; matched here so the ORM knows about it).
+        Index(
+            "uq_operator_payment_credentials_one_active",
+            "isp_operator_id",
+            unique=True,
+            postgresql_where=text("is_active"),
+        ),
+    )
 
 
 class PlatformPaymentCredential(Base):

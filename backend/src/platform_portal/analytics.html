@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Analytics — Platform Admin</title>
+  <link rel="stylesheet" href="/platform/statics/app.css">
+  <style>
+    .count-grid{display:grid;gap:12px;grid-template-columns:repeat(4,minmax(0,1fr))}
+    @media(max-width:760px){.count-grid{grid-template-columns:repeat(2,1fr)}}
+    .count-cell{background:rgba(16,26,51,.55);border:1px solid var(--border);border-radius:12px;padding:14px}
+    .count-cell .n{font-size:24px;font-weight:800;letter-spacing:-.02em}
+    .count-cell .k{margin-top:6px}
+    .axis-note{color:var(--muted);font-size:12.5px;margin:2px 0 16px;line-height:1.6}
+    .access-line{display:flex;align-items:center;gap:12px;padding:14px 16px;border:1px solid var(--border);
+      border-radius:12px;background:rgba(16,26,51,.55)}
+    .access-line .n{font-size:24px;font-weight:800;letter-spacing:-.02em}
+    .access-line .k{color:var(--muted);font-size:13px}
+    .router-row{display:flex;gap:12px;flex-wrap:wrap}
+    .router-row .stat-card{flex:1;min-width:140px}
+    .stat-value.online{color:#86efac}
+    .stat-value.offline{color:#fca5a5}
+  </style>
+</head>
+<body>
+<div class="container">
+  <nav class="nav">
+    <span class="brand">Platform <span>Admin</span></span>
+    <div class="links">
+      <a href="/platform/operators" class="btn">← Operators</a>
+      <a href="/platform/providers" class="btn">Providers</a>
+      <a href="/platform/billing" class="btn">Billing</a>
+      <a href="/platform/health" class="btn">Service Health</a>
+      <a href="/platform/settings" class="btn">Settings</a>
+      <button class="btn" id="logout-btn">Logout</button>
+    </div>
+  </nav>
+
+  <div class="section-title">Analytics</div>
+  <p class="section-sub">
+    A point-in-time snapshot of the platform — revenue, operators and routers as they stand right now.
+    No history or trends.
+  </p>
+
+  <div id="err-msg" class="notice bad" style="display:none;margin-bottom:16px"></div>
+
+  <div class="card-header" style="margin-bottom:12px">
+    <span class="text-muted" id="loaded-at"></span>
+    <button class="btn sm" id="refresh-btn">Refresh</button>
+  </div>
+
+  <!-- Revenue — read straight from /billing/summary, not recomputed here -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label">Monthly recurring revenue</div>
+      <div class="stat-value" id="m-mrr">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Revenue collected this month</div>
+      <div class="stat-value" id="m-collected">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Outstanding</div>
+      <div class="stat-value" id="m-outstanding">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Operators total</div>
+      <div class="stat-value" id="m-operators">—</div>
+    </div>
+  </div>
+
+  <!-- Operators — two independent axes, kept visually and structurally apart -->
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-header"><span class="card-title">Operators</span></div>
+
+    <div class="stat-label" style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">
+      Billing status
+    </div>
+    <div class="count-grid" id="billing-grid">
+      <div class="count-cell"><div class="n">—</div><div class="k"><span class="badge trial">trial</span></div></div>
+      <div class="count-cell"><div class="n">—</div><div class="k"><span class="badge active">active</span></div></div>
+      <div class="count-cell"><div class="n">—</div><div class="k"><span class="badge past_due">past due</span></div></div>
+      <div class="count-cell"><div class="n">—</div><div class="k"><span class="badge cancelled">cancelled</span></div></div>
+    </div>
+    <p class="axis-note">
+      Billing status and access are separate axes — an operator can be billing&#8209;status
+      <span class="badge active">active</span> and still be suspended (a manual access cut), so the
+      two are counted independently and a suspended operator is not removed from its billing bucket.
+    </p>
+
+    <div class="stat-label" style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">
+      Access
+    </div>
+    <div class="access-line">
+      <span class="n" id="access-suspended">—</span>
+      <span class="k">operators suspended (<code>status = suspended</code>)</span>
+    </div>
+  </div>
+
+  <!-- Routers — platform-wide, using the shared _is_online() predicate -->
+  <div class="card">
+    <div class="card-header"><span class="card-title">Routers</span></div>
+    <div class="router-row">
+      <div class="stat-card">
+        <div class="stat-label">Online</div>
+        <div class="stat-value online" id="r-online">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Offline</div>
+        <div class="stat-value offline" id="r-offline">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total</div>
+        <div class="stat-value" id="r-total">—</div>
+      </div>
+    </div>
+    <p class="text-muted" style="margin-top:14px;line-height:1.6">
+      Counted across every operator. "Online" means the router has a live accounting session or a
+      connected VPN tunnel — the same reachability rule an operator's own dashboard uses.
+    </p>
+  </div>
+</div>
+
+<script>
+const token = localStorage.getItem('platform_access_token');
+if (!token) { window.location.replace('/platform/login'); }
+
+document.getElementById('logout-btn').addEventListener('click', () => {
+  localStorage.removeItem('platform_access_token');
+  localStorage.removeItem('platform_refresh_token');
+  window.location.href = '/platform/login';
+});
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: {
+      'Authorization': 'Bearer ' + localStorage.getItem('platform_access_token'),
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('platform_access_token');
+    window.location.replace('/platform/login');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
+// GHS money. 0 is a real value, so only null/undefined/unparseable collapses to a dash.
+function fmtMoney(n) {
+  if (n == null || n === '' || isNaN(Number(n))) return '—';
+  return 'GHS ' + Number(n).toLocaleString('en-GH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtNum(n) {
+  return (n == null || isNaN(Number(n))) ? '—' : String(n);
+}
+
+function showError(text) {
+  const box = document.getElementById('err-msg');
+  box.textContent = text;
+  box.style.display = 'block';
+}
+
+function hideError() {
+  document.getElementById('err-msg').style.display = 'none';
+}
+
+async function readError(res, fallback) {
+  try {
+    const body = await res.json();
+    return body.detail ? String(body.detail) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function renderRevenue(d) {
+  document.getElementById('m-mrr').textContent = fmtMoney(d.monthly_recurring_revenue_ghs);
+  document.getElementById('m-collected').textContent = fmtMoney(d.revenue_collected_this_month_ghs);
+  document.getElementById('m-outstanding').textContent = fmtMoney(d.total_outstanding_ghs);
+}
+
+const BILLING_ORDER = ['trial', 'active', 'past_due', 'cancelled'];
+
+function renderSnapshot(d) {
+  const ops = d.operators || {};
+  document.getElementById('m-operators').textContent = fmtNum(ops.total);
+
+  const counts = ops.by_billing_status || {};
+  const cells = document.querySelectorAll('#billing-grid .count-cell .n');
+  BILLING_ORDER.forEach((key, i) => {
+    if (cells[i]) cells[i].textContent = fmtNum(counts[key]);
+  });
+
+  document.getElementById('access-suspended').textContent = fmtNum(ops.access_suspended);
+
+  const routers = d.routers || {};
+  document.getElementById('r-online').textContent = fmtNum(routers.online);
+  document.getElementById('r-offline').textContent = fmtNum(routers.offline);
+  document.getElementById('r-total').textContent = fmtNum(routers.total);
+}
+
+let loading = false;
+
+async function load() {
+  if (loading) return;
+  loading = true;
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  try {
+    const [summaryRes, snapshotRes] = await Promise.all([
+      api('/api/v1/platform/billing/summary'),
+      api('/api/v1/platform/analytics/snapshot'),
+    ]);
+    if (!summaryRes.ok) throw new Error(await readError(summaryRes, 'Failed to load billing summary.'));
+    if (!snapshotRes.ok) throw new Error(await readError(snapshotRes, 'Failed to load analytics snapshot.'));
+    renderRevenue(await summaryRes.json());
+    renderSnapshot(await snapshotRes.json());
+    document.getElementById('loaded-at').textContent = 'as of ' + new Date().toLocaleTimeString();
+    hideError();
+  } catch (err) {
+    if (err && err.message === 'Unauthorized') return;
+    showError('Could not load analytics: ' + (err && err.message ? err.message : err));
+  } finally {
+    loading = false;
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('refresh-btn').addEventListener('click', load);
+load();
+</script>
+</body>
+</html>

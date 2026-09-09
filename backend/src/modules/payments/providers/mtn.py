@@ -73,6 +73,7 @@ class MTNMoMoProvider(PaymentProvider):
         site_id: str,
         internal_reference: str,
         payment_method: str,
+        client_ip: Optional[str] = None,
     ) -> PaymentInitiationResult:
         if not phone:
             return PaymentInitiationResult(
@@ -113,7 +114,7 @@ class MTNMoMoProvider(PaymentProvider):
             )
         return PaymentInitiationResult(provider_reference=reference_id, status=PaymentStatus.PENDING)
 
-    async def verify(self, provider_reference: str) -> PaymentVerificationResult:
+    async def verify(self, provider_reference: str, expected_amount_ghs: Optional[Decimal] = None) -> PaymentVerificationResult:
         if self._mock_mode():
             return PaymentVerificationResult(
                 status=PaymentStatus.SUCCESS,

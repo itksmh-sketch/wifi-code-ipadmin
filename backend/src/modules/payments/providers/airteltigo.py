@@ -32,6 +32,7 @@ class AirtelTigoMockProvider(PaymentProvider):
         site_id: str,
         internal_reference: str,
         payment_method: str,
+        client_ip: Optional[str] = None,
     ) -> PaymentInitiationResult:
         await asyncio.sleep(2)
         mocked_payload = {
@@ -49,7 +50,7 @@ class AirtelTigoMockProvider(PaymentProvider):
             status=PaymentStatus.PENDING,
         )
 
-    async def verify(self, provider_reference: str) -> PaymentVerificationResult:
+    async def verify(self, provider_reference: str, expected_amount_ghs: Optional[Decimal] = None) -> PaymentVerificationResult:
         await asyncio.sleep(2)
         suffix = provider_reference[-1].lower()
         if suffix in {"1", "3", "5", "7", "9", "b", "d", "f"}:

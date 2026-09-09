@@ -37,6 +37,13 @@ async def process_webhook_event(
         # success resolution can run in a clean transaction context.
         await db.commit()
 
+        if provider == "flutterwave":
+            # Flutterwave's verif-hash is a static shared secret, weaker than
+            # Paystack's HMAC. Never trust the webhook's own status field — use it
+            # only as a trigger to re-verify the transaction server-to-server.
+            await service.refresh_transaction_status(db, tx=tx, force=True)
+            return
+
         await service.apply_webhook_update(
             db,
             tx=tx,

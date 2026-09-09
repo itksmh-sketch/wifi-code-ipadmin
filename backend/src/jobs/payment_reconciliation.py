@@ -5,7 +5,7 @@ from sqlalchemy import select
 from src.db.base import async_session_factory
 from src.db.models import PaymentTransaction
 from src.modules.payments.dependencies import get_payment_service
-from src.modules.payments.types import PaymentMethod, PaymentStatus
+from src.modules.payments.types import PaymentStatus
 
 import structlog
 
@@ -42,8 +42,8 @@ async def run_payment_reconciliation(ctx=None) -> dict:
                     stats["still_pending"] += 1
                 continue
 
-            provider = service.provider_for_method(PaymentMethod(tx.payment_method))
-            verify_result = await provider.verify(tx.provider_reference)
+            provider = await service.provider_for_transaction(db, tx)
+            verify_result = await provider.verify(tx.provider_reference, expected_amount_ghs=tx.amount_ghs)
 
             if verify_result.status == PaymentStatus.SUCCESS:
                 await service.apply_provider_result(db, tx=tx, result=verify_result, trigger_source="poll")

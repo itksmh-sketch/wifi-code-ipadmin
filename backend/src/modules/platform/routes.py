@@ -894,6 +894,69 @@ async def update_platform_settings(
     return await get_all_settings(db)
 
 
+# ---------------------------------------------------------------------------
+# Platform analytics snapshot (platform owner only, strictly read-only)
+# ---------------------------------------------------------------------------
+# A point-in-time overview for /platform/analytics — no history, no trends.
+# The MRR / revenue-collected figures are NOT recomputed here: that page reads
+# them from /billing/summary directly, so the aggregate lives in exactly one
+# place. This endpoint only adds the two things nothing else aggregates:
+# operator counts by status and a platform-wide router online/offline tally.
+
+# billing_status and status are different enums measuring different axes — an
+# operator can be billing_status='active' while status='suspended' (a manual
+# access cut). They are reported separately and never merged into one list.
+_BILLING_STATUSES = ["trial", "active", "past_due", "cancelled"]
+
+
+@router.get("/analytics/snapshot")
+async def platform_analytics_snapshot(
+    db: AsyncSession = Depends(get_db),
+    _: PlatformOwner = Depends(get_platform_owner_context),
+):
+    # One grouped query for the billing-status breakdown, normalised so every
+    # enum value is present (a status with no operators reads as 0, not absent).
+    billing_rows = (
+        await db.execute(
+            select(ISPOperator.billing_status, func.count())
+            .group_by(ISPOperator.billing_status)
+        )
+    ).all()
+    by_billing_status = {name: 0 for name in _BILLING_STATUSES}
+    for name, count in billing_rows:
+        by_billing_status[name] = count
+
+    # Access axis: how many operators are suspended regardless of billing state.
+    access_suspended = (
+        await db.execute(
+            select(func.count()).select_from(ISPOperator).where(ISPOperator.status == "suspended")
+        )
+    ).scalar() or 0
+
+    operators_total = (
+        await db.execute(select(func.count()).select_from(ISPOperator))
+    ).scalar() or 0
+
+    # Router online/offline across every operator. The table is small (one
+    # platform, a handful of routers) so a single scan and the shared
+    # _is_online() predicate is cleaner than reimplementing it in SQL.
+    routers = (await db.execute(select(Router))).scalars().all()
+    routers_online = sum(1 for r in routers if router_is_online(r))
+
+    return {
+        "operators": {
+            "total": operators_total,
+            "by_billing_status": by_billing_status,
+            "access_suspended": access_suspended,
+        },
+        "routers": {
+            "total": len(routers),
+            "online": routers_online,
+            "offline": len(routers) - routers_online,
+        },
+    }
+
+
 # --- Service health monitor (platform owner only, strictly read-only) ---
 
 @router.get("/health/services")

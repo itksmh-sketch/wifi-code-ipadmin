@@ -56,12 +56,21 @@ PROVIDER_CATALOG: list[dict] = [
         "category": "payment",
         "provider_key": "flutterwave",
         "display_name": "Flutterwave",
-        "description": "Not yet integrated.",
-        "is_integrated": False,
+        "description": "Cards and mobile money via Flutterwave. Operator supplies their own Flutterwave keys.",
+        "is_integrated": True,
+        # Still off — the platform admin flips this on /platform/providers after
+        # the live Flutterwave sandbox round-trip. Not touched by the catalog sync.
         "is_available": False,
         "is_platform_provided": False,
         "sort_order": 20,
-        "credential_schema": {"configured_by": "operator", "fields": []},
+        "credential_schema": {
+            "configured_by": "operator",
+            "fields": [
+                {"name": "public_key", "label": "Public key (FLWPUBK-…)", "type": "string", "required": True, "secret": False},
+                {"name": "secret_key", "label": "Secret key (FLWSECK-…)", "type": "string", "required": True, "secret": True},
+                {"name": "webhook_secret", "label": "Webhook secret hash", "type": "string", "required": False, "secret": True},
+            ],
+        },
     },
     {
         "category": "payment",

@@ -59,6 +59,7 @@ class PaystackProvider(PaymentProvider):
         site_id: str,
         internal_reference: str,
         payment_method: str,
+        client_ip: Optional[str] = None,  # Flutterwave uses this; Paystack does not.
     ) -> PaymentInitiationResult:
         if amount_ghs < Decimal("1.00"):
             raise ValueError("Amount too small for Paystack processing")
@@ -119,7 +120,11 @@ class PaystackProvider(PaymentProvider):
         logger.info("Paystack charge response: %s", redact_dict(payload if isinstance(payload, dict) else {}))
         return self._result_from_paystack_payload(payload, fallback_reference=internal_reference)
 
-    async def verify(self, provider_reference: str) -> PaymentVerificationResult:
+    async def verify(
+        self,
+        provider_reference: str,
+        expected_amount_ghs: Optional[Decimal] = None,  # honoured by Flutterwave; Paystack's flow sets the amount server-side.
+    ) -> PaymentVerificationResult:
         if not self.secret_key:
             return PaymentVerificationResult(
                 status=PaymentStatus.PENDING,
@@ -182,6 +187,21 @@ class PaystackProvider(PaymentProvider):
             },
             reference,
         )
+
+    async def verify_credentials(self) -> None:
+        if not self.secret_key:
+            raise ValueError("Paystack secret key is not configured")
+        client = self._client or httpx.AsyncClient(timeout=15.0, base_url="https://api.paystack.co")
+        try:
+            response = await client.get(
+                "/transaction", params={"perPage": 1}, headers={"Authorization": f"Bearer {self.secret_key}"}
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ValueError(self._paystack_error_message(exc)) from exc
+        finally:
+            if self._client is None:
+                await client.aclose()
 
     async def handle_webhook(self, headers, raw_body: bytes) -> PaymentWebhookResult:
         signature = headers.get("x-paystack-signature") or headers.get("X-Paystack-Signature")
@@ -319,7 +339,10 @@ class PaystackProvider(PaymentProvider):
         data = payload.get("data", {}) if isinstance(payload, dict) else {}
         status_raw = str(data.get("status") or payload.get("status") or "pending").lower()
         provider_reference = str(data.get("reference") or fallback_reference)
-        message = str(data.get("display_text") or payload.get("message") or "").strip() or None
+        # Seed only from Paystack's customer-facing `display_text`. The top-level
+        # `message` is a constant ("Charge attempted") and must not pre-empt the
+        # per-status fallbacks below.
+        message = str(data.get("display_text") or "").strip() or None
         channel = str(payment_channel or data.get("channel") or "mobile_money")
 
         status = PaymentStatus.PENDING
@@ -394,6 +417,14 @@ class PaystackProvider(PaymentProvider):
         except ValueError:
             payload = {}
         if isinstance(payload, dict):
+            data = payload.get("data")
+            if isinstance(data, dict):
+                # The actionable decline reason lives here ("Declined. Insufficient
+                # funds", "Please use the test mobile money number..."). The
+                # top-level `message` is a constant ("Charge attempted").
+                detail = data.get("message") or data.get("gateway_response")
+                if detail:
+                    return str(detail)
             message = payload.get("message") or payload.get("error")
             if message:
                 return str(message)

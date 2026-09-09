@@ -1,141 +1,205 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiCall } from '../App';
 
-const emptyForm = {
-    provider: 'paystack',
-    public_key: '',
-    secret_key: '',
-    webhook_secret: '',
-    is_active: true,
-};
+// One card per available payment provider. The field list for each card is
+// whatever that provider's catalog credential_schema says — no hardcoded form.
+
+function ProviderCard({ provider, configured, activeProvider, onChanged, setBanner }) {
+    const fields = provider.credential_schema?.fields || [];
+    const managedByPlatform = provider.credential_schema?.configured_by === 'platform_admin';
+
+    const [values, setValues] = useState({});
+    const [busy, setBusy] = useState('');
+
+    const isConfigured = Boolean(configured);
+    const isActive = activeProvider === provider.provider_key;
+
+    const run = async (label, fn) => {
+        setBusy(label);
+        setBanner(null);
+        try {
+            await fn();
+            onChanged();
+        } catch (err) {
+            setBanner({ type: 'error', text: err.message });
+        } finally {
+            setBusy('');
+        }
+    };
+
+    const save = (e) => {
+        e.preventDefault();
+        return run('save', async () => {
+            await apiCall(`/payment-credentials/${provider.provider_key}`, {
+                method: 'PUT',
+                body: JSON.stringify({ values, activate: isConfigured ? undefined : true }),
+            });
+            setValues({});
+            setBanner({ type: 'ok', text: `${provider.display_name} credentials saved.` });
+        });
+    };
+
+    const activate = () => run('activate', async () => {
+        await apiCall(`/payment-credentials/${provider.provider_key}/activate`, { method: 'POST' });
+        setBanner({ type: 'ok', text: `${provider.display_name} is now the active payment provider.` });
+    });
+
+    const test = () => run('test', async () => {
+        await apiCall(`/payment-credentials/${provider.provider_key}/test`, { method: 'POST' });
+        setBanner({ type: 'ok', text: 'Connection verified.' });
+    });
+
+    const remove = () => run('delete', async () => {
+        await apiCall(`/payment-credentials/${provider.provider_key}`, { method: 'DELETE' });
+        setBanner({ type: 'ok', text: `${provider.display_name} removed.` });
+    });
+
+    return (
+        <div className="card" style={{ maxWidth: 720, marginBottom: 20 }}>
+            <div className="flex-between" style={{ marginBottom: 8 }}>
+                <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>{provider.display_name}</h2>
+                <span className={`badge ${isActive ? 'badge-green' : isConfigured ? 'badge-blue' : 'badge-gray'}`}>
+                    {isActive ? 'Active' : isConfigured ? 'Configured' : 'Not configured'}
+                </span>
+            </div>
+            {provider.description && (
+                <p style={{ color: '#6b7280', fontSize: 13, marginTop: 0 }}>{provider.description}</p>
+            )}
+
+            {managedByPlatform ? (
+                <p style={{ color: '#4b5563', fontSize: 14 }}>
+                    Credentials for this provider are managed by the platform — nothing to configure here.
+                </p>
+            ) : (
+                <>
+                    <form onSubmit={save}>
+                        {fields.map((f) => (
+                            <div className="form-group" key={f.name}>
+                                <label>
+                                    {f.label}
+                                    {!f.required && <span style={{ color: '#9ca3af' }}> (optional)</span>}
+                                </label>
+                                <input
+                                    type={f.secret ? 'password' : 'text'}
+                                    value={values[f.name] || ''}
+                                    onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
+                                    required={f.required}
+                                    placeholder={
+                                        isConfigured && configured.field_hints?.[f.name]
+                                            ? `stored: ${configured.field_hints[f.name]}`
+                                            : ''
+                                    }
+                                />
+                            </div>
+                        ))}
+                        <div className="gap-2" style={{ flexWrap: 'wrap' }}>
+                            <button type="submit" className="btn btn-primary" disabled={Boolean(busy)}>
+                                {busy === 'save' ? 'Saving…' : isConfigured ? 'Update credentials' : 'Save & activate'}
+                            </button>
+                            {isConfigured && !isActive && (
+                                <button type="button" className="btn" onClick={activate} disabled={Boolean(busy)}>
+                                    {busy === 'activate' ? 'Activating…' : 'Make active'}
+                                </button>
+                            )}
+                            {isConfigured && (
+                                <button type="button" className="btn" onClick={test} disabled={Boolean(busy)}>
+                                    {busy === 'test' ? 'Testing…' : 'Test connection'}
+                                </button>
+                            )}
+                            {isConfigured && !isActive && (
+                                <button type="button" className="btn btn-danger" onClick={remove} disabled={Boolean(busy)}>
+                                    {busy === 'delete' ? 'Removing…' : 'Remove'}
+                                </button>
+                            )}
+                        </div>
+                    </form>
+
+                    {isConfigured && (
+                        <div style={{ marginTop: 16, color: '#4b5563', fontSize: 13 }}>
+                            <p style={{ margin: '4px 0' }}>
+                                Last verified:{' '}
+                                {configured.last_validated_at
+                                    ? new Date(configured.last_validated_at).toLocaleString()
+                                    : 'Never'}
+                            </p>
+                            {configured.last_validation_error && (
+                                <p style={{ color: '#991b1b', margin: '4px 0' }}>
+                                    Last error: {configured.last_validation_error}
+                                </p>
+                            )}
+                        </div>
+                    )}
+                </>
+            )}
+        </div>
+    );
+}
 
 export default function PaymentCredentials() {
-    const [credentials, setCredentials] = useState(null);
-    const [form, setForm] = useState(emptyForm);
+    const [providers, setProviders] = useState([]);
+    const [creds, setCreds] = useState({ active_provider: null, configured: [] });
     const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
-    const [testing, setTesting] = useState(false);
-    const [message, setMessage] = useState('');
-    const [error, setError] = useState('');
+    const [banner, setBanner] = useState(null);
+    const [loadError, setLoadError] = useState('');
 
-    const loadCredentials = () => {
-        setLoading(true);
-        apiCall('/payment-credentials')
-            .then((data) => setCredentials(data))
-            .catch((e) => { setCredentials(null); setError(e.message); })
+    const load = useCallback(() => {
+        return Promise.all([
+            apiCall('/providers?category=payment'),
+            apiCall('/payment-credentials'),
+        ])
+            .then(([p, c]) => {
+                setProviders(p);
+                setCreds(c);
+                setLoadError('');
+            })
+            .catch((e) => setLoadError(e.message))
             .finally(() => setLoading(false));
-    };
-
-    useEffect(() => {
-        loadCredentials();
     }, []);
 
-    const updateField = (field, value) => {
-        setForm((current) => ({ ...current, [field]: value }));
-    };
+    useEffect(() => {
+        load();
+    }, [load]);
 
-    const handleSave = async (event) => {
-        event.preventDefault();
-        setSaving(true);
-        setMessage('');
-        setError('');
-        try {
-            const data = await apiCall('/payment-credentials', {
-                method: 'PUT',
-                body: JSON.stringify({
-                    ...form,
-                    webhook_secret: form.webhook_secret || null,
-                }),
-            });
-            setCredentials(data);
-            setForm(emptyForm);
-            setMessage('Payment credentials saved.');
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setSaving(false);
-        }
-    };
+    const configuredByKey = useMemo(() => {
+        const map = {};
+        for (const row of creds.configured) map[row.provider] = row;
+        return map;
+    }, [creds]);
 
-    const handleTest = async () => {
-        setTesting(true);
-        setMessage('');
-        setError('');
-        try {
-            const data = await apiCall('/payment-credentials/test', { method: 'POST' });
-            setCredentials(data);
-            setMessage('Connection verified.');
-        } catch (err) {
-            setError(err.message);
-            loadCredentials();
-        } finally {
-            setTesting(false);
-        }
-    };
-
-    if (loading) return <p>Loading...</p>;
+    if (loading) return <p>Loading…</p>;
 
     return (
         <div>
-            <div className="flex-between">
-                <div>
-                    <h1 style={{ fontSize: 24, fontWeight: 700 }}>Payment Provider Settings</h1>
-                    <p style={{ color: '#6b7280', fontSize: 14, marginTop: 4 }}>
-                        Configure the Paystack account used by this network.
+            <h1 style={{ fontSize: 24, fontWeight: 700 }}>Payment Provider Settings</h1>
+            <p style={{ color: '#6b7280', fontSize: 14, marginTop: 4 }}>
+                Choose the payment provider your customers pay through, and enter your own credentials.
+            </p>
+
+            {loadError && <div className="badge badge-red" style={{ marginBottom: 16 }}>{loadError}</div>}
+            {banner && (
+                <div className={`badge ${banner.type === 'ok' ? 'badge-green' : 'badge-red'}`} style={{ marginBottom: 16 }}>
+                    {banner.text}
+                </div>
+            )}
+
+            {providers.length === 0 ? (
+                <div className="card" style={{ maxWidth: 720 }}>
+                    <p style={{ margin: 0, color: '#4b5563' }}>
+                        No payment providers are available yet. Contact the platform if you expected to see one.
                     </p>
                 </div>
-                <span className={`badge ${credentials?.is_active ? 'badge-green' : 'badge-gray'}`}>
-                    {credentials?.is_active ? 'Active' : 'Inactive'}
-                </span>
-            </div>
-
-            {message && <div className="badge badge-green" style={{ marginBottom: 16 }}>{message}</div>}
-            {error && <div className="badge badge-red" style={{ marginBottom: 16 }}>{error}</div>}
-
-            <div className="card" style={{ maxWidth: 720 }}>
-                <div style={{ marginBottom: 20, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                    <span className={`badge ${credentials?.is_configured ? 'badge-blue' : 'badge-yellow'}`}>
-                        {credentials?.is_configured ? 'Configured' : 'Not configured'}
-                    </span>
-                    {credentials?.public_key_last4 && <span className="badge badge-gray">Public key ****{credentials.public_key_last4}</span>}
-                    {credentials?.secret_key_last4 && <span className="badge badge-gray">Secret key ****{credentials.secret_key_last4}</span>}
-                    {credentials?.webhook_secret_last4 && <span className="badge badge-gray">Webhook ****{credentials.webhook_secret_last4}</span>}
-                </div>
-
-                <form onSubmit={handleSave}>
-                    <div className="form-group">
-                        <label>Provider</label>
-                        <select value={form.provider} onChange={(e) => updateField('provider', e.target.value)}>
-                            <option value="paystack">Paystack</option>
-                        </select>
-                    </div>
-                    <div className="form-group">
-                        <label>Paystack Public Key</label>
-                        <input type="text" value={form.public_key} onChange={(e) => updateField('public_key', e.target.value)} placeholder="pk_test_..." required />
-                    </div>
-                    <div className="form-group">
-                        <label>Paystack Secret Key</label>
-                        <input type="password" value={form.secret_key} onChange={(e) => updateField('secret_key', e.target.value)} placeholder="sk_test_..." required />
-                    </div>
-                    <div className="form-group">
-                        <label>Paystack Webhook Secret</label>
-                        <input type="password" value={form.webhook_secret} onChange={(e) => updateField('webhook_secret', e.target.value)} placeholder="Optional" />
-                    </div>
-                    <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <input id="payment-active" type="checkbox" checked={form.is_active} onChange={(e) => updateField('is_active', e.target.checked)} style={{ width: 'auto' }} />
-                        <label htmlFor="payment-active" style={{ margin: 0 }}>Active</label>
-                    </div>
-                    <div className="gap-2">
-                        <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
-                        <button type="button" className="btn" onClick={handleTest} disabled={testing || !credentials?.is_configured}>{testing ? 'Testing...' : 'Test Connection'}</button>
-                    </div>
-                </form>
-
-                <div style={{ marginTop: 24, color: '#4b5563', fontSize: 14 }}>
-                    <p>Last verified: {credentials?.last_validated_at ? new Date(credentials.last_validated_at).toLocaleString() : 'Never'}</p>
-                    {credentials?.last_validation_error && <p style={{ color: '#991b1b', marginTop: 6 }}>Last error: {credentials.last_validation_error}</p>}
-                </div>
-            </div>
+            ) : (
+                providers.map((p) => (
+                    <ProviderCard
+                        key={p.provider_key}
+                        provider={p}
+                        configured={configuredByKey[p.provider_key]}
+                        activeProvider={creds.active_provider}
+                        onChanged={load}
+                        setBanner={setBanner}
+                    />
+                ))
+            )}
         </div>
     );
 }

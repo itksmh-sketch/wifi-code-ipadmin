@@ -26,12 +26,34 @@ class PaymentProvider(ABC):
         site_id: str,
         internal_reference: str,
         payment_method: str,
+        client_ip: Optional[str] = None,
     ) -> PaymentInitiationResult:
-        """Initiate a payment request at the provider."""
+        """Initiate a payment request at the provider.
+
+        ``client_ip`` is the payer's IP when known; providers that don't need it
+        (e.g. Paystack) ignore it.
+        """
 
     @abstractmethod
-    async def verify(self, provider_reference: str) -> PaymentVerificationResult:
-        """Verify transaction status directly with the provider."""
+    async def verify(
+        self,
+        provider_reference: str,
+        expected_amount_ghs: Optional[Decimal] = None,
+    ) -> PaymentVerificationResult:
+        """Verify transaction status directly with the provider.
+
+        When ``expected_amount_ghs`` is given, a provider that can see the
+        settled amount should treat a materially smaller settlement (more than
+        one pesewa short) as a failure rather than a success.
+        """
+
+    async def verify_credentials(self) -> None:
+        """Check the stored credentials authenticate against the provider.
+
+        Return on success; raise (any exception) on failure — the message is
+        surfaced to the operator as the "test connection" result.
+        """
+        raise NotImplementedError
 
     async def submit_otp(self, reference: str, otp: str) -> PaymentInitiationResult:
         raise NotImplementedError

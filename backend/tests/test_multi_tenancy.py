@@ -12,9 +12,9 @@ import pytest
 from test_multi_tenant_security import _request
 
 from src.db.models import ISPOperator, OperatorPaymentCredential, PaymentTransaction
+from src.modules.payments.provider_resolver import dump_credentials
 from src.modules.payments.service import PaymentService
 from src.modules.payments.types import PaymentMethod, PaymentProviderName
-from src.utils.encryption import encrypt_secret
 
 
 PLATFORM_OWNER_EMAIL = os.getenv("PLATFORM_OWNER_EMAIL", "owner@yourisp.com")
@@ -243,57 +243,70 @@ def test_payment_credentials_response_redacts_keys():
 
     status, saved = _request(
         "PUT",
-        "/api/v1/payment-credentials",
+        "/api/v1/payment-credentials/paystack",
         token=admin,
         body={
-            "provider": "paystack",
-            "public_key": public_key,
-            "secret_key": secret_key,
-            "webhook_secret": webhook_secret,
-            "is_active": True,
+            "values": {"public_key": public_key, "secret_key": secret_key, "webhook_secret": webhook_secret},
+            "activate": True,
         },
     )
     assert status == 200, saved
-    assert saved["public_key_last4"] == "1234"
-    assert saved["secret_key_last4"] == "5678"
-    assert saved["webhook_secret_last4"] == "9999"
-    assert public_key not in json.dumps(saved)
-    assert secret_key not in json.dumps(saved)
-    assert webhook_secret not in json.dumps(saved)
+    assert saved["active_provider"] == "paystack"
+    entry = next(e for e in saved["configured"] if e["provider"] == "paystack")
+    assert entry["is_active"] is True
+    assert entry["field_hints"]["public_key"] == "••••1234"
+    assert entry["field_hints"]["secret_key"] == "••••5678"
+    assert entry["field_hints"]["webhook_secret"] == "••••9999"
+    blob = json.dumps(saved)
+    assert public_key not in blob
+    assert secret_key not in blob
+    assert webhook_secret not in blob
+
+
+def test_payment_credentials_rejects_unavailable_and_unknown_fields():
+    admin = _login_admin()
+
+    # Flutterwave is integrated but not is_available -> not operator-configurable.
+    status, _ = _request(
+        "PUT", "/api/v1/payment-credentials/flutterwave", token=admin,
+        body={"values": {"public_key": "x", "secret_key": "y"}},
+    )
+    assert status == 404
+
+    status, body = _request(
+        "PUT", "/api/v1/payment-credentials/paystack", token=admin,
+        body={"values": {"public_key": "pk_x", "secret_key": "sk_x", "bogus": "z"}},
+    )
+    assert status == 400 and "bogus" in json.dumps(body)
 
 
 def test_slug_scoped_paystack_webhook_uses_operator_secret():
     admin = _login_admin()
-    webhook_secret = "phase1_webhook_secret"
     status, _ = _request(
         "PUT",
-        "/api/v1/payment-credentials",
+        "/api/v1/payment-credentials/paystack",
         token=admin,
         body={
-            "provider": "paystack",
-            "public_key": "pk_test_phase1_public_abcd",
-            "secret_key": "sk_test_phase1_secret_efgh",
-            "webhook_secret": webhook_secret,
-            "is_active": True,
+            "values": {
+                "public_key": "pk_test_phase1_public_abcd",
+                "secret_key": "sk_test_phase1_secret_efgh",
+                "webhook_secret": "phase1_webhook_secret",
+            },
+            "activate": True,
         },
     )
     assert status == 200
 
     payload = {"event": "charge.success", "data": {"reference": "phase1-missing-transaction"}}
-    raw = json.dumps(payload).encode("utf-8")
-    bad_signature = hmac.new(b"wrong-secret", raw, hashlib.sha512).hexdigest()
-
     status, body = _request(
         "POST",
         "/api/v1/webhooks/paystack/tenant-zero",
         body=payload,
         params=None,
     )
+    # urllib helper cannot set the Paystack signature header, so an unsigned
+    # payload must be rejected at the route.
     assert status in (401, 422), body
-
-    # urllib helper cannot set the Paystack signature header, so the route-level
-    # negative assertion above verifies unsigned payloads are rejected.
-    assert bad_signature
 
 
 def test_operator_creation_scopes_initial_admin_to_new_operator():
@@ -422,9 +435,13 @@ async def test_payment_for_operator_transaction_uses_operator_paystack_secret_ke
         id=uuid.uuid4(),
         isp_operator_id=operator_a_id,
         provider=PaymentProviderName.PAYSTACK.value,
-        public_key_encrypted=encrypt_secret("pk_test_operator_a"),
-        secret_key_encrypted=encrypt_secret("sk_test_operator_a"),
-        webhook_secret_encrypted=encrypt_secret("whsec_operator_a"),
+        credentials_encrypted=dump_credentials(
+            {
+                "public_key": "pk_test_operator_a",
+                "secret_key": "sk_test_operator_a",
+                "webhook_secret": "whsec_operator_a",
+            }
+        ),
         is_active=True,
     )
     operator_a = ISPOperator(id=operator_a_id, slug="operator-a", name="Operator A", contact_email="a@example.com")
@@ -445,8 +462,7 @@ async def test_payment_for_operator_transaction_uses_operator_paystack_secret_ke
             },
         )
 
-    dummy = object()
-    service = PaymentService(dummy, dummy, dummy, dummy)
+    service = PaymentService()
     provider = await service.provider_for_transaction(_ProviderLookupDb(creds_a, operator_a), tx)
     provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://api.paystack.co")
 
