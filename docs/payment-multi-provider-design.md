@@ -636,5 +636,9 @@ suites); `test_multi_tenancy.py` payment tests rewritten to the new contract;
 `test_multi_tenancy.py::test_sessions_are_isolated_by_operator_id`.
 
 **Not done / next:** §9 Flutterwave sandbox round-trip, then flip
-`is_available=true`. The SMS sibling feature. Optional: delete the unused mock
+`is_available=true` — now covered, together with the SMS providers' identical
+pending flip, in [docs/deferred-provider-launch-gates.md](deferred-provider-launch-gates.md).
+The SMS sibling feature shipped on the same shared credentials core
+(`src/modules/credentials/`), reusing `GET /api/v1/providers` and the
+`ProviderCredentials` React component. Optional: delete the unused mock
 providers; `platformApiCall` cleanup (unrelated).
