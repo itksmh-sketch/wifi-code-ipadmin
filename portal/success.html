@@ -37,6 +37,11 @@
         var ref = "{{ ref }}";
         var params = new URLSearchParams(window.location.search);
         var gateway = params.get("gateway") || "{{ gateway or '10.5.50.1' }}";
+        // rt rides in via pay.html's redirect; branding.js also persists it to
+        // sessionStorage["portal.rt"] on every hop. /portal/authenticate needs it
+        // to resolve the operator for VPN-only routers (no matchable ip_address).
+        var rt = params.get("rt") || "";
+        try { rt = rt || sessionStorage.getItem("portal.rt") || ""; } catch(e) {}
         function qs(id){ return document.getElementById(id); }
         function fmtSpeed(kbps){ var mbps=(kbps||0)/1000; return (mbps%1===0?mbps.toFixed(0):mbps.toFixed(1))+" Mbps"; }
         function fmtCap(p){
@@ -92,12 +97,22 @@
         }
 
         function fallbackCopy(){
-            var el = qs("voucherCode");
-            var range = document.createRange();
-            range.selectNodeContents(el);
-            var sel = window.getSelection();
-            sel.removeAllRanges();
-            sel.addRange(range);
+            try {
+                var el = qs("voucherCode");
+                var range = document.createRange();
+                range.selectNodeContents(el);
+                var sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                var ok = document.execCommand("copy");
+                sel.removeAllRanges();
+                return ok;
+            } catch(e){ return false; }
+        }
+        function flashCopied(ok){
+            var b = qs("copyBtn");
+            b.textContent = ok ? "Copied!" : "Select & hold to copy";
+            setTimeout(function(){ b.textContent = "Copy code"; }, 2000);
         }
 
         function submitToMikroTik(routerGateway, username, password, dst) {
@@ -128,9 +143,11 @@
             var code = (qs("voucherCode").textContent||"").trim();
             if(!code) return;
             if(navigator.clipboard && navigator.clipboard.writeText){
-                navigator.clipboard.writeText(code).catch(fallbackCopy);
+                navigator.clipboard.writeText(code)
+                    .then(function(){ flashCopied(true); })
+                    .catch(function(){ flashCopied(fallbackCopy()); });
             } else {
-                fallbackCopy();
+                flashCopied(fallbackCopy());
             }
         });
 
@@ -144,6 +161,7 @@
             fd.append("code", code);
             fd.append("url", originalUrl);
             if(gateway) fd.append("gateway", gateway);
+            if(rt) fd.append("rt", rt);
             fetch("/portal/authenticate", { method:"POST", body: fd, headers: { "Accept":"application/json" } })
                 .then(function(response){
                     return response.json().catch(function(){ return {}; }).then(function(body){
@@ -161,9 +179,9 @@
                         originalUrl
                     );
                 })
-                .catch(function(){
+                .catch(function(err){
                     qs("connectError").style.display="flex";
-                    qs("connectError").textContent="Unable to connect. Please try again.";
+                    qs("connectError").textContent=(err && err.message) || "Unable to connect. Please try again.";
                 });
         });
 
