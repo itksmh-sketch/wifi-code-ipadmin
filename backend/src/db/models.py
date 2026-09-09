@@ -95,6 +95,52 @@ class OperatorPaymentCredential(Base):
     )
 
 
+class OperatorSMSCredential(Base):
+    """An operator's own SMS-gateway keys for delivering voucher codes to their
+    customers. Bring-your-own only — Hubtel or Africa's Talking; the operator is
+    billed by that gateway directly.
+
+    Exact structural twin of [[OperatorPaymentCredential]] (see migration 028):
+    one row per provider (``UNIQUE(isp_operator_id, provider)``), at most one
+    active (partial unique index on ``is_active``), a single Fernet-encrypted
+    JSON blob keyed by ``provider_catalog.credential_schema`` field names,
+    read/written only via ``credentials.service.{load,dump}_credentials``.
+
+    ``africastalking_platform`` (the platform-gateway option) is deliberately
+    NOT in the ``operator_sms_provider`` enum — its credentials are the
+    platform's, not the operator's.
+    """
+    __tablename__ = "operator_sms_credentials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id", ondelete="CASCADE"), nullable=False)
+    provider = Column(
+        ENUM("hubtel", "africastalking", name="operator_sms_provider", create_type=False),
+        nullable=False,
+    )
+    # Fernet token wrapping json.dumps({field_name: value}, sort_keys=True), keyed
+    # by provider_catalog.credential_schema.fields[].name for this provider.
+    credentials_encrypted = Column(Text, nullable=False)
+    is_active = Column(Boolean, nullable=False, server_default="true")
+    last_validated_at = Column(DateTime(timezone=True), nullable=True)
+    last_validation_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("isp_operator_id", "provider", name="uq_operator_sms_credentials_operator_provider"),
+        # At most one active provider per operator (partial unique index — DDL in
+        # migration 028; matched here so the ORM knows about it).
+        Index(
+            "uq_operator_sms_credentials_one_active",
+            "isp_operator_id",
+            unique=True,
+            postgresql_where=text("is_active"),
+        ),
+        Index("ix_operator_sms_credentials_isp_operator_id", "isp_operator_id"),
+    )
+
+
 class PlatformPaymentCredential(Base):
     """The platform's own payment keys — how operator subscriptions are collected.
 
