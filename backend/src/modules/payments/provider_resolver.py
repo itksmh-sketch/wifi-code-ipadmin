@@ -1,33 +1,22 @@
-"""Resolve which payment provider an operator sells through, and the
-serialisation of the encrypted credential blob.
+"""Resolve which payment provider an operator sells through.
 
-`operator_payment_credentials.credentials_encrypted` is a Fernet token wrapping
-`json.dumps({field_name: value}, sort_keys=True)`, keyed by the provider's
-`provider_catalog.credential_schema` field names. Every read and write of that
-column goes through `load_credentials` / `dump_credentials` so the shape stays in
-one place. See docs/payment-multi-provider-design.md.
+The encrypted-credential-blob serialisation (`load_credentials` /
+`dump_credentials`) is category-agnostic and now lives in
+`src.modules.credentials.service`; it is re-exported here so the many existing
+payment/webhook call sites keep importing it from this module. See
+docs/payment-multi-provider-design.md.
 """
 from __future__ import annotations
 
-import json
 import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import OperatorPaymentCredential
-from src.utils.encryption import decrypt_secret, encrypt_secret
+from src.modules.credentials.service import dump_credentials, load_credentials
 
-
-def load_credentials(row: OperatorPaymentCredential) -> dict:
-    """Decrypt a credential row into its `{field_name: value}` dict."""
-    return json.loads(decrypt_secret(row.credentials_encrypted))
-
-
-def dump_credentials(values: dict) -> str:
-    """Encrypt a `{field_name: value}` dict for storage. Sorted keys so a
-    re-save with the same values produces a stable ciphertext-input."""
-    return encrypt_secret(json.dumps(values, sort_keys=True, separators=(",", ":")))
+__all__ = ["load_credentials", "dump_credentials", "resolve_active_payment_provider"]
 
 
 async def resolve_active_payment_provider(

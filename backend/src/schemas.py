@@ -367,7 +367,11 @@ class PortalAuthenticateResponse(BaseModel):
     password: str
 
 
-class PaymentCredentialUpsert(BaseModel):
+# Operator bring-your-own credentials — shared by the payment and SMS
+# credential APIs (src/modules/credentials/). Category-agnostic by design:
+# every field name here comes from that provider's provider_catalog
+# credential_schema, so one shape serves both.
+class CredentialUpsert(BaseModel):
     """Operator writes credentials for one provider. `values` is keyed by the
     provider's provider_catalog credential_schema field names."""
     values: dict[str, str]
@@ -384,7 +388,7 @@ class ConfiguredProviderView(BaseModel):
     last_validation_error: Optional[str] = None
 
 
-class PaymentCredentialsView(BaseModel):
+class CredentialsView(BaseModel):
     active_provider: Optional[str] = None
     configured: list[ConfiguredProviderView] = Field(default_factory=list)
 

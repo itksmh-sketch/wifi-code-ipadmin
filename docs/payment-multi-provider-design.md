@@ -274,8 +274,11 @@ DELETE /payment-credentials/{provider}
   success stamps `last_validated_at`, any exception stamps `last_validation_error`
   + **400** with the provider's message.
 - `schemas.py`: `PaymentCredentialProvider` / `PaymentCredentialUpdate` /
-  `PaymentCredentialResponse` removed; `PaymentCredentialUpsert`,
-  `PaymentCredentialsView`, `ConfiguredProviderView` added.
+  `PaymentCredentialResponse` removed; `CredentialUpsert`, `CredentialsView`,
+  `ConfiguredProviderView` added (originally `PaymentCredential{Upsert,sView}`,
+  renamed when the SMS credential API reused the same shapes — the CRUD core now
+  lives in `src/modules/credentials/` and both `payment-credentials` and
+  `sms-credentials` are thin `make_credentials_router(...)` callers).
 
 ### 4.6 Frontend — **as built**
 
