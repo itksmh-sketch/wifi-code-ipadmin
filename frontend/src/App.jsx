@@ -8,6 +8,7 @@ import Plans from './pages/Plans';
 import Vouchers from './pages/Vouchers';
 import Sessions from './pages/Sessions';
 import PaymentCredentials from './pages/PaymentCredentials';
+import SMSCredentials from './pages/SMSCredentials';
 import Branding from './pages/Branding';
 import Billing from './pages/Billing';
 import Sidebar from './components/Sidebar';
@@ -149,6 +150,7 @@ export default function App() {
                                             <Route path="/vouchers" element={<Vouchers />} />
                                             <Route path="/sessions" element={<Sessions />} />
                                             <Route path="/payment-credentials" element={<PaymentCredentials />} />
+                                            <Route path="/sms-credentials" element={<SMSCredentials />} />
                                             <Route path="/branding" element={<Branding />} />
                                             <Route path="/billing" element={<Billing />} />
                                             <Route path="*" element={<Navigate to="/" />} />

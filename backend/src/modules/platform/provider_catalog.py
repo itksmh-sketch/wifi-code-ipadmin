@@ -45,6 +45,8 @@ PROVIDER_CATALOG: list[dict] = [
         "sort_order": 10,
         "credential_schema": {
             "configured_by": "operator",
+            # verify_credentials() -> GET /transaction?perPage=1 (read-only).
+            "supports_test": True,
             "fields": [
                 {"name": "public_key", "label": "Public key", "type": "string", "required": True, "secret": False},
                 {"name": "secret_key", "label": "Secret key", "type": "string", "required": True, "secret": True},
@@ -65,6 +67,8 @@ PROVIDER_CATALOG: list[dict] = [
         "sort_order": 20,
         "credential_schema": {
             "configured_by": "operator",
+            # verify_credentials() -> GET /v3/transactions?page=1 (read-only).
+            "supports_test": True,
             "fields": [
                 {"name": "public_key", "label": "Public key (FLWPUBK-…)", "type": "string", "required": True, "secret": False},
                 {"name": "secret_key", "label": "Secret key (FLWSECK-…)", "type": "string", "required": True, "secret": True},
