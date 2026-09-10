@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 import httpx
@@ -19,6 +20,21 @@ _AT_ACCEPTED_CODES = {100, 101, 102}
 def _clip(text: str, limit: int = 200) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _to_e164(raw: str) -> str:
+    """Africa's Talking's ``to`` must be E.164 (``+233XXXXXXXXX`` for Ghana).
+    Upstream hands us the bare ``233XXXXXXXXX``; also tolerate a local ``0…`` or
+    an already ``+``-prefixed value."""
+    s = (raw or "").strip()
+    if s.startswith("+"):
+        return "+" + re.sub(r"\D", "", s[1:])
+    digits = re.sub(r"\D", "", s)
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if digits.startswith("0") and len(digits) == 10:  # local Ghana MSISDN
+        digits = "233" + digits[1:]
+    return "+" + digits if digits else s
 
 
 class AfricasTalkingSMSProvider(SMSProvider):
@@ -49,10 +65,12 @@ class AfricasTalkingSMSProvider(SMSProvider):
             return self._client
         return httpx.AsyncClient(timeout=10.0, base_url="https://api.africastalking.com")
 
-    async def verify_credentials(self) -> None:
+    async def verify_credentials(self) -> str | None:
         """GET /version1/user — Africa's Talking's account/balance lookup. No
         cost, no SMS sent: 200 means the api_key + username authenticate, any
-        other status carries the reason."""
+        other status carries the reason. On success returns the account balance
+        as a ``"balance …"`` detail string (``UserData.balance`` is already a
+        currency-prefixed string, e.g. ``"GHS 0.8830"``)."""
         if not (self.api_key and self.username):
             raise ValueError("Africa's Talking API key and username are required")
         client = await self._get_client()
@@ -65,7 +83,11 @@ class AfricasTalkingSMSProvider(SMSProvider):
         except Exception as e:  # noqa: BLE001
             raise ValueError(f"Could not reach Africa's Talking: {_clip(str(e))}") from e
         if resp.status_code == 200:
-            return
+            try:
+                bal = (resp.json() or {}).get("UserData", {}).get("balance")
+            except Exception:
+                bal = None
+            return f"balance {_clip(str(bal), 40)}" if bal else None
         reason = None
         try:
             body = resp.json()
@@ -80,6 +102,7 @@ class AfricasTalkingSMSProvider(SMSProvider):
         if not (self.api_key and self.username and self.sender_id):
             return SMSSendResult(success=False, error="africastalking_not_configured")
 
+        to = _to_e164(to)
         headers = {"apiKey": self.api_key, "Accept": "application/json"}
         data = {
             "username": self.username,
@@ -108,12 +131,10 @@ class AfricasTalkingSMSProvider(SMSProvider):
                     err += f": {_clip(reason)}"
                 return SMSSendResult(success=False, error=err)
 
-            recipient = None
-            if isinstance(payload, dict):
-                smd = payload.get("SMSMessageData")
-                recips = smd.get("Recipients") if isinstance(smd, dict) else None
-                if isinstance(recips, list) and recips:
-                    recipient = recips[0]
+            smd = payload.get("SMSMessageData") if isinstance(payload, dict) else None
+            smd = smd if isinstance(smd, dict) else {}
+            recips = smd.get("Recipients")
+            recipient = recips[0] if isinstance(recips, list) and recips else None
 
             if isinstance(recipient, dict):
                 try:
@@ -128,9 +149,14 @@ class AfricasTalkingSMSProvider(SMSProvider):
                 logger.info("africastalking_sms_send_ok to=%s provider_reference=%s", to, provider_ref)
                 return SMSSendResult(success=True, provider_reference=str(provider_ref) if provider_ref else None)
 
-            # 2xx but no recipient block — accept it, we have nothing to object to.
-            logger.info("africastalking_sms_send_ok to=%s provider_reference=None", to)
-            return SMSSendResult(success=True, provider_reference=None)
+            # 2xx but AT accepted no recipient — it did NOT queue the message.
+            # This is how AT signals an account-level rejection (most commonly an
+            # unregistered/unapproved sender ID): HTTP 201 with
+            # SMSMessageData.Message = "Sent to 0/1 Total Cost: 0" and an empty
+            # Recipients array. Treat it as a failed send and surface AT's text.
+            reason = _clip(str(smd.get("Message"))) if smd.get("Message") else "no recipients accepted"
+            logger.warning("africastalking_sms_no_recipients to=%s message=%s", to, reason)
+            return SMSSendResult(success=False, error=f"africastalking_no_recipients: {reason}")
         except Exception as e:
             logger.exception("africastalking_sms_send_exception to=%s", to)
             return SMSSendResult(success=False, error=f"africastalking_exception: {_clip(str(e))}")

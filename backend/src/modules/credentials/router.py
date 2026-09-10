@@ -152,7 +152,7 @@ def make_credentials_router(
 
         provider_obj = build_provider(provider, load_credentials(row))
         try:
-            await provider_obj.verify_credentials()
+            detail = await provider_obj.verify_credentials()
         except NotImplementedError as exc:
             raise HTTPException(
                 status_code=400, detail="Test connection is not available for this provider."
@@ -165,7 +165,12 @@ def make_credentials_router(
         row.last_validated_at = datetime.now(timezone.utc)
         row.last_validation_error = None
         await db.commit()
-        return await _view(db, tenant.isp_operator_id)
+        view = await _view(db, tenant.isp_operator_id)
+        # Transient: a balance/account line from verify_credentials(), shown once
+        # in the "Connection verified" message. None for providers with no such
+        # concept (Paystack, Flutterwave) — the contract is unchanged for them.
+        view.test_detail = detail if isinstance(detail, str) and detail.strip() else None
+        return view
 
     @router.delete("/{provider}", response_model=CredentialsView)
     async def delete_credentials(

@@ -10,7 +10,7 @@ class SMSProvider(ABC):
     async def send(self, to: str, message: str) -> SMSSendResult:
         ...
 
-    async def verify_credentials(self) -> None:
+    async def verify_credentials(self) -> str | None:
         """Check the stored credentials authenticate against the provider.
 
         Return on success; raise (any exception) on failure — the message is
@@ -18,6 +18,11 @@ class SMSProvider(ABC):
         gateway exposes a no-cost verification call; a provider without one
         inherits this and the credential ``/test`` endpoint reports that testing
         is unavailable rather than sending a chargeable message.
+
+        A provider whose check also reveals an account balance may return a
+        short detail string (e.g. ``"balance GHS 0.88"``) — the ``/test``
+        endpoint appends it to the success message. Returning ``None`` means
+        "verified, nothing extra to show" and is the norm.
         """
         raise NotImplementedError
 

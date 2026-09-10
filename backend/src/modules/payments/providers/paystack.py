@@ -23,9 +23,14 @@ logger = logging.getLogger("payments.providers.paystack")
 
 
 class PaystackProvider(PaymentProvider):
+    # Paystack's Charge API `mobile_money.provider` enum for Ghana is
+    # `mtn` | `atl` | `vod` (case-insensitive). `vod` is Vodafone/Telecel Cash -
+    # Paystack has NOT renamed the identifier for the 2023 Vodafone->Telecel
+    # rebrand, and rejects both "vodafone" and "telecel" with 400 "Invalid
+    # provider".
     _MOBILE_MONEY_PROVIDERS = {
         "mtn_momo": "mtn",
-        "vodafone_cash": "vodafone",
+        "vodafone_cash": "vod",
         "airteltigo": "atl",
     }
 

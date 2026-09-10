@@ -178,6 +178,27 @@ PROVIDER_CATALOG: list[dict] = [
             ],
         },
     },
+    {
+        "category": "sms",
+        "provider_key": "arkesel",
+        "display_name": "Arkesel SMS",
+        "description": "Operator supplies their own Arkesel credentials and is billed by Arkesel directly.",
+        "is_integrated": True,
+        "is_available": False,
+        "is_platform_provided": False,
+        "sort_order": 40,
+        "credential_schema": {
+            "configured_by": "operator",
+            # Arkesel exposes GET /api/v2/clients/balance-details — a no-cost
+            # credential check (also reveals the account balance), so the config
+            # UI offers "Test connection".
+            "supports_test": True,
+            "fields": [
+                {"name": "api_key", "label": "API key", "type": "string", "required": True, "secret": True},
+                {"name": "from", "label": "Sender ID", "type": "string", "required": True, "secret": False},
+            ],
+        },
+    },
 ]
 
 

@@ -173,7 +173,7 @@ async def test_paystack_mobile_money_uses_charge_payload():
         "reference": "ref-momo",
         "mobile_money": {
             "phone": "233244123456",
-            "provider": "vodafone",
+            "provider": "vod",
         },
     }
     assert result.status == PaymentStatus.PENDING

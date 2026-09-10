@@ -51,8 +51,9 @@ function ProviderCard({ provider, apiPrefix, configured, activeProvider, activeN
     });
 
     const test = () => run('test', async () => {
-        await apiCall(`${apiPrefix}/${provider.provider_key}/test`, { method: 'POST' });
-        setBanner({ type: 'ok', text: 'Connection verified.' });
+        const res = await apiCall(`${apiPrefix}/${provider.provider_key}/test`, { method: 'POST' });
+        const detail = res && typeof res.test_detail === 'string' ? res.test_detail.trim() : '';
+        setBanner({ type: 'ok', text: detail ? `Connection verified — ${detail}.` : 'Connection verified.' });
     });
 
     const remove = () => run('delete', async () => {

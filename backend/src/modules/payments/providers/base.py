@@ -47,11 +47,14 @@ class PaymentProvider(ABC):
         one pesewa short) as a failure rather than a success.
         """
 
-    async def verify_credentials(self) -> None:
+    async def verify_credentials(self) -> str | None:
         """Check the stored credentials authenticate against the provider.
 
         Return on success; raise (any exception) on failure — the message is
-        surfaced to the operator as the "test connection" result.
+        surfaced to the operator as the "test connection" result. May return a
+        short detail string (e.g. an account balance) for the ``/test`` success
+        message; ``None`` (the norm for card/MoMo gateways, which have no balance
+        concept) means "verified, nothing extra to show".
         """
         raise NotImplementedError
 

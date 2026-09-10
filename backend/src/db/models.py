@@ -115,7 +115,7 @@ class OperatorSMSCredential(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
     isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id", ondelete="CASCADE"), nullable=False)
     provider = Column(
-        ENUM("hubtel", "africastalking", name="operator_sms_provider", create_type=False),
+        ENUM("hubtel", "africastalking", "arkesel", name="operator_sms_provider", create_type=False),
         nullable=False,
     )
     # Fernet token wrapping json.dumps({field_name: value}, sort_keys=True), keyed

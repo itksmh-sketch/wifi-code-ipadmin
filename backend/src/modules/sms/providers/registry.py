@@ -11,6 +11,7 @@ New providers are added here and nowhere else. Mirrors
 from __future__ import annotations
 
 from src.modules.sms.providers.africastalking import AfricasTalkingSMSProvider
+from src.modules.sms.providers.arkesel import ArkeselSMSProvider
 from src.modules.sms.providers.base import SMSProvider
 from src.modules.sms.providers.hubtel import HubtelSMSProvider
 
@@ -26,6 +27,11 @@ def build_sms_provider(provider_key: str, credentials: dict) -> SMSProvider:
         return AfricasTalkingSMSProvider(
             api_key=credentials["api_key"],
             username=credentials["username"],
+            sender_id=credentials["from"],
+        )
+    if provider_key == "arkesel":
+        return ArkeselSMSProvider(
+            api_key=credentials["api_key"],
             sender_id=credentials["from"],
         )
     raise ValueError(f"Unsupported SMS provider: {provider_key}")

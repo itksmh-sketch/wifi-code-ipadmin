@@ -391,6 +391,11 @@ class ConfiguredProviderView(BaseModel):
 class CredentialsView(BaseModel):
     active_provider: Optional[str] = None
     configured: list[ConfiguredProviderView] = Field(default_factory=list)
+    # Set only on the POST /{provider}/test response: a transient one-line detail
+    # from verify_credentials() (e.g. "balance GHS 0.88") to append to the
+    # success message. null on every other response, and for providers with no
+    # balance concept (Paystack, Flutterwave).
+    test_detail: Optional[str] = None
 
 
 def validate_monthly_fee(value: Optional[Decimal]) -> Optional[Decimal]:
