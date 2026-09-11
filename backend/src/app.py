@@ -43,6 +43,7 @@ from src.platform_portal.routes import router as platform_portal_router
 from src.modules.applications.routes import public_router as applications_public_router
 from src.modules.applications.routes import platform_router as applications_platform_router
 from src.modules.billing.routes import router as billing_router
+from src.modules.analytics.routes import router as analytics_router
 from src.modules.webhooks.platform_billing import router as platform_billing_webhook_router
 
 settings = get_settings()
@@ -99,6 +100,7 @@ app.include_router(platform_portal_router)
 app.include_router(applications_public_router, prefix="/api/v1")
 app.include_router(applications_platform_router, prefix="/api/v1")
 app.include_router(billing_router, prefix="/api/v1")
+app.include_router(analytics_router, prefix="/api/v1")
 app.include_router(platform_billing_webhook_router)
 
 

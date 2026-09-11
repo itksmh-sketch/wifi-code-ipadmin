@@ -1,5 +1,5 @@
 from pydantic import BaseModel, BeforeValidator, Field, field_validator
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 from datetime import datetime
 from decimal import Decimal
 # Single definition of the payable floor, shared with the billing jobs.
@@ -295,6 +295,17 @@ class BrandingResponse(BaseModel):
     accent_color: str
     background_gradient_start: str
     welcome_message: str
+    # Structural layout of the captive portal. Always populated (NULL on the
+    # operator row resolves to "card_centered", today's only layout).
+    template: str
+    # Footer contact details. Unset (either/both) leaves the generic footer text
+    # in place client-side, so these stay Optional/None rather than defaulted.
+    contact_phone: Optional[str] = None
+    contact_email: Optional[str] = None
+    # True only when resolved via a settings-page preview token with an active
+    # draft overlay — gates branding.js's poll loop so real customer-facing
+    # portal pages (resolved via a real router token) never poll.
+    is_preview: bool = False
 
 
 class BrandingUpdate(BaseModel):
@@ -305,6 +316,9 @@ class BrandingUpdate(BaseModel):
     accent_color: Optional[str] = Field(None, pattern=r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
     background_gradient_start: Optional[str] = Field(None, pattern=r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
     portal_welcome_message: Optional[str] = Field(None, max_length=500)
+    portal_template: Optional[Literal["card_centered", "full_bleed"]] = None
+    portal_contact_phone: Optional[str] = Field(None, max_length=64)
+    portal_contact_email: Optional[str] = Field(None, max_length=255)
 
 
 class PortalInitiatePaymentRequest(BaseModel):

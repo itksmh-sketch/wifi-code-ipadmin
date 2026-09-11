@@ -1,0 +1,11 @@
+            <div class="footer" data-brand-footer>
+{% if branding.contact_phone or branding.contact_email %}
+                <p>Need help?
+{% if branding.contact_phone %} <a href="tel:{{ branding.contact_phone }}">{{ branding.contact_phone }}</a>{% endif %}
+{% if branding.contact_phone and branding.contact_email %} &middot;{% endif %}
+{% if branding.contact_email %} <a href="mailto:{{ branding.contact_email }}">{{ branding.contact_email }}</a>{% endif %}
+                </p>
+{% else %}
+                <p>Need a voucher? Contact your local ISP office.</p>
+{% endif %}
+            </div>

@@ -21,13 +21,16 @@ DEFAULT_PRIMARY_COLOR = "#2563eb"
 DEFAULT_ACCENT_COLOR = "#764ba2"
 DEFAULT_BACKGROUND_GRADIENT_START = "#667eea"
 DEFAULT_WELCOME_MESSAGE = "Enter your voucher code to get online"
+DEFAULT_TEMPLATE = "card_centered"
 
 
-def build_branding(operator: Any | None) -> BrandingResponse:
+def build_branding(operator: Any | None, is_preview: bool = False) -> BrandingResponse:
     """Return branding for an operator (or platform-wide defaults when ``None``),
     filling every unset field with its default so callers never see a null colour
     or message. ``operator`` is any object exposing the branding attributes (an
-    ``ISPOperator`` row, or a stub in tests)."""
+    ``ISPOperator`` row, or a stub in tests). ``is_preview`` is passed straight
+    through to the response so branding.js knows whether to poll (see
+    portal/routes.py's _resolve_branding)."""
     def _get(attr: str) -> Any:
         return getattr(operator, attr, None) if operator is not None else None
 
@@ -39,4 +42,8 @@ def build_branding(operator: Any | None) -> BrandingResponse:
         accent_color=_get("accent_color") or DEFAULT_ACCENT_COLOR,
         background_gradient_start=_get("background_gradient_start") or DEFAULT_BACKGROUND_GRADIENT_START,
         welcome_message=_get("portal_welcome_message") or DEFAULT_WELCOME_MESSAGE,
+        template=_get("portal_template") or DEFAULT_TEMPLATE,
+        contact_phone=_get("portal_contact_phone"),
+        contact_email=_get("portal_contact_email"),
+        is_preview=is_preview,
     )

@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from html import escape
 import os
+from types import SimpleNamespace
 import uuid
 from urllib.parse import unquote, urlparse
 
@@ -15,11 +16,14 @@ from src.config import get_settings
 from src.db.base import get_db
 from src.db.models import ISPOperator, PaymentTransaction, Plan, Router, Site, Voucher
 from src.middleware.rate_limit import enforce_rate_limit
+from types import SimpleNamespace
+
+from src.modules.branding.preview_store import get_preview_draft
 from src.modules.branding.service import build_branding
 from src.modules.payments.dependencies import get_payment_service
 from src.modules.payments.service import PaymentService
 from src.modules.payments.types import PaymentMethod, PaymentStatus
-from src.utils.portal_token import decode_portal_router_token
+from src.utils.portal_token import decode_portal_preview_token, decode_portal_router_token
 from src.schemas import (
     BrandingResponse,
     PortalContinuePaymentRequest,
@@ -105,6 +109,64 @@ async def _resolve_operator(db: AsyncSession, rt: str | None, gateway: str | Non
     return await _resolve_operator_from_gateway(db, gateway)
 
 
+_DRAFT_FIELDS = (
+    "portal_display_name",
+    "primary_color",
+    "accent_color",
+    "background_gradient_start",
+    "portal_welcome_message",
+    "portal_template",
+    "portal_contact_phone",
+    "portal_contact_email",
+)
+
+
+async def _resolve_branding(db: AsyncSession, rt: str | None) -> BrandingResponse:
+    """Single resolution path for operator branding, keyed on the signed router
+    token. Used both by the public GET /portal/branding/{rt} endpoint (the
+    client-side fallback fetch) and, server-side, by the page handlers below so
+    the initial HTML response already carries the operator's colours/logo/
+    template/footer at first paint. A missing/invalid/unknown token (or no
+    token at all — e.g. a legacy gateway-matched router) resolves to platform
+    defaults; build_branding(None) never errors, so callers never need to
+    special-case a missing operator.
+
+    A settings-page preview token (distinct purpose, see utils/portal_token.py)
+    resolves the same operator but overlays any in-progress draft from Redis
+    (preview_store) on top of its persisted row — draft fields only; logo_url
+    always comes from the real row, since logo upload already persists
+    immediately and was never part of the draft. is_preview=True in either
+    branch (draft present or not) so branding.js knows to start polling."""
+    resolved = await _resolve_operator_from_token(db, rt)
+    if resolved is not None:
+        operator = (
+            await db.execute(select(ISPOperator).where(ISPOperator.id == resolved[0]))
+        ).scalar_one_or_none()
+        return build_branding(operator)
+
+    preview_operator_id = decode_portal_preview_token(rt)
+    if preview_operator_id:
+        operator = (
+            await db.execute(select(ISPOperator).where(ISPOperator.id == preview_operator_id))
+        ).scalar_one_or_none()
+        if operator is None:
+            return build_branding(None, is_preview=True)
+        draft = await get_preview_draft(preview_operator_id)
+        if draft:
+            draft_operator = SimpleNamespace(
+                name=operator.name,
+                logo_url=operator.logo_url,
+                **{
+                    attr: draft.get(attr, getattr(operator, attr, None))
+                    for attr in _DRAFT_FIELDS
+                },
+            )
+            return build_branding(draft_operator, is_preview=True)
+        return build_branding(operator, is_preview=True)
+
+    return build_branding(None)
+
+
 @router.get("/portal/login", response_class=HTMLResponse)
 async def portal_login(
     request: Request,
@@ -129,6 +191,7 @@ async def portal_login(
         resolved = await _resolve_operator_from_token(db, rt)
         if resolved is not None:
             site_id = resolved[1]
+    branding = await _resolve_branding(db, rt)
     return templates.TemplateResponse("login.html", {
         "request": request,
         "mac": mac,
@@ -140,6 +203,7 @@ async def portal_login(
         "link_orig": link_orig,
         "rt": rt,
         "mikrotik_login_fallback": login_fallback,
+        "branding": branding,
         "error": None,
     })
 
@@ -151,13 +215,16 @@ async def portal_pay(
     site_id: str = Query(...),
     gateway: str | None = Query(None),
     rt: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
 ):
+    branding = await _resolve_branding(db, rt)
     return templates.TemplateResponse("pay.html", {
         "request": request,
         "plan_id": plan_id,
         "site_id": site_id,
         "gateway": gateway,
         "rt": rt,
+        "branding": branding,
         "error": None,
     })
 
@@ -167,11 +234,16 @@ async def portal_success(
     request: Request,
     ref: str = Query(...),
     gateway: str | None = Query(None),
+    rt: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
 ):
+    branding = await _resolve_branding(db, rt)
     return templates.TemplateResponse("success.html", {
         "request": request,
         "ref": ref,
         "gateway": gateway,
+        "rt": rt,
+        "branding": branding,
         "error": None,
     })
 
@@ -432,14 +504,11 @@ async def portal_mikrotik_login_template(rt: str = Query(None)):
 async def portal_branding(rt: str, db: AsyncSession = Depends(get_db)):
     """Public branding for the captive portal, keyed on the signed router token.
     A missing/invalid/unknown token resolves to platform-wide defaults — this must
-    never error, so the portal always has something to render."""
-    operator = None
-    resolved = await _resolve_operator_from_token(db, rt)
-    if resolved is not None:
-        operator = (
-            await db.execute(select(ISPOperator).where(ISPOperator.id == resolved[0]))
-        ).scalar_one_or_none()
-    return build_branding(operator)
+    never error, so the portal always has something to render. Same resolution
+    _resolve_branding() also runs server-side when login/pay/success are served,
+    so the client-side fetch this endpoint answers reapplies identical values
+    rather than a second implementation of the lookup."""
+    return await _resolve_branding(db, rt)
 
 
 @router.get("/portal/statics/{file_path:path}")

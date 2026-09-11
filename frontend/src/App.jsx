@@ -2,6 +2,7 @@ import React, { createContext, useState, useContext, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Analytics from './pages/Analytics';
 import TownsSites from './pages/TownsSites';
 import Routers from './pages/Routers';
 import Plans from './pages/Plans';
@@ -144,6 +145,7 @@ export default function App() {
                                     <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
                                         <Routes>
                                             <Route path="/" element={<Dashboard />} />
+                                            <Route path="/analytics" element={<Analytics />} />
                                             <Route path="/towns-sites" element={<TownsSites />} />
                                             <Route path="/routers" element={<Routers />} />
                                             <Route path="/plans" element={<Plans />} />

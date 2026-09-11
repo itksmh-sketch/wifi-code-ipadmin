@@ -57,6 +57,16 @@ class ISPOperator(Base):
     accent_color = Column(Text, nullable=True)
     background_gradient_start = Column(Text, nullable=True)
     portal_welcome_message = Column(Text, nullable=True)
+    # Structural layout for the captive portal ("card_centered" | "full_bleed");
+    # NULL resolves to "card_centered" at read time in build_branding.
+    portal_template = Column(Text, nullable=True)
+    # Footer contact details shown on the captive portal (rendered by the shared
+    # branding.js module). Deliberately separate from contact_email/contact_phone
+    # above, which are the operator's account/billing contact from signup, not
+    # necessarily what they want customers to see. NULL on either leaves the
+    # existing generic footer text.
+    portal_contact_phone = Column(Text, nullable=True)
+    portal_contact_email = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 

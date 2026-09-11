@@ -1,25 +1,17 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-portal-template="{{ branding.template }}" style="--primary-color:{{ branding.primary_color }};--accent-color:{{ branding.accent_color }};--gradient-start:{{ branding.background_gradient_start }};">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Wi-Fi Login - ISP Hotspot</title>
-    <link rel="stylesheet" href="/portal/statics/style.css">
-    <script defer src="/portal/statics/branding.js"></script>
+    <title>{{ branding.portal_display_name or "Wi-Fi Login" }} - ISP Hotspot</title>
+{% include "_head.html" %}
 </head>
 <body>
     <div class="container">
         <div class="card">
-            <div class="logo" data-brand-logo>
-                <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-                    <circle cx="24" cy="24" r="24" fill="var(--primary-color)"/>
-                    <path d="M14 28c0-5.523 4.477-10 10-10s10 4.477 10 10" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
-                    <path d="M18 28c0-3.314 2.686-6 6-6s6 2.686 6 6" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
-                    <circle cx="24" cy="28" r="2" fill="white"/>
-                </svg>
-            </div>
-            <h1 data-brand-title>Connect to Wi-Fi</h1>
-            <p class="subtitle" data-brand-welcome>Enter your voucher code to get online</p>
+{% include "_brand_logo.html" %}
+            <h1 data-brand-title>{{ branding.portal_display_name or "Connect to Wi-Fi" }}</h1>
+            <p class="subtitle" data-brand-welcome>{{ branding.welcome_message }}</p>
 
             <div id="loginError" class="alert alert-error" style="{% if error %}display:flex{% else %}display:none{% endif %}">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -69,13 +61,13 @@
             <script>
                 (function() {
                     var params = new URLSearchParams(window.location.search);
-                    var siteId = params.get("site_id") || "{{ site_id or '' }}";
-                    var mac = params.get("mac") || "{{ mac or '' }}";
-                    var clientIp = params.get("ip") || "{{ ip or '' }}";
-                    var originalUrl = params.get("url") || params.get("link-orig") || params.get("link_orig") || "{{ link_orig or url or '' }}";
-                    var gateway = params.get("gateway") || "{{ gateway or '10.5.50.1' }}";
-                    var rt = params.get("rt") || "{{ rt or '' }}";
-                    var linkLoginOnly = params.get("link-login-only") || params.get("link_login_only") || "{{ link_login_only or '' }}";
+                    var siteId = params.get("site_id") || {{ (site_id or '') | tojson }};
+                    var mac = params.get("mac") || {{ (mac or '') | tojson }};
+                    var clientIp = params.get("ip") || {{ (ip or '') | tojson }};
+                    var originalUrl = params.get("url") || params.get("link-orig") || params.get("link_orig") || {{ (link_orig or url or '') | tojson }};
+                    var gateway = params.get("gateway") || {{ (gateway or '10.5.50.1') | tojson }};
+                    var rt = params.get("rt") || {{ (rt or '') | tojson }};
+                    var linkLoginOnly = params.get("link-login-only") || params.get("link_login_only") || {{ (link_login_only or '') | tojson }};
                     var statusEl = document.getElementById("plansStatus");
                     var gridEl = document.getElementById("plansGrid");
                     var sitePicker = document.getElementById("sitePicker");
@@ -304,9 +296,7 @@
                 })();
             </script>
 
-            <div class="footer">
-                <p>Need a voucher? Contact your local ISP office.</p>
-            </div>
+{% include "_brand_footer.html" %}
         </div>
     </div>
 </body>

@@ -15,6 +15,13 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      // So the branding-settings mobile preview iframe (src="/portal/login?...")
+      // resolves under `npm run dev` too — production already serves /admin/
+      // and /portal/ from the same FastAPI app/origin, so this is dev-only.
+      '/portal': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 })

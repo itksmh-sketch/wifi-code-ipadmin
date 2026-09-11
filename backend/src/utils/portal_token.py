@@ -11,12 +11,16 @@ binding is valid for the life of the router's provisioning.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from jose import JWTError, jwt
 
 from src.config import get_settings
 
 _ALGORITHM = "HS256"
 _PURPOSE = "portal_redirect"
+_PREVIEW_PURPOSE = "portal_preview"
+_PREVIEW_TTL = timedelta(hours=1)
 
 
 def create_portal_router_token(router_id: str) -> str:
@@ -42,3 +46,34 @@ def decode_portal_router_token(token: str | None) -> str | None:
         return None
     router_id = payload.get("router_id")
     return str(router_id) if router_id else None
+
+
+def create_portal_preview_token(operator_id: str) -> str:
+    """Mint a signed, short-lived token for the branding-settings mobile preview.
+
+    Deliberately separate from create_portal_router_token: encodes operator_id
+    (not router_id), carries no branding field values — those live in the
+    Redis draft store, keyed by operator_id, not in this token — and expires
+    on its own (unlike router tokens, which must survive for the router's
+    provisioning lifetime). Re-minted each time the settings page loads."""
+    payload = {
+        "operator_id": str(operator_id),
+        "purpose": _PREVIEW_PURPOSE,
+        "exp": datetime.now(timezone.utc) + _PREVIEW_TTL,
+    }
+    return jwt.encode(payload, get_settings().portal_token_secret, algorithm=_ALGORITHM)
+
+
+def decode_portal_preview_token(token: str | None) -> str | None:
+    """Return the ``operator_id`` for a valid preview token, else ``None``.
+    Same never-raises contract as decode_portal_router_token."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, get_settings().portal_token_secret, algorithms=[_ALGORITHM])
+    except JWTError:
+        return None
+    if payload.get("purpose") != _PREVIEW_PURPOSE:
+        return None
+    operator_id = payload.get("operator_id")
+    return str(operator_id) if operator_id else None

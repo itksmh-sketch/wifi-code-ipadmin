@@ -1,15 +1,15 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-portal-template="{{ branding.template }}" style="--primary-color:{{ branding.primary_color }};--accent-color:{{ branding.accent_color }};--gradient-start:{{ branding.background_gradient_start }};">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Success — ISP Hotspot</title>
-    <link rel="stylesheet" href="/portal/statics/style.css">
-    <script defer src="/portal/statics/branding.js"></script>
+    <title>{{ branding.portal_display_name or "Success" }} — ISP Hotspot</title>
+{% include "_head.html" %}
 </head>
 <body>
     <div class="container">
         <div class="card">
+{% include "_brand_logo.html" %}
             <h1>Payment successful</h1>
             <p class="subtitle">Your voucher code is ready</p>
 
@@ -29,14 +29,15 @@
                 <button id="connectBtn" class="btn btn-primary" type="button" style="margin-top:16px">Connect now</button>
                 <div id="connectError" class="alert alert-error" style="display:none;margin-top:12px"></div>
             </div>
+{% include "_brand_footer.html" %}
         </div>
     </div>
 
     <script>
     (function(){
-        var ref = "{{ ref }}";
+        var ref = {{ ref | tojson }};
         var params = new URLSearchParams(window.location.search);
-        var gateway = params.get("gateway") || "{{ gateway or '10.5.50.1' }}";
+        var gateway = params.get("gateway") || {{ (gateway or '10.5.50.1') | tojson }};
         // rt rides in via pay.html's redirect; branding.js also persists it to
         // sessionStorage["portal.rt"] on every hop. /portal/authenticate needs it
         // to resolve the operator for VPN-only routers (no matchable ip_address).

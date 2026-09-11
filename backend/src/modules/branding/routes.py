@@ -17,9 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
 from src.db.models import ISPOperator
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
+from src.modules.branding.preview_store import set_preview_draft
 from src.modules.branding.service import build_branding
 from src.portal.routes import PORTAL_DIR
 from src.schemas import BrandingResponse, BrandingUpdate
+from src.utils.portal_token import create_portal_preview_token
 
 router = APIRouter(prefix="/admin/branding", tags=["branding"])
 
@@ -64,13 +66,46 @@ async def update_branding(
     # Only fields present in the request are touched; an explicit null clears a
     # field back to the platform default (build_branding fills it on read).
     fields = body.model_dump(exclude_unset=True)
-    for attr in ("portal_display_name", "primary_color", "accent_color", "background_gradient_start", "portal_welcome_message"):
+    for attr in (
+        "portal_display_name",
+        "primary_color",
+        "accent_color",
+        "background_gradient_start",
+        "portal_welcome_message",
+        "portal_template",
+        "portal_contact_phone",
+        "portal_contact_email",
+    ):
         if attr in fields:
             setattr(operator, attr, fields[attr])
     operator.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(operator)
     return build_branding(operator)
+
+
+@router.get("/preview-token")
+async def get_preview_token(
+    tenant: TenantContext = Depends(get_admin_tenant_context),
+):
+    """Mint a fresh short-lived preview token for the settings-page mobile
+    preview iframe. Payload is just {operator_id, purpose, exp} — no branding
+    field ever goes in the token itself; draft values live in Redis, read via
+    the operator_id this token carries (see preview_store.py, portal/routes.py
+    _resolve_branding)."""
+    token = create_portal_preview_token(str(tenant.isp_operator_id))
+    return {"token": token, "preview_url": f"/portal/login?rt={token}"}
+
+
+@router.post("/preview-draft", status_code=204)
+async def post_preview_draft(
+    body: BrandingUpdate,
+    tenant: TenantContext = Depends(get_admin_tenant_context),
+):
+    """Write the settings form's current (unsaved) state into the transient
+    draft store, debounced from the frontend. Same BrandingUpdate validation
+    as a real save; nothing here touches isp_operators."""
+    await set_preview_draft(str(tenant.isp_operator_id), body.model_dump(exclude_unset=True))
 
 
 @router.post("/logo", response_model=BrandingResponse)

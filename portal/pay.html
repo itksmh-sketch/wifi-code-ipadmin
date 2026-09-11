@@ -1,15 +1,15 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-portal-template="{{ branding.template }}" style="--primary-color:{{ branding.primary_color }};--accent-color:{{ branding.accent_color }};--gradient-start:{{ branding.background_gradient_start }};">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pay - ISP Hotspot</title>
-    <link rel="stylesheet" href="/portal/statics/style.css">
-    <script defer src="/portal/statics/branding.js"></script>
+    <title>{{ branding.portal_display_name or "Pay" }} - ISP Hotspot</title>
+{% include "_head.html" %}
 </head>
 <body>
     <div class="container">
         <div class="card">
+{% include "_brand_logo.html" %}
             <h1>Buy access</h1>
             <p class="subtitle">Pay with card or mobile money to receive a voucher code</p>
 
@@ -49,15 +49,16 @@
                 <span class="spinner"></span>
                 <span id="waitText">Waiting for payment confirmation...</span>
             </div>
+{% include "_brand_footer.html" %}
         </div>
     </div>
 
     <script>
     (function(){
-        var planId = "{{ plan_id }}";
-        var siteId = "{{ site_id }}";
-        var gateway = "{{ gateway or '' }}";
-        var rt = "{{ rt or '' }}";
+        var planId = {{ plan_id | tojson }};
+        var siteId = {{ site_id | tojson }};
+        var gateway = {{ (gateway or '') | tojson }};
+        var rt = {{ (rt or '') | tojson }};
         var internalReference = null;
         var polling = null;
         var selectedPlan = null;

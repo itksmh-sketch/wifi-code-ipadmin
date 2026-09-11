@@ -277,3 +277,28 @@ h1 {
         font-size: 20px;
     }
 }
+
+/* ── Template: full_bleed ──────────────────────────────────────────────────
+   Pure structural variant of the same markup used by card_centered (the
+   default) — no new elements, only how .container/.card/.logo are dressed.
+   Selector targets <html data-portal-template="full_bleed">, set by
+   branding.js from /portal/branding/{rt}'s `template` field. card_centered
+   needs no rules here: it's simply the base CSS above with no override. */
+html[data-portal-template="full_bleed"] body {
+    padding: 0;
+}
+
+html[data-portal-template="full_bleed"] .container {
+    max-width: 100%;
+}
+
+html[data-portal-template="full_bleed"] .card {
+    border-radius: 0;
+    box-shadow: none;
+    padding: 48px 24px;
+}
+
+html[data-portal-template="full_bleed"] .logo svg {
+    width: 64px;
+    height: 64px;
+}
