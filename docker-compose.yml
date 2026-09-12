@@ -2,12 +2,14 @@ services:
   redis:
     image: redis:7-alpine
     container_name: hotspot-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
 
   postgres:
     image: postgres:15-alpine
     container_name: hotspot-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-hotspot_db}
       POSTGRES_USER: ${POSTGRES_USER:-hotspot_user}
@@ -25,6 +27,7 @@ services:
   backend:
     build: ./backend
     container_name: hotspot-backend
+    restart: unless-stopped
     # Host networking so the backend shares the host loopback with wg-manager
     # (reaches it at 127.0.0.1:8999). DB/Redis are reached via 127.0.0.1 + their
     # published host ports, since Docker service-name DNS is unavailable here.
@@ -133,6 +136,7 @@ services:
   worker:
     build: ./backend
     container_name: hotspot-worker
+    restart: unless-stopped
     # Host networking so the worker can reach wg-manager at 127.0.0.1:8999
     # (tunnel-status job). DB/Redis via 127.0.0.1 + published host ports.
     network_mode: host
@@ -261,6 +265,7 @@ services:
     # also exposes 1812/1813 on the VM's public interface, which MUST be closed
     # by a host firewall DROP on the public NIC (allow only wg0/10.100.0.0/24).
     network_mode: host
+    restart: unless-stopped
     entrypoint:
       - /bin/sh
       - -c
@@ -299,6 +304,14 @@ services:
   freeradius-secondary:
     image: freeradius/freeradius-server:3.2.6
     container_name: hotspot-freeradius-secondary
+    # No router is ever provisioned to use this address (resolve_radius_host()
+    # always resolves to the primary's tunnel IP — see radius_host.py), and being
+    # bridge-networked it would mis-authenticate clients even if one were pointed
+    # here (see the primary's host-networking note above). Currently vestigial as
+    # HA; kept running and restart: unless-stopped for consistency with the rest
+    # of the stack, not because it's doing anything today. Whether to decommission
+    # it is a separate decision.
+    restart: unless-stopped
     entrypoint:
       - /bin/sh
       - -c
@@ -335,6 +348,7 @@ services:
   pgbouncer:
     image: edoburu/pgbouncer
     container_name: hotspot-pgbouncer
+    restart: unless-stopped
     environment:
       DB_USER: ${POSTGRES_USER:-hotspot_user}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-hotspot_pass}
@@ -350,10 +364,19 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      # "localhost" resolves to ::1 first in this image, and pgbouncer only
+      # listens on 0.0.0.0 (IPv4) — nc against ::1 fails even though pgbouncer
+      # is up. Use 127.0.0.1 explicitly.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 5432"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   backup:
     build: ./backup
     container_name: hotspot-backup
+    restart: unless-stopped
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
