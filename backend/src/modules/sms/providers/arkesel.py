@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 import httpx
@@ -89,6 +90,8 @@ class ArkeselSMSProvider(SMSProvider):
 
     ``verify_credentials()`` -> GET /api/v2/clients/balance-details (no cost, no
     SMS); returns a "balance …" detail string for the Test-connection result.
+    ``get_sms_balance()`` hits the same endpoint for the raw numeric
+    ``sms_balance`` instead, for the platform-wide reconciliation job.
     """
 
     _BASE_URL = "https://sms.arkesel.com"
@@ -111,7 +114,11 @@ class ArkeselSMSProvider(SMSProvider):
             return self._client
         return httpx.AsyncClient(timeout=10.0, base_url=self._BASE_URL)
 
-    async def verify_credentials(self) -> str | None:
+    async def _get_balance_payload(self) -> dict:
+        """Raw parsed /clients/balance-details response. Shared by
+        verify_credentials() (Test Connection, wants a display string) and
+        get_sms_balance() (reconciliation, wants the raw number) so there is
+        one fetch+error-handling path, not two."""
         if not self.api_key:
             raise ValueError("Arkesel API key is required")
         client = await self._get_client()
@@ -130,13 +137,33 @@ class ArkeselSMSProvider(SMSProvider):
         if resp.status_code == 200 and not (
             isinstance(payload, dict) and str(payload.get("status", "success")).lower() == "error"
         ):
-            return _balance_detail(payload)
+            return payload if isinstance(payload, dict) else {}
 
         reason = None
         if isinstance(payload, dict):
             reason = payload.get("message") or payload.get("errorMessage") or payload.get("error")
         reason = reason or resp.text or f"HTTP {resp.status_code}"
         raise ValueError(f"Arkesel rejected the credentials: {_clip(reason)}")
+
+    async def verify_credentials(self) -> str | None:
+        payload = await self._get_balance_payload()
+        return _balance_detail(payload)
+
+    async def get_sms_balance(self) -> Decimal | None:
+        """Raw sms_balance (a segment/credit count) from Arkesel's own
+        account — for the aggregate reconciliation check only. Never use this
+        for per-message billing (see class docstring): it's platform-wide,
+        not per-operator, and carries no attribution."""
+        payload = await self._get_balance_payload()
+        scopes = [payload, payload.get("data") if isinstance(payload.get("data"), dict) else {}]
+        for scope in scopes:
+            val = scope.get("sms_balance")
+            if val not in (None, ""):
+                try:
+                    return Decimal(str(val))
+                except InvalidOperation:
+                    return None
+        return None
 
     async def send(self, to: str, message: str) -> SMSSendResult:
         if not (self.api_key and self.sender_id):

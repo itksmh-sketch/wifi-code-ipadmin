@@ -1,5 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { apiCall } from '../App';
+import TransactionsTab from '../components/TransactionsTab';
+import SmsUsageTab from '../components/SmsUsageTab';
+
+const TABS = [
+    ['invoices', 'Invoices'],
+    ['transactions', 'Transactions'],
+    ['sms-usage', 'SMS Usage'],
+];
 
 export default function Billing() {
     const [status, setStatus] = useState(null);
@@ -7,6 +15,7 @@ export default function Billing() {
     const [checklist, setChecklist] = useState({});
     const [payLoading, setPayLoading] = useState(false);
     const [error, setError] = useState('');
+    const [tab, setTab] = useState('invoices');
 
     useEffect(() => {
         apiCall('/billing/status').then(d => d && setStatus(d)).catch(() => {});
@@ -86,8 +95,32 @@ export default function Billing() {
 
             {error && <div style={{ color: '#ef4444', marginBottom: 16 }}>{error}</div>}
 
-            <h2>Invoices</h2>
-            {invoices.length === 0 ? (
+            <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 20 }}>
+                {TABS.map(([key, label]) => (
+                    <button
+                        key={key}
+                        onClick={() => setTab(key)}
+                        style={{
+                            background: 'none',
+                            border: 'none',
+                            borderBottom: tab === key ? '2px solid #2563eb' : '2px solid transparent',
+                            color: tab === key ? '#1e293b' : '#64748b',
+                            fontWeight: tab === key ? 600 : 400,
+                            fontSize: 14,
+                            padding: '8px 14px',
+                            cursor: 'pointer',
+                            marginBottom: -1,
+                        }}
+                    >
+                        {label}
+                    </button>
+                ))}
+            </div>
+
+            {tab === 'transactions' && <TransactionsTab />}
+            {tab === 'sms-usage' && <SmsUsageTab />}
+
+            {tab === 'invoices' && (invoices.length === 0 ? (
                 <p style={{ color: '#64748b' }}>No invoices yet.</p>
             ) : (
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
@@ -125,7 +158,7 @@ export default function Billing() {
                         ))}
                     </tbody>
                 </table>
-            )}
+            ))}
         </div>
     );
 }

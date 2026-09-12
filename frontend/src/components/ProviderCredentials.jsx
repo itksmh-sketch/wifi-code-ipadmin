@@ -8,14 +8,24 @@ import { apiCall } from '../App';
 // card is whatever that provider's catalog credential_schema says — no
 // hardcoded form.
 
-function ProviderCard({ provider, apiPrefix, configured, activeProvider, activeNoun, onChanged, setBanner }) {
+function ProviderCard({ provider, category, apiPrefix, configured, activeProvider, activeNoun, onChanged, setBanner }) {
     const schema = provider.credential_schema || {};
     const fields = schema.fields || [];
     const managedByPlatform = schema.configured_by === 'platform_admin';
     const supportsTest = Boolean(schema.supports_test);
+    const isPlatformProvided = Boolean(provider.is_platform_provided);
 
     const [values, setValues] = useState({});
     const [busy, setBusy] = useState('');
+    const [copied, setCopied] = useState(false);
+
+    const copyWebhookUrl = () => {
+        if (!configured?.webhook_url) return;
+        navigator.clipboard.writeText(configured.webhook_url).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        });
+    };
 
     const isConfigured = Boolean(configured);
     const isActive = activeProvider === provider.provider_key;
@@ -50,6 +60,11 @@ function ProviderCard({ provider, apiPrefix, configured, activeProvider, activeN
         setBanner({ type: 'ok', text: `${provider.display_name} is now the active ${activeNoun}.` });
     });
 
+    const activatePlatform = () => run('activate', async () => {
+        await apiCall(`${apiPrefix}/activate-platform`, { method: 'POST' });
+        setBanner({ type: 'ok', text: `${provider.display_name} is now the active ${activeNoun}.` });
+    });
+
     const test = () => run('test', async () => {
         const res = await apiCall(`${apiPrefix}/${provider.provider_key}/test`, { method: 'POST' });
         const detail = res && typeof res.test_detail === 'string' ? res.test_detail.trim() : '';
@@ -64,7 +79,14 @@ function ProviderCard({ provider, apiPrefix, configured, activeProvider, activeN
     return (
         <div className="card" style={{ maxWidth: 720, marginBottom: 20 }}>
             <div className="flex-between" style={{ marginBottom: 8 }}>
-                <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>{provider.display_name}</h2>
+                <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>
+                    {provider.display_name}
+                    {isPlatformProvided && (
+                        <span className="badge badge-yellow" style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, verticalAlign: 'middle' }}>
+                            Platform-provided
+                        </span>
+                    )}
+                </h2>
                 <span className={`badge ${isActive ? 'badge-green' : isConfigured ? 'badge-blue' : 'badge-gray'}`}>
                     {isActive ? 'Active' : isConfigured ? 'Configured' : 'Not configured'}
                 </span>
@@ -74,9 +96,23 @@ function ProviderCard({ provider, apiPrefix, configured, activeProvider, activeN
             )}
 
             {managedByPlatform ? (
-                <p style={{ color: '#4b5563', fontSize: 14 }}>
-                    Credentials for this provider are managed by the platform — nothing to configure here.
-                </p>
+                <>
+                    {provider.platform_rate_per_segment != null && (
+                        <p style={{ color: '#4b5563', fontSize: 14 }}>
+                            Billed at <strong>GHS {provider.platform_rate_per_segment}</strong> per SMS segment on
+                            your monthly invoice. No credentials to configure — the platform sends on your behalf.
+                        </p>
+                    )}
+                    {isActive ? (
+                        <p style={{ color: '#065f46', fontSize: 13, fontWeight: 600 }}>
+                            This is your active {activeNoun}.
+                        </p>
+                    ) : (
+                        <button type="button" className="btn btn-primary" onClick={activatePlatform} disabled={Boolean(busy)}>
+                            {busy === 'activate' ? 'Activating…' : `Use this ${activeNoun}`}
+                        </button>
+                    )}
+                </>
             ) : (
                 <>
                     <form onSubmit={save}>
@@ -134,6 +170,20 @@ function ProviderCard({ provider, apiPrefix, configured, activeProvider, activeN
                                     Last error: {configured.last_validation_error}
                                 </p>
                             )}
+                        </div>
+                    )}
+
+                    {isConfigured && category === 'payment' && configured.webhook_url && (
+                        <div style={{ marginTop: 16 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                <strong style={{ color: '#14213d', fontSize: 13 }}>Webhook URL — give this to {provider.display_name}</strong>
+                                <button type="button" className="btn" style={{ padding: '6px 12px', fontSize: 13 }} onClick={copyWebhookUrl}>
+                                    {copied ? '✓ Copied' : 'Copy'}
+                                </button>
+                            </div>
+                            <pre style={{ background: '#0f172a', color: '#e5efff', padding: 10, borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 13, margin: 0 }}>
+                                {configured.webhook_url}
+                            </pre>
                         </div>
                     )}
                 </>
@@ -199,6 +249,7 @@ export default function ProviderCredentials({ category, apiPrefix, title, blurb,
                     <ProviderCard
                         key={p.provider_key}
                         provider={p}
+                        category={category}
                         apiPrefix={apiPrefix}
                         activeNoun={noun}
                         configured={configuredByKey[p.provider_key]}

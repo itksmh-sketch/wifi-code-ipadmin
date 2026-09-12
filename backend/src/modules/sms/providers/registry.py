@@ -34,4 +34,13 @@ def build_sms_provider(provider_key: str, credentials: dict) -> SMSProvider:
             api_key=credentials["api_key"],
             sender_id=credentials["from"],
         )
+    if provider_key == "arkesel_platform":
+        # Same client as bring-your-own arkesel, different credential source
+        # (platform_sms_credentials, via resolve_active_sms_provider) and
+        # field names (api_key/sender_id, not api_key/from — this credential
+        # schema is platform_admin's own, not an operator-facing form).
+        return ArkeselSMSProvider(
+            api_key=credentials["api_key"],
+            sender_id=credentials["sender_id"],
+        )
     raise ValueError(f"Unsupported SMS provider: {provider_key}")

@@ -24,6 +24,18 @@ from src.schemas import OperatorProviderResponse
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 
+# Which real vendor backs a platform-provided row (e.g. Arkesel, today) is
+# deliberately never exposed to operators — display_name/description here are
+# the platform admin's own, accurate labels (same DB row the platform-owner
+# endpoint returns, since the admin needs to know which vendor they're
+# actually managing), so this endpoint substitutes generic text for any
+# is_platform_provided row rather than passing those two fields through.
+_PLATFORM_GATEWAY_DISPLAY_NAME = "Platform SMS Gateway"
+_PLATFORM_GATEWAY_DESCRIPTION = (
+    "Send through the platform's own SMS gateway and get billed per segment "
+    "on your monthly invoice. No credentials required."
+)
+
 
 @router.get("", response_model=list[OperatorProviderResponse])
 async def list_available_providers(
@@ -48,14 +60,30 @@ async def list_available_providers(
     ).scalars().all()
 
     # Explicit allow-list — never spread the ORM row. is_integrated, is_available,
-    # platform_rate_per_message, sort_order and the catalog id stay server-side.
+    # sort_order and the catalog id stay server-side. platform_rate_per_segment is
+    # the one internal field let through, and only for platform-provided rows —
+    # it's the operator's actual cost, so they need it to decide whether to opt
+    # in; bring-your-own rows never carry a rate here regardless of what's stored.
     return [
         {
             "provider_key": row.provider_key,
-            "display_name": row.display_name,
-            "description": row.description,
-            "credential_schema": row.credential_schema or {},
+            "display_name": _PLATFORM_GATEWAY_DISPLAY_NAME if row.is_platform_provided else row.display_name,
+            "description": _PLATFORM_GATEWAY_DESCRIPTION if row.is_platform_provided else row.description,
+            # Only configured_by survives for a platform-provided row — the
+            # frontend needs it to know there's no credentials form to render.
+            # fields (which would otherwise name the vendor, e.g. "Arkesel API
+            # key") never reach an operator; they never fill that form in.
+            "credential_schema": (
+                {"configured_by": (row.credential_schema or {}).get("configured_by")}
+                if row.is_platform_provided
+                else (row.credential_schema or {})
+            ),
             "is_platform_provided": bool(row.is_platform_provided),
+            "platform_rate_per_segment": (
+                str(row.platform_rate_per_segment)
+                if row.is_platform_provided and row.platform_rate_per_segment is not None
+                else None
+            ),
         }
         for row in rows
     ]

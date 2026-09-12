@@ -7,6 +7,7 @@ from src.jobs.coa_retry import retry_failed_coa_events
 from src.jobs.collect_router_metrics import collect_router_metrics
 from src.jobs.payment_reconciliation import run_payment_reconciliation
 from src.jobs.router_health import check_router_health
+from src.jobs.sms_reconciliation import reconcile_sms_usage
 from src.jobs.voucher_expiry import expire_vouchers
 from src.jobs.invoice_generation import generate_monthly_invoices
 from src.jobs.trial_expiry import handle_trial_expiry
@@ -32,7 +33,7 @@ def _redis_settings() -> RedisSettings:
 
 class WorkerSettings:
     redis_settings = _redis_settings()
-    functions = [process_webhook_event, run_payment_reconciliation, expire_vouchers, retry_failed_coa_events, check_exhausted_sessions, check_router_health, collect_router_metrics, generate_monthly_invoices, handle_trial_expiry, enforce_billing, check_wireguard_tunnels]
+    functions = [process_webhook_event, run_payment_reconciliation, expire_vouchers, retry_failed_coa_events, check_exhausted_sessions, check_router_health, collect_router_metrics, generate_monthly_invoices, handle_trial_expiry, enforce_billing, check_wireguard_tunnels, reconcile_sms_usage]
     cron_jobs = [
         cron(check_router_health, minute={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58}),
         cron(check_wireguard_tunnels, minute={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58}),
@@ -44,6 +45,11 @@ class WorkerSettings:
         cron(generate_monthly_invoices, hour=0, minute=0),
         cron(handle_trial_expiry, hour=6, minute=0),
         cron(enforce_billing, hour=8, minute=0),
+        # Off-the-round-number minute, deliberately: :00/:05/:10-style marks
+        # already cluster several other jobs (above); this one is pure
+        # retrospective monitoring with no load-bearing role, so it costs
+        # nothing to keep off that clustering.
+        cron(reconcile_sms_usage, hour=2, minute=17),
     ]
 
 

@@ -136,6 +136,7 @@ async def add_line_item(
     description: str,
     quantity: Decimal = Decimal("1"),
     unit_price_ghs: Decimal,
+    amount_ghs: Decimal | None = None,
     metadata: dict | None = None,
     sort_order: int = 0,
 ) -> OperatorInvoiceLineItem:
@@ -146,6 +147,17 @@ async def add_line_item(
     to. Inserting an OperatorInvoiceLineItem directly, or assigning
     `invoice.amount_ghs` by hand, breaks that guarantee — don't.
 
+    `amount_ghs` is normally omitted: the stored amount is quantity *
+    unit_price_ghs, rounded once (line_amount). Pass it explicitly only when
+    the line represents a set of charges that were each already rounded
+    individually before this call (e.g. the SMS usage rollup, where every
+    usage record was rounded to the cent at metering time) — quantity and
+    unit_price_ghs are still stored for display, but the recorded amount is
+    the caller's exact sum, which can differ by a cent from a fresh
+    quantity*unit_price recomputation at a different rounding granularity.
+    The invoice-total guarantee is unaffected either way: recompute_invoice_total
+    sums whatever amount_ghs ends up on each line, not how it was derived.
+
     Caller commits.
     """
     line = OperatorInvoiceLineItem(
@@ -154,7 +166,7 @@ async def add_line_item(
         description=description,
         quantity=Decimal(quantity),
         unit_price_ghs=Decimal(unit_price_ghs),
-        amount_ghs=line_amount(quantity, unit_price_ghs),
+        amount_ghs=Decimal(amount_ghs) if amount_ghs is not None else line_amount(quantity, unit_price_ghs),
         line_metadata=metadata,
         sort_order=sort_order,
     )

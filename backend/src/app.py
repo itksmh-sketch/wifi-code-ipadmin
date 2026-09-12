@@ -30,7 +30,6 @@ from src.modules.webhooks.routes import router as webhooks_router
 from src.radius.routes import router as radius_router
 from src.portal.routes import router as portal_router
 from src.middleware.auth import TenantContext, get_admin_tenant_context
-from src.modules.sms.dependencies import get_sms_service
 from src.modules.resellers.routes import router as reseller_router
 from src.modules.resellers.admin_routes import router as admin_reseller_router
 from src.modules.mikrotik.routes import router as mikrotik_router
@@ -51,9 +50,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize SMS service once so misconfig is logged at startup.
     configure_logging()
-    get_sms_service()
     yield
 
 

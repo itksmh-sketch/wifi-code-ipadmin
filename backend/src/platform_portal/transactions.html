@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transactions — Platform Admin</title>
+  <link rel="stylesheet" href="/platform/statics/app.css">
+  <style>
+    #toast{position:fixed;top:20px;right:20px;z-index:1000;padding:12px 18px;border-radius:10px;
+      border:1px solid rgba(34,197,94,.35);background:rgba(34,197,94,.16);color:#bbf7d0;font-size:14px;
+      font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(-8px);
+      transition:opacity .2s,transform .2s;pointer-events:none}
+    #toast.show{opacity:1;transform:translateY(0)}
+    #toast.bad{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.16);color:#fca5a5}
+
+    .switch{position:relative;display:inline-block;width:42px;height:24px;flex:none}
+    .switch input{position:absolute;opacity:0;width:0;height:0;padding:0;margin:0}
+    .slider{position:absolute;inset:0;border-radius:999px;background:#1e293b;border:1px solid var(--border);
+      cursor:pointer;transition:background .15s,border-color .15s}
+    .slider::before{content:"";position:absolute;height:16px;width:16px;left:3px;top:3px;border-radius:50%;
+      background:var(--muted);transition:transform .15s,background .15s}
+    .switch input:checked + .slider{background:rgba(245,158,11,.3);border-color:rgba(245,158,11,.5)}
+    .switch input:checked + .slider::before{transform:translateX(18px);background:#f59e0b}
+    .switch input:focus-visible + .slider{box-shadow:0 0 0 3px rgba(99,102,241,.25)}
+    .switch input:disabled + .slider{cursor:not-allowed;opacity:.4}
+
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--muted)}
+    .num{font-variant-numeric:tabular-nums}
+    .pager{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:14px;font-size:13px;color:var(--muted)}
+    .filters{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
+    .filters label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
+    .filters select,.filters input{min-width:170px;padding:7px 10px;font-size:13px}
+    .filters .btn{padding:7px 14px}
+  </style>
+</head>
+<body>
+<div class="container">
+  <nav class="nav">
+    <span class="brand">Platform <span>Admin</span></span>
+    <div class="links">
+      <a href="/platform/operators" class="btn">← Operators</a>
+      <a href="/platform/analytics" class="btn">Analytics</a>
+      <a href="/platform/providers" class="btn">Providers</a>
+      <a href="/platform/health" class="btn">Service Health</a>
+      <a href="/platform/billing" class="btn">Billing</a>
+      <a href="/platform/settings" class="btn">Settings</a>
+      <button class="btn" id="logout-btn">Logout</button>
+    </div>
+  </nav>
+
+  <div class="section-title">Transactions</div>
+  <p class="section-sub">
+    Every operator's payment transactions, newest first. Internal tool — flag a stray test or
+    diagnostic transaction here so it's excluded from that operator's own transaction history.
+    Only success/failed/reversed transactions can be flagged; pending ones are still in flight.
+  </p>
+
+  <div id="msg" class="notice bad" style="display:none;margin-bottom:16px"></div>
+
+  <div id="main" style="display:none">
+    <div class="card" style="margin-bottom:16px">
+      <div class="filters">
+        <label>Operator
+          <select id="f-operator"><option value="">All operators</option></select>
+        </label>
+        <label>From
+          <input type="date" id="f-start">
+        </label>
+        <label>To
+          <input type="date" id="f-end">
+        </label>
+        <button class="btn" id="f-clear" type="button">Clear</button>
+      </div>
+      <p class="text-muted" style="margin:10px 0 0;font-size:12px">
+        Filters apply to the transactions table only. Dates match when a payment was
+        initiated, inclusive of both ends.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Operator</th>
+              <th>Amount (GHS)</th>
+              <th>Method</th>
+              <th>Status</th>
+              <th>Reference</th>
+              <th>Diagnostic</th>
+            </tr>
+          </thead>
+          <tbody id="tx-rows"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <span id="pager-summary"></span>
+        <button class="btn" id="prev-btn">← Previous</button>
+        <button class="btn" id="next-btn">Next →</button>
+      </div>
+    </div>
+
+    <!-- ── Platform SMS gateway usage ──────────────────────────────────── -->
+    <div class="card" style="margin-top:16px">
+      <div class="card-header">
+        <h2 class="card-title">Platform SMS gateway usage</h2>
+      </div>
+      <p class="text-muted" style="margin:-8px 0 14px">
+        Metered sends through the platform's own gateway, billed to the operator per segment.
+        Flagging one here excludes it from the monthly rollup — it is a separate flag from the
+        transaction above, because a usage record has no database link back to the payment that
+        triggered it. Already-billed rows can no longer be flagged: the charge is on an issued
+        invoice by then.
+      </p>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Sent</th>
+              <th>Operator</th>
+              <th>Segments</th>
+              <th>Rate</th>
+              <th>Amount (GHS)</th>
+              <th>Billed</th>
+              <th>Diagnostic</th>
+            </tr>
+          </thead>
+          <tbody id="usage-rows"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <span id="usage-pager-summary"></span>
+        <button class="btn" id="usage-prev-btn">← Previous</button>
+        <button class="btn" id="usage-next-btn">Next →</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const token = localStorage.getItem('platform_access_token');
+if (!token) { window.location.replace('/platform/login'); }
+
+document.getElementById('logout-btn').addEventListener('click', () => {
+  localStorage.removeItem('platform_access_token');
+  localStorage.removeItem('platform_refresh_token');
+  window.location.href = '/platform/login';
+});
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: {
+      'Authorization': 'Bearer ' + localStorage.getItem('platform_access_token'),
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('platform_access_token');
+    window.location.replace('/platform/login');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
+function showError(text) {
+  const msg = document.getElementById('msg');
+  msg.textContent = text;
+  msg.style.display = 'block';
+}
+function hideError() { document.getElementById('msg').style.display = 'none'; }
+
+let toastTimer = null;
+function showToast(text, bad) {
+  const t = document.getElementById('toast');
+  t.textContent = text;
+  t.className = bad ? 'bad show' : 'show';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+const TERMINAL = new Set(['success', 'failed', 'reversed']);
+const STATUS_BADGE = { success: 'active', failed: 'past_due', reversed: 'cancelled', refunded: 'pending', pending: 'pending' };
+
+let page = 1;
+const pageSize = 50;
+
+function statusCell(tx) {
+  return `<span class="badge ${STATUS_BADGE[tx.status] || ''}">${esc(tx.status)}</span>`;
+}
+
+function diagnosticCell(tx) {
+  const canToggle = TERMINAL.has(tx.status);
+  const dis = canToggle ? '' : ' disabled';
+  const chk = tx.is_diagnostic ? ' checked' : '';
+  const title = canToggle ? '' : ' title="Only success/failed/reversed transactions can be flagged."';
+  return `<label class="switch"${title}>`
+       + `<input type="checkbox" data-kind="tx" data-id="${esc(tx.id)}"${chk}${dis}>`
+       + `<span class="slider"></span></label>`;
+}
+
+function usageDiagnosticCell(rec) {
+  // Already-billed rows are frozen: the server 409s, this just stops the click.
+  const dis = rec.is_billed ? ' disabled' : '';
+  const chk = rec.is_diagnostic ? ' checked' : '';
+  const title = rec.is_billed
+    ? ' title="Already billed on an invoice — can no longer be flagged."' : '';
+  return `<label class="switch"${title}>`
+       + `<input type="checkbox" data-kind="usage" data-id="${esc(rec.id)}"${chk}${dis}>`
+       + `<span class="slider"></span></label>`;
+}
+
+function render(data) {
+  document.getElementById('tx-rows').innerHTML = (data.transactions || []).map(tx => `
+    <tr>
+      <td class="num">${tx.initiated_at ? new Date(tx.initiated_at).toLocaleString() : '—'}</td>
+      <td>${esc(tx.operator_name)} <span class="mono">${esc(tx.operator_slug)}</span></td>
+      <td class="num">${tx.amount_ghs}</td>
+      <td>${esc(tx.payment_method)} <span class="mono">${esc(tx.provider)}</span></td>
+      <td>${statusCell(tx)}</td>
+      <td><span class="mono">${esc(tx.internal_reference)}</span>${tx.phone_number ? `<br><span class="mono">${esc(tx.phone_number)}</span>` : ''}</td>
+      <td>${diagnosticCell(tx)}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="text-muted">No transactions.</td></tr>';
+
+  const start = data.total_count === 0 ? 0 : (data.page - 1) * data.page_size + 1;
+  const end = Math.min(data.page * data.page_size, data.total_count);
+  document.getElementById('pager-summary').textContent =
+    `${start}–${end} of ${data.total_count}`;
+  document.getElementById('prev-btn').disabled = data.page <= 1;
+  document.getElementById('next-btn').disabled = data.page >= data.total_pages;
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('main').style.display = 'block';
+}
+
+// Date inputs give a bare YYYY-MM-DD. "To" is made inclusive of the whole day
+// by pushing it to the end of that day, so picking the same date for both ends
+// returns that day's transactions rather than nothing.
+function filterQuery() {
+  const params = new URLSearchParams();
+  const op = document.getElementById('f-operator').value;
+  const start = document.getElementById('f-start').value;
+  const end = document.getElementById('f-end').value;
+  if (op) params.set('operator_id', op);
+  if (start) params.set('start_date', `${start}T00:00:00Z`);
+  if (end) params.set('end_date', `${end}T23:59:59Z`);
+  return params.toString();
+}
+
+async function load() {
+  try {
+    const extra = filterQuery();
+    const res = await api(
+      `/api/v1/platform/payment-transactions?page=${page}&page_size=${pageSize}${extra ? '&' + extra : ''}`
+    );
+    if (!res.ok) throw new Error('Failed to load');
+    render(await res.json());
+  } catch (e) {
+    document.getElementById('loading').textContent = 'Failed to load transactions. Check your session.';
+  }
+}
+
+async function loadOperators() {
+  try {
+    const res = await api('/api/v1/platform/operators');
+    if (!res.ok) return;
+    const operators = await res.json();
+    const sel = document.getElementById('f-operator');
+    (operators || []).forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o.id;
+      opt.textContent = `${o.name} (${o.slug})`;
+      sel.appendChild(opt);
+    });
+  } catch (e) { /* dropdown just stays "All operators" */ }
+}
+
+// Any filter change resets to page 1 — staying on page 4 of a narrower result
+// set would otherwise show an empty table for no visible reason.
+['f-operator', 'f-start', 'f-end'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => { page = 1; load(); });
+});
+document.getElementById('f-clear').addEventListener('click', () => {
+  document.getElementById('f-operator').value = '';
+  document.getElementById('f-start').value = '';
+  document.getElementById('f-end').value = '';
+  page = 1;
+  load();
+});
+
+document.getElementById('prev-btn').addEventListener('click', () => { page = Math.max(1, page - 1); load(); });
+document.getElementById('next-btn').addEventListener('click', () => { page = page + 1; load(); });
+
+// ── Platform SMS gateway usage ──────────────────────────────────────────
+let usagePage = 1;
+
+function renderUsage(data) {
+  document.getElementById('usage-rows').innerHTML = (data.records || []).map(rec => `
+    <tr>
+      <td class="num">${rec.sent_at ? new Date(rec.sent_at).toLocaleString() : '—'}</td>
+      <td>${esc(rec.operator_name)} <span class="mono">${esc(rec.operator_slug)}</span></td>
+      <td class="num">${rec.segment_count}</td>
+      <td class="num">${esc(rec.rate_ghs_per_segment)}</td>
+      <td class="num">${rec.amount_ghs}</td>
+      <td>${rec.is_billed
+            ? '<span class="badge active">Billed</span>'
+            : '<span class="badge pending">Not yet invoiced</span>'}</td>
+      <td>${usageDiagnosticCell(rec)}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="text-muted">No usage records.</td></tr>';
+
+  const start = data.total_count === 0 ? 0 : (data.page - 1) * data.page_size + 1;
+  const end = Math.min(data.page * data.page_size, data.total_count);
+  document.getElementById('usage-pager-summary').textContent = `${start}–${end} of ${data.total_count}`;
+  document.getElementById('usage-prev-btn').disabled = data.page <= 1;
+  document.getElementById('usage-next-btn').disabled = data.page >= data.total_pages;
+}
+
+async function loadUsage() {
+  try {
+    const res = await api(`/api/v1/platform/sms-usage-records?page=${usagePage}&page_size=50`);
+    if (!res.ok) throw new Error('Failed to load');
+    renderUsage(await res.json());
+  } catch (e) {
+    document.getElementById('usage-rows').innerHTML =
+      '<tr><td colspan="7" class="text-muted">Failed to load usage records.</td></tr>';
+  }
+}
+
+document.getElementById('usage-prev-btn').addEventListener('click', () => { usagePage = Math.max(1, usagePage - 1); loadUsage(); });
+document.getElementById('usage-next-btn').addEventListener('click', () => { usagePage = usagePage + 1; loadUsage(); });
+
+// One handler for both tables — data-kind decides which endpoint and which
+// table to reload, so a usage toggle never posts to the transactions route.
+document.addEventListener('change', async e => {
+  const el = e.target;
+  if (!el.matches('input[type="checkbox"][data-kind][data-id]')) return;
+  const kind = el.dataset.kind;
+  const path = kind === 'usage'
+    ? `/api/v1/platform/sms-usage-records/${el.dataset.id}/diagnostic`
+    : `/api/v1/platform/payment-transactions/${el.dataset.id}/diagnostic`;
+  hideError();
+  el.disabled = true;
+  try {
+    const res = await api(path, {
+      method: 'PATCH',
+      body: JSON.stringify({ is_diagnostic: el.checked }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || 'Update failed.');
+    showToast(el.checked ? 'Marked as diagnostic' : 'Un-flagged');
+  } catch (err) {
+    showError(err.message);
+    showToast(err.message, true);
+  } finally {
+    if (kind === 'usage') { await loadUsage(); } else { await load(); }
+  }
+});
+
+loadOperators();
+load();
+loadUsage();
+</script>
+</body>
+</html>

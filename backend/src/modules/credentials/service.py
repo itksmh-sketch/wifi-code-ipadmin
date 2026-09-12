@@ -23,7 +23,8 @@ from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models import ProviderCatalogEntry
+from src.db.models import ISPOperator, ProviderCatalogEntry
+from src.modules.webhooks.urls import build_webhook_url
 from src.schemas import ConfiguredProviderView, CredentialsView
 from src.utils.encryption import decrypt_secret, encrypt_secret
 
@@ -121,6 +122,11 @@ async def build_view(
             )
         ).scalars().all()
     }
+    slug = None
+    if category == "payment" and rows:
+        operator = await db.get(ISPOperator, operator_id)
+        slug = operator.slug if operator else None
+
     configured: list[ConfiguredProviderView] = []
     active_provider = None
     for row in rows:
@@ -135,6 +141,7 @@ async def build_view(
                 field_hints=hints,
                 last_validated_at=row.last_validated_at,
                 last_validation_error=row.last_validation_error,
+                webhook_url=build_webhook_url(row.provider, slug) if category == "payment" else None,
             )
         )
     return CredentialsView(active_provider=active_provider, configured=configured)

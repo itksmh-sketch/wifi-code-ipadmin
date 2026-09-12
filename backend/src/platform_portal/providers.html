@@ -42,6 +42,16 @@
     .legend span{display:inline-flex;align-items:center;gap:6px}
     .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
     .dot.on{background:#22c55e}.dot.off{background:#f59e0b}.dot.no{background:var(--muted)}
+
+    .kv{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;font-size:13px;margin-bottom:18px}
+    .kv dt{color:var(--muted)}
+    .kv dd{margin:0}
+    .mask{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}
+    .mask .dots{color:var(--muted)}
+    .badge.unset{background:rgba(148,163,184,.1);border-color:var(--border);color:var(--muted)}
+    .badge.off{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.45);color:#fcd34d}
+    .badge.db{background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.35);color:#c7d2fe}
+    .divider{height:1px;background:var(--border);margin:20px 0}
   </style>
 </head>
 <body>
@@ -53,6 +63,7 @@
       <a href="/platform/analytics" class="btn">Analytics</a>
       <a href="/platform/health" class="btn">Service Health</a>
       <a href="/platform/billing" class="btn">Billing</a>
+      <a href="/platform/transactions" class="btn">Transactions</a>
       <a href="/platform/settings" class="btn">Settings</a>
       <button class="btn" id="logout-btn">Logout</button>
     </div>
@@ -114,6 +125,60 @@
           <tbody id="sms-rows"></tbody>
         </table>
       </div>
+    </div>
+  </div>
+
+  <!-- ── Platform SMS Gateway Keys ───────────────────────────────────────── -->
+  <div id="sms-keys-loading" style="text-align:center;padding:40px 0;color:var(--muted)">Loading SMS gateway keys…</div>
+
+  <div id="sms-keys-card-body" style="display:none;margin-top:16px">
+    <div class="card" style="max-width:720px">
+      <div class="card-header">
+        <h2 class="card-title">Platform SMS Gateway Keys</h2>
+        <span id="sms-status-badge" class="badge unset">—</span>
+      </div>
+
+      <p class="text-muted" style="margin-top:0">
+        The platform's own gateway credentials, used only when an operator opts into
+        <span class="badge platform">Platform gateway</span> above. Never shown to operators —
+        they only see the per-message rate set in the table above.
+      </p>
+
+      <dl class="kv">
+        <dt>Status</dt>       <dd id="sms-k-configured">—</dd>
+        <dt>API key</dt>      <dd id="sms-k-key" class="mask">—</dd>
+        <dt>Sender ID</dt>    <dd id="sms-k-sender">—</dd>
+        <dt id="sms-k-saved-row" style="display:none">Saved</dt> <dd id="sms-k-saved" style="display:none">—</dd>
+        <dt>Last validated</dt> <dd id="sms-k-validated">—</dd>
+      </dl>
+
+      <div id="sms-validation-error" class="notice bad" style="display:none;margin-bottom:18px"></div>
+
+      <div class="divider"></div>
+
+      <form id="sms-form" novalidate>
+        <label>Arkesel API Key</label>
+        <input id="sms_api_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="Enter to set or replace">
+
+        <label>Sender ID</label>
+        <input id="sms_sender_id" type="text" autocomplete="off" spellcheck="false" placeholder="Registered Arkesel sender ID">
+
+        <label style="display:flex;align-items:center;gap:8px;margin-top:16px">
+          <input id="sms_is_active" type="checkbox" checked style="width:auto;margin:0">
+          <span style="color:var(--text);font-size:13px">Active — use these keys for the platform SMS gateway</span>
+        </label>
+
+        <p class="text-muted" style="margin:10px 0 0">
+          The API key is encrypted at rest and never shown again in full — only the last 4 characters.
+          Both fields are required together; re-enter both to change either one.
+        </p>
+
+        <div class="spacer"></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn primary" type="submit" id="sms-save-btn">Save keys</button>
+          <button class="btn" type="button" id="sms-test-btn">Test connection</button>
+        </div>
+      </form>
     </div>
   </div>
 
@@ -201,10 +266,10 @@ function rateCell(p) {
   if (!p.is_platform_provided) {
     return '<span class="dash" title="Operator is billed by the provider directly">—</span>';
   }
-  const val = p.platform_rate_per_message == null ? '' : esc(p.platform_rate_per_message);
+  const val = p.platform_rate_per_segment == null ? '' : esc(p.platform_rate_per_segment);
   return `<span class="rate-prefix">GHS</span>`
        + `<input type="number" step="0.0001" min="0" placeholder="unset" value="${val}"`
-       + ` data-id="${esc(p.id)}" data-field="platform_rate_per_message"`
+       + ` data-id="${esc(p.id)}" data-field="platform_rate_per_segment"`
        + ` data-original="${val}" title="Charged to operators per SMS sent through the platform gateway.">`;
 }
 
@@ -268,7 +333,7 @@ document.addEventListener('change', async e => {
 
 document.addEventListener('change', async e => {
   const el = e.target;
-  if (el.dataset.field !== 'platform_rate_per_message') return;
+  if (el.dataset.field !== 'platform_rate_per_segment') return;
   const raw = el.value.trim();
   if (raw === el.dataset.original) return;
   hideError();
@@ -277,7 +342,7 @@ document.addEventListener('change', async e => {
     // Empty box means "no rate set yet", which is a real state (NULL), not zero.
     const body = raw === ''
       ? { clear_platform_rate: true }
-      : { platform_rate_per_message: raw };
+      : { platform_rate_per_segment: raw };
     await save(el.dataset.id, body);
     showToast(raw === '' ? 'Rate cleared' : 'Rate saved');
   } catch (err) {
@@ -289,6 +354,149 @@ document.addEventListener('change', async e => {
 });
 
 load();
+
+// ─────────────────────────────────────────────────────────────────────────
+// Platform SMS Gateway Keys — the platform's own Arkesel credentials, used
+// only for operators who opt into "Platform gateway" above. Simpler than the
+// payment-credentials card (billing.html): a single secret field, no
+// .env-fallback state, so only three states rather than four.
+// ─────────────────────────────────────────────────────────────────────────
+
+function fmtDate(iso) {
+  if (!iso) return '<span class="text-muted">never</span>';
+  return new Date(iso).toLocaleString();
+}
+
+function smsKeyMasked(value) {
+  return value ? esc(value) : '<span class="dots">not set</span>';
+}
+
+function describeSmsState(d) {
+  if (d.is_stored && d.is_active) {
+    return { badge: 'db', badgeText: 'In use', status: '<span class="badge active">In use</span>' };
+  }
+  if (d.is_stored && !d.is_active) {
+    return { badge: 'off', badgeText: 'Switched off', status: '<span class="badge off">Stored — switched off</span>' };
+  }
+  return { badge: 'unset', badgeText: 'No keys', status: '<span class="badge unset">Not configured</span>' };
+}
+
+function renderSms(d) {
+  const st = describeSmsState(d);
+
+  document.getElementById('sms-k-key').innerHTML = smsKeyMasked(d.api_key_masked);
+  document.getElementById('sms-k-sender').textContent = d.sender_id || '—';
+  document.getElementById('sms-k-validated').innerHTML = fmtDate(d.last_validated_at);
+  document.getElementById('sms-k-configured').innerHTML = st.status;
+
+  const badge = document.getElementById('sms-status-badge');
+  badge.className = 'badge ' + st.badge;
+  badge.textContent = st.badgeText;
+
+  const savedRow = document.getElementById('sms-k-saved-row');
+  const saved = document.getElementById('sms-k-saved');
+  if (d.is_stored) {
+    saved.innerHTML = fmtDate(d.stored_updated_at);
+    savedRow.style.display = '';
+    saved.style.display = '';
+  } else {
+    savedRow.style.display = 'none';
+    saved.style.display = 'none';
+  }
+
+  const errBox = document.getElementById('sms-validation-error');
+  if (d.last_validation_error) {
+    errBox.textContent = 'Last test failed: ' + d.last_validation_error;
+    errBox.style.display = 'block';
+  } else {
+    errBox.style.display = 'none';
+  }
+
+  // Only mirror a stored row's flag — with no row, is_active is merely "there
+  // is no active row", not a meaningful default to prime the checkbox from.
+  document.getElementById('sms_is_active').checked = d.is_stored ? d.is_active : true;
+
+  document.getElementById('sms-keys-loading').style.display = 'none';
+  document.getElementById('sms-keys-card-body').style.display = 'block';
+}
+
+async function loadSmsKeys() {
+  try {
+    const res = await api('/api/v1/platform/sms-credentials');
+    if (!res.ok) throw new Error('Failed to load');
+    renderSms(await res.json());
+  } catch (e) {
+    document.getElementById('sms-keys-loading').textContent =
+      'Failed to load SMS gateway keys. If the platform_sms_credentials migration has not run yet, this is expected.';
+  }
+}
+
+document.getElementById('sms-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  hideError();
+  const api_key = document.getElementById('sms_api_key').value.trim();
+  const sender_id = document.getElementById('sms_sender_id').value.trim();
+
+  // Both required together: the server replaces the pair, so sending one
+  // would silently blank the other.
+  if (!api_key || !sender_id) {
+    showError('Both the API key and the Sender ID are required. Re-enter both to change either.');
+    return;
+  }
+
+  const btn = document.getElementById('sms-save-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const res = await api('/api/v1/platform/sms-credentials', {
+      method: 'PUT',
+      body: JSON.stringify({
+        api_key, sender_id,
+        is_active: document.getElementById('sms_is_active').checked,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.detail || 'Failed to save keys.');
+    } else {
+      document.getElementById('sms_api_key').value = '';
+      document.getElementById('sms_sender_id').value = '';
+      renderSms(data);
+      showToast('SMS gateway keys saved');
+    }
+  } catch (err) {
+    showError('Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save keys';
+  }
+});
+
+document.getElementById('sms-test-btn').addEventListener('click', async () => {
+  hideError();
+  const btn = document.getElementById('sms-test-btn');
+  btn.disabled = true;
+  btn.textContent = 'Testing…';
+  try {
+    const res = await api('/api/v1/platform/sms-credentials/test', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.detail || 'Test failed.');
+      showToast('Test failed', true);
+      await loadSmsKeys();
+    } else {
+      renderSms(data);
+      showToast(data.test_detail ? `Arkesel connection OK — ${data.test_detail}` : 'Arkesel connection OK');
+    }
+  } catch (err) {
+    showError('Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Test connection';
+  }
+});
+
+loadSmsKeys();
 </script>
 </body>
 </html>

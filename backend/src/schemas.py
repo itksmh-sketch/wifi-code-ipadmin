@@ -400,6 +400,10 @@ class ConfiguredProviderView(BaseModel):
     field_hints: dict[str, Optional[str]]
     last_validated_at: Optional[datetime] = None
     last_validation_error: Optional[str] = None
+    # Populated only for category="payment": the URL to give this provider's
+    # dashboard for inbound payment notifications. null for SMS providers,
+    # which have no operator-facing webhook concept.
+    webhook_url: Optional[str] = None
 
 
 class CredentialsView(BaseModel):
@@ -524,14 +528,17 @@ class OperatorProviderResponse(BaseModel):
     """Operator-facing catalog row — GET /api/v1/providers?category=…
 
     Strict subset of ProviderCatalogEntryResponse: no id, no category, and none
-    of the platform-internal state (is_integrated, is_available,
-    platform_rate_per_message, sort_order).
+    of the platform-internal state (is_integrated, is_available, sort_order).
+    platform_rate_per_segment is the one exception — it's the operator's actual
+    cost on a platform-provided row, so they need it to decide whether to opt
+    in; it's always None on a bring-your-own row regardless of what's stored.
     """
     provider_key: str
     display_name: str
     description: Optional[str] = None
     credential_schema: dict = Field(default_factory=dict)
     is_platform_provided: bool
+    platform_rate_per_segment: Optional[str] = None
 
 
 # --- Provider catalog (platform owner only) ---
@@ -548,7 +555,7 @@ class ProviderCatalogEntryResponse(BaseModel):
     is_platform_provided: bool
     # Serialised as a string so the 4-decimal rate survives the JSON round-trip
     # without float rounding.
-    platform_rate_per_message: Optional[str] = None
+    platform_rate_per_segment: Optional[str] = None
     sort_order: int
 
     model_config = {"from_attributes": True}
@@ -557,10 +564,73 @@ class ProviderCatalogEntryResponse(BaseModel):
 class ProviderCatalogUpdate(BaseModel):
     """Platform-admin-editable fields. Both optional — send only what changes."""
     is_available: Optional[bool] = None
-    platform_rate_per_message: Optional[Decimal] = Field(default=None, ge=0)
+    platform_rate_per_segment: Optional[Decimal] = Field(default=None, ge=0)
     # Distinguishes "leave the rate alone" (field omitted) from "clear the rate"
     # (this flag), since None already means "not sent".
     clear_platform_rate: bool = False
+
+
+# --- Platform payment transactions (platform owner only) ---
+
+class TransactionDiagnosticUpdate(BaseModel):
+    is_diagnostic: bool
+
+
+# --- Platform SMS credentials (platform owner only) ---
+
+class PlatformSMSCredentialResponse(BaseModel):
+    """Masked view of the platform's own Arkesel keys. Mirrors
+    PlatformPaymentCredentialResponse's shape but for the single-blob
+    credential store (platform_sms_credentials), not per-field columns."""
+    provider: str
+    api_key_masked: Optional[str] = None
+    sender_id: Optional[str] = None
+    is_stored: bool
+    stored_updated_at: Optional[datetime] = None
+    is_active: bool
+    last_validated_at: Optional[datetime] = None
+    last_validation_error: Optional[str] = None
+    # Transient: a balance line from verify_credentials(), present only on the
+    # /test response, same contract as the operator credentials test endpoint.
+    test_detail: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class PlatformSMSCredentialUpdate(BaseModel):
+    api_key: str
+    sender_id: str
+    is_active: bool = True
+
+
+# --- Platform notification SMS credentials (platform owner only) ---
+#
+# Same shape as the gateway credential above, deliberately a distinct pair so
+# the two can never be posted to the wrong endpoint by sharing a model.
+
+class PlatformNotificationSMSCredentialResponse(BaseModel):
+    provider: str
+    api_key_masked: Optional[str] = None
+    sender_id: Optional[str] = None
+    is_stored: bool
+    stored_updated_at: Optional[datetime] = None
+    is_active: bool
+    last_validated_at: Optional[datetime] = None
+    last_validation_error: Optional[str] = None
+    shares_gateway_account: bool = True
+    test_detail: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class PlatformNotificationSMSCredentialUpdate(BaseModel):
+    api_key: str
+    sender_id: str
+    is_active: bool = True
+    # Stated, not detected: two API keys on one Arkesel account are
+    # indistinguishable from here. Drives whether the reconciliation job treats
+    # balance drift as actionable — see jobs/sms_reconciliation.
+    shares_gateway_account: bool = True
 
 
 # --- Platform payment credentials (platform owner only) ---

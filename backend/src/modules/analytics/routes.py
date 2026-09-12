@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
 from src.db.models import PaymentTransaction, Plan, ResellerVoucherAllocation, Router, Session, Voucher
+from src.modules.payments.filters import REAL_TRANSACTIONS_ONLY
 from src.middleware.auth import TenantContext, get_admin_tenant_context
 from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 
@@ -47,6 +48,7 @@ async def analytics_snapshot(
                 PaymentTransaction.isp_operator_id == operator_id,
                 PaymentTransaction.status == "success",
                 PaymentTransaction.completed_at >= month_start,
+                REAL_TRANSACTIONS_ONLY,
             )
         )
     ).one()
@@ -81,6 +83,7 @@ async def analytics_snapshot(
         PaymentTransaction.isp_operator_id == operator_id,
         PaymentTransaction.status == "success",
         PaymentTransaction.voucher_id.isnot(None),
+        REAL_TRANSACTIONS_ONLY,
     )
     sold_via_reseller = (
         select(ResellerVoucherAllocation.voucher_id.label("voucher_id"))
@@ -125,6 +128,7 @@ async def analytics_snapshot(
         PaymentTransaction.isp_operator_id == operator_id,
         PaymentTransaction.status == "success",
         PaymentTransaction.completed_at >= month_start,
+        REAL_TRANSACTIONS_ONLY,
     )
     reseller_sales = (
         select(
@@ -240,6 +244,7 @@ async def analytics_trends(
                 PaymentTransaction.isp_operator_id == operator_id,
                 PaymentTransaction.status == "success",
                 PaymentTransaction.completed_at >= start,
+                REAL_TRANSACTIONS_ONLY,
             )
             .group_by(revenue_day)
         )

@@ -16,6 +16,7 @@ from src.db.base import async_session_factory
 from src.db.models import ISPOperator, OperatorInvoice
 from src.modules.billing.service import PAYSTACK_MINIMUM_GHS, create_invoice
 from src.modules.notifications import dispatcher as notify
+from src.modules.sms.billing_rollup import roll_up_sms_usage
 
 logger = structlog.get_logger(__name__)
 
@@ -84,6 +85,11 @@ async def generate_monthly_invoices(ctx=None):
                         continue
 
                     invoice = await create_invoice(db, op, period_start, period_end)
+                    # Before the notify call, so the notified amount includes
+                    # any rolled-up SMS usage, not just the subscription line.
+                    await roll_up_sms_usage(
+                        db, operator_id=op.id, invoice=invoice, period_start=period_start
+                    )
                     generated += 1
 
                     billing_url = f"{get_settings().platform_app_url}/admin/billing"

@@ -13,6 +13,7 @@ from src.db.models import CoAEvent, PaymentTransaction
 from src.jobs.queue import get_redis_pool
 from src.middleware.auth import TenantContext, get_admin_tenant_context
 from src.modules.payments.dependencies import get_payment_service
+from src.modules.payments.filters import REAL_TRANSACTIONS_ONLY
 from src.modules.payments.service import PaymentService
 from src.modules.payments.types import PaymentMethod, PaymentStatus
 
@@ -26,7 +27,11 @@ def _payment_filters(
     start_date: datetime | None,
     end_date: datetime | None,
 ):
-    clauses = []
+    # Internal test artifacts are never an operator's business. Applied here
+    # so both consumers of this helper (listing, export) inherit it. The
+    # /summary aggregates below cannot use this helper — see filters.py — so
+    # they apply REAL_TRANSACTIONS_ONLY directly.
+    clauses = [REAL_TRANSACTIONS_ONLY]
     if status:
         clauses.append(PaymentTransaction.status == status)
     if payment_method:
@@ -75,6 +80,7 @@ async def payment_summary(db: AsyncSession = Depends(get_db), tenant: TenantCont
                 PaymentTransaction.status == PaymentStatus.SUCCESS.value,
                 PaymentTransaction.isp_operator_id == tenant.isp_operator_id,
                 PaymentTransaction.completed_at >= day_start,
+                REAL_TRANSACTIONS_ONLY,
             )
         )
     ).scalar()
@@ -84,6 +90,7 @@ async def payment_summary(db: AsyncSession = Depends(get_db), tenant: TenantCont
                 PaymentTransaction.status == PaymentStatus.SUCCESS.value,
                 PaymentTransaction.isp_operator_id == tenant.isp_operator_id,
                 PaymentTransaction.completed_at >= month_start,
+                REAL_TRANSACTIONS_ONLY,
             )
         )
     ).scalar()
@@ -93,6 +100,7 @@ async def payment_summary(db: AsyncSession = Depends(get_db), tenant: TenantCont
                 PaymentTransaction.status == PaymentStatus.SUCCESS.value,
                 PaymentTransaction.isp_operator_id == tenant.isp_operator_id,
                 PaymentTransaction.completed_at >= day_start,
+                REAL_TRANSACTIONS_ONLY,
             )
         )
     ).scalar()
@@ -101,6 +109,7 @@ async def payment_summary(db: AsyncSession = Depends(get_db), tenant: TenantCont
             select(func.count()).select_from(PaymentTransaction).where(
                 PaymentTransaction.status == PaymentStatus.PENDING.value,
                 PaymentTransaction.isp_operator_id == tenant.isp_operator_id,
+                REAL_TRANSACTIONS_ONLY,
             )
         )
     ).scalar()
@@ -110,6 +119,7 @@ async def payment_summary(db: AsyncSession = Depends(get_db), tenant: TenantCont
                 PaymentTransaction.status == PaymentStatus.FAILED.value,
                 PaymentTransaction.isp_operator_id == tenant.isp_operator_id,
                 PaymentTransaction.completed_at >= day_start,
+                REAL_TRANSACTIONS_ONLY,
             )
         )
     ).scalar()

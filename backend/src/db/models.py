@@ -107,25 +107,41 @@ class OperatorPaymentCredential(Base):
 
 class OperatorSMSCredential(Base):
     """An operator's own SMS-gateway keys for delivering voucher codes to their
-    customers. Bring-your-own only — Hubtel or Africa's Talking; the operator is
-    billed by that gateway directly.
+    customers, OR their selection marker for the platform-provided gateway.
+
+    Bring-your-own rows (Hubtel, Africa's Talking, Arkesel): the operator is
+    billed by that gateway directly, credentials_encrypted holds their real
+    keys.
+
+    ``arkesel_platform`` (added by migration 035) is different in kind, not
+    just another provider: it carries no real secrets —
+    credentials_encrypted is an encrypted empty placeholder blob, never
+    decoded for anything. The row exists purely so the existing
+    ``uq_operator_sms_credentials_one_active`` partial unique index can
+    guarantee at most one active SMS selection per operator, platform-gateway
+    included, without a second mutual-exclusion mechanism. Real credentials
+    for this option live in [[PlatformSMSCredential]] instead — see
+    sms.provider_resolver's branch for arkesel_platform and
+    sms.credentials_routes' dedicated ``/activate-platform`` endpoint (the
+    only path allowed to write this provider value; the generic bring-your-own
+    PUT still rejects it via ``credentials.service.resolve_catalog_entry``'s
+    ``configured_by`` check).
 
     Exact structural twin of [[OperatorPaymentCredential]] (see migration 028):
     one row per provider (``UNIQUE(isp_operator_id, provider)``), at most one
     active (partial unique index on ``is_active``), a single Fernet-encrypted
     JSON blob keyed by ``provider_catalog.credential_schema`` field names,
     read/written only via ``credentials.service.{load,dump}_credentials``.
-
-    ``africastalking_platform`` (the platform-gateway option) is deliberately
-    NOT in the ``operator_sms_provider`` enum — its credentials are the
-    platform's, not the operator's.
     """
     __tablename__ = "operator_sms_credentials"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
     isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id", ondelete="CASCADE"), nullable=False)
     provider = Column(
-        ENUM("hubtel", "africastalking", "arkesel", name="operator_sms_provider", create_type=False),
+        ENUM(
+            "hubtel", "africastalking", "arkesel", "arkesel_platform",
+            name="operator_sms_provider", create_type=False,
+        ),
         nullable=False,
     )
     # Fernet token wrapping json.dumps({field_name: value}, sort_keys=True), keyed
@@ -148,6 +164,141 @@ class OperatorSMSCredential(Base):
             postgresql_where=text("is_active"),
         ),
         Index("ix_operator_sms_credentials_isp_operator_id", "isp_operator_id"),
+    )
+
+
+class PlatformSMSCredential(Base):
+    """The platform's own SMS-gateway keys — how the platform-provided SMS
+    option (the operator-facing ``arkesel_platform`` marker in
+    ``operator_sms_credentials.provider``) is actually sent. Not an operator's
+    own keys; see [[OperatorSMSCredential]].
+
+    Structural twin of [[PlatformPaymentCredential]]: at most one active row
+    (partial unique index on ``is_active``, table-wide — there is no
+    per-operator scoping here). Unlike PlatformPaymentCredential's per-field
+    encrypted columns, this follows the newer single-blob shape used by
+    OperatorSMSCredential / OperatorPaymentCredential: one Fernet ciphertext
+    wrapping a JSON blob keyed by provider_catalog.credential_schema field
+    names, read/written only via credentials.service.{load,dump}_credentials.
+    """
+    __tablename__ = "platform_sms_credentials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    provider = Column(
+        ENUM("arkesel", name="platform_sms_provider", create_type=False),
+        nullable=False,
+        server_default="arkesel",
+    )
+    credentials_encrypted = Column(Text, nullable=False)
+    is_active = Column(Boolean, nullable=False, server_default="true")
+    last_validated_at = Column(DateTime(timezone=True), nullable=True)
+    last_validation_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        # At most one active platform SMS credential, table-wide (DDL in
+        # migration 033; matched here so the ORM knows about it).
+        Index(
+            "uq_platform_sms_credentials_one_active",
+            "is_active",
+            unique=True,
+            postgresql_where=text("is_active"),
+        ),
+    )
+
+
+class PlatformNotificationSMSCredential(Base):
+    """The platform's SMS account for notifying OPERATORS — trial expiry,
+    invoice issued, grace period, suspension (see notifications.dispatcher).
+
+    Not to be confused with [[PlatformSMSCredential]], which is the gateway
+    operators resell to their own customers and are billed per segment for.
+    These are deliberately separate accounts, not just separate rows: the
+    reconciliation job compares the gateway account's balance draw-down
+    against SUM(sms_usage_records.segment_count), and a notification send
+    writes no usage record. Sharing one Arkesel account would make every
+    trial-expiry warning register as a missed metering write.
+
+    Same shape as the other two credential stores: single Fernet blob, one
+    active row (partial unique index on is_active), masked on read.
+    """
+    __tablename__ = "platform_notification_sms_credentials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    provider = Column(
+        ENUM("arkesel", name="platform_sms_provider", create_type=False),
+        nullable=False,
+        server_default="arkesel",
+    )
+    credentials_encrypted = Column(Text, nullable=False)
+    is_active = Column(Boolean, nullable=False, server_default="true")
+    last_validated_at = Column(DateTime(timezone=True), nullable=True)
+    last_validation_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "uq_platform_notification_sms_credentials_one_active",
+            "is_active",
+            unique=True,
+            postgresql_where=text("is_active"),
+        ),
+    )
+
+
+class SMSUsageRecord(Base):
+    """One metered send through the platform SMS gateway — the billing-critical
+    audit trail behind the monthly sms_usage invoice rollup.
+
+    Written synchronously, once, at the moment the platform-gateway send is
+    confirmed successful — never from a DLR webhook or a status-poll, both
+    unreliable for per-message billing data (Arkesel's synchronous send
+    response carries no per-message credit/segment field; see
+    ArkeselSMSProvider's class docstring).
+
+    ``segment_count`` is computed locally from the outgoing message text via
+    GSM-7/UCS-2 segmentation rules — never trusted from Arkesel. Both
+    ``rate_ghs_per_segment`` and ``amount_ghs`` are snapshotted at send time
+    from whatever ``provider_catalog.platform_rate_per_segment`` was at that
+    instant; a later rate change never re-prices a row already written.
+    ``amount_ghs`` is rounded to the cent HERE, not at rollup time — the
+    monthly invoice line sums these already-rounded values, so the invoice
+    total is always exactly reconstructable from its component records rather
+    than from add_line_item's quantity*unit_price recomputed after the fact.
+
+    ``invoice_line_item_id`` is NULL until a monthly rollup
+    (billing.service, generate_monthly_invoices) folds this row into an
+    [[OperatorInvoiceLineItem]] of kind ``sms_usage``.
+    """
+    __tablename__ = "sms_usage_records"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id", ondelete="CASCADE"), nullable=False)
+    provider = Column(
+        ENUM("arkesel", name="platform_sms_provider", create_type=False),
+        nullable=False,
+        server_default="arkesel",
+    )
+    provider_reference = Column(Text, nullable=True)
+    segment_count = Column(Integer, nullable=False)
+    rate_ghs_per_segment = Column(Numeric(10, 4), nullable=False)
+    amount_ghs = Column(Numeric(10, 2), nullable=False)
+    sent_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    invoice_line_item_id = Column(
+        UUID(as_uuid=True), ForeignKey("operator_invoice_line_items.id"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Explicit marker for a send made during internal testing. There is no FK
+    # from here to payment_transactions, so marking that side diagnostic can
+    # never reach this row — this flag is the only thing keeping a test send
+    # out of roll_up_sms_usage's sweep. Set deliberately, never inferred.
+    is_diagnostic = Column(Boolean, nullable=False, server_default="false")
+
+    __table_args__ = (
+        CheckConstraint("segment_count > 0", name="ck_sms_usage_records_segment_count_positive"),
+        Index("ix_sms_usage_records_operator_sent_at", "isp_operator_id", "sent_at"),
     )
 
 
@@ -275,11 +426,12 @@ class ProviderCatalogEntry(Base):
     Rows come only from migration 021 / the re-runnable seed — there is no
     create or delete API.  The platform admin writes exactly two fields:
     ``is_available`` (offer this provider to operators) and, on platform-provided
-    SMS entries, ``platform_rate_per_message``.
+    SMS entries, ``platform_rate_per_segment``.
 
     ``is_platform_provided`` distinguishes the two SMS models: True means the
     platform's own gateway credentials are used and operators are billed per
-    message on their monthly invoice; False means the operator brings their own
+    SMS segment on their monthly invoice (segment count computed locally, never
+    from the provider's response); False means the operator brings their own
     credentials and is billed by that gateway directly.  ``credential_schema``
     carries ``configured_by`` ("operator" or "platform_admin") plus the field
     descriptors the later operator-config UI renders.
@@ -301,8 +453,9 @@ class ProviderCatalogEntry(Base):
     is_integrated = Column(Boolean, nullable=False, server_default="false")
     is_available = Column(Boolean, nullable=False, server_default="false")
     is_platform_provided = Column(Boolean, nullable=False, server_default="false")
-    # Only meaningful when is_platform_provided; unused until SMS billing lands.
-    platform_rate_per_message = Column(Numeric(10, 4), nullable=True)
+    # Only meaningful when is_platform_provided. Per SMS segment, not per
+    # message — see [[SMSUsageRecord]].
+    platform_rate_per_segment = Column(Numeric(10, 4), nullable=True)
     sort_order = Column(Integer, nullable=False, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -314,7 +467,7 @@ class ProviderCatalogEntry(Base):
             name="ck_provider_catalog_available_requires_integrated",
         ),
         CheckConstraint(
-            "platform_rate_per_message IS NULL OR is_platform_provided",
+            "platform_rate_per_segment IS NULL OR is_platform_provided",
             name="ck_provider_catalog_rate_requires_platform_provided",
         ),
     )
@@ -581,6 +734,12 @@ class PaymentTransaction(Base):
     last_status_check_at = Column(DateTime(timezone=True), nullable=True)
     ip_address = Column(INET, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Explicit, deliberately-set marker for an internal/test transaction —
+    # never inferred from failure_reason text (real provider error messages
+    # live there too; matching on wording would be fragile and could hide a
+    # genuine operator transaction). Operator-facing queries filter on this,
+    # not on any status or reason heuristic.
+    is_diagnostic = Column(Boolean, nullable=False, server_default="false")
 
     voucher = relationship("Voucher", back_populates="payment_transactions")
     plan = relationship("Plan", back_populates="payment_transactions")
@@ -738,7 +897,7 @@ class OperatorInvoiceLineItem(Base):
     )
     description = Column(Text, nullable=False)
     quantity = Column(Numeric(12, 4), nullable=False, server_default="1")
-    # 4dp, matching provider_catalog.platform_rate_per_message.
+    # 4dp, matching provider_catalog.platform_rate_per_segment.
     unit_price_ghs = Column(Numeric(10, 4), nullable=False)
     # 2dp — money, and what the invoice total sums.
     amount_ghs = Column(Numeric(10, 2), nullable=False)

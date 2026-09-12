@@ -1,15 +1,14 @@
+"""Voucher SMS message construction.
+
+The process-wide SMSService/build_sms_service that used to live here was
+removed once operator notifications moved to platform_notification_sms_credentials
+(migration 039) and voucher delivery moved to per-operator resolution
+(sms.provider_resolver). Nothing read it afterwards, and its Settings-backed
+credentials could not reflect a change made through the admin UI.
+"""
 from __future__ import annotations
 
-import logging
-
-from src.config import Settings
 from src.db.models import Plan
-from src.modules.sms.providers.africastalking import AfricasTalkingSMSProvider
-from src.modules.sms.providers.base import SMSProvider
-from src.modules.sms.providers.hubtel import HubtelSMSProvider
-from src.modules.sms.types import SMSSendResult
-
-logger = logging.getLogger("sms.service")
 
 
 def _format_duration(plan: Plan) -> str:
@@ -50,49 +49,3 @@ def build_voucher_sms_message(*, code: str, plan: Plan) -> str:
     plan_name = _truncate(plan.name, 12)
     msg = f"Your WiFi voucher: {code}. Plan: {plan_name}. Valid for {duration}. Connect at the login page. Enjoy!"
     return msg[:160]
-
-
-class SMSService:
-    def __init__(self, settings: Settings, provider: SMSProvider | None) -> None:
-        self.settings = settings
-        self.provider = provider
-
-    @property
-    def enabled(self) -> bool:
-        return self.provider is not None
-
-    async def send(self, *, to: str, message: str) -> SMSSendResult | None:
-        if not self.provider:
-            return None
-        return await self.provider.send(to=to, message=message)
-
-
-def build_sms_service(settings: Settings) -> SMSService:
-    """The process-wide SMS service — the PLATFORM's own gateway, used for
-    onboarding/billing notifications (see notifications.dispatcher). Operator
-    voucher-delivery SMS is resolved per-operator instead; see
-    src/modules/sms/provider_resolver.py."""
-    name = (settings.sms_provider or "").strip().lower()
-    provider: SMSProvider | None = None
-
-    if name == "hubtel":
-        provider = HubtelSMSProvider(
-            client_id=settings.hubtel_client_id,
-            client_secret=settings.hubtel_client_secret,
-            sender_id=settings.hubtel_from,
-        )
-    elif name in {"africastalking", "africas_talking", "africas-talking"}:
-        provider = AfricasTalkingSMSProvider(
-            api_key=settings.africastalking_api_key,
-            username=settings.africastalking_username,
-            sender_id=settings.africastalking_from,
-        )
-    elif name:
-        logger.warning("sms_provider_unrecognized value=%s sms_disabled=true", name)
-        provider = None
-    else:
-        logger.warning("sms_provider_missing sms_disabled=true")
-        provider = None
-
-    return SMSService(settings=settings, provider=provider)
-

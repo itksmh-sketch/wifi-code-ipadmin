@@ -11,6 +11,17 @@
       font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(-8px);
       transition:opacity .2s,transform .2s;pointer-events:none}
     #toast.show{opacity:1;transform:translateY(0)}
+    #toast.bad{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.16);color:#fca5a5}
+
+    .kv{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;font-size:13px;margin-bottom:18px}
+    .kv dt{color:var(--muted)}
+    .kv dd{margin:0}
+    .mask{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}
+    .mask .dots{color:var(--muted)}
+    .badge.unset{background:rgba(148,163,184,.1);border-color:var(--border);color:var(--muted)}
+    .badge.off{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.45);color:#fcd34d}
+    .badge.db{background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.35);color:#c7d2fe}
+    .divider{height:1px;background:var(--border);margin:20px 0}
   </style>
 </head>
 <body>
@@ -22,6 +33,7 @@
       <a href="/platform/analytics" class="btn">Analytics</a>
       <a href="/platform/providers" class="btn">Providers</a>
       <a href="/platform/billing" class="btn">Billing</a>
+      <a href="/platform/transactions" class="btn">Transactions</a>
       <a href="/platform/health" class="btn">Service Health</a>
       <button class="btn" id="logout-btn">Logout</button>
     </div>
@@ -49,6 +61,76 @@
         <a href="/platform/operators" class="btn">Cancel</a>
       </div>
     </form>
+  </div>
+
+  <!-- ── Operator notification SMS ────────────────────────────────────── -->
+  <div id="notif-loading" style="text-align:center;padding:30px 0;color:var(--muted)">Loading notification SMS…</div>
+
+  <div id="notif-card" style="display:none">
+    <div class="card" style="max-width:600px;margin-top:16px">
+      <div class="card-header">
+        <h2 class="card-title">Operator Notification SMS</h2>
+        <span id="notif-badge" class="badge unset">—</span>
+      </div>
+
+      <p class="text-muted" style="margin-top:0">
+        Used only to text <strong>operators</strong> about their own account — trial expiry,
+        invoices issued, grace period, suspension. This is <strong>not</strong> the SMS gateway
+        operators resell to their customers; that one lives on the
+        <a href="/platform/providers">Providers</a> page and is billed per segment.
+        A <strong>separate Arkesel account</strong> is preferred — the gateway's balance is
+        reconciled against metered usage, and notification spend on the same account cannot be
+        told apart from it. A second key on the same account works meanwhile; tick the box below
+        so the reconciliation job knows not to treat the resulting drift as a fault.
+      </p>
+
+      <dl class="kv">
+        <dt>Status</dt>         <dd id="notif-status">—</dd>
+        <dt>API key</dt>        <dd id="notif-key" class="mask">—</dd>
+        <dt>Sender ID</dt>      <dd id="notif-sender">—</dd>
+        <dt>Last validated</dt> <dd id="notif-validated">—</dd>
+      </dl>
+
+      <div id="notif-error" class="notice bad" style="display:none;margin-bottom:18px"></div>
+
+      <div class="divider"></div>
+
+      <form id="notif-form" novalidate>
+        <label>Arkesel API Key</label>
+        <input id="notif_api_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="Enter to set or replace">
+
+        <label>Sender ID</label>
+        <input id="notif_sender_id" type="text" autocomplete="off" spellcheck="false" placeholder="Registered Arkesel sender ID">
+
+        <label style="display:flex;align-items:center;gap:8px;margin-top:16px">
+          <input id="notif_is_active" type="checkbox" checked style="width:auto;margin:0">
+          <span style="color:var(--text);font-size:13px">Active — send operator notifications through this account</span>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
+          <input id="notif_shares_account" type="checkbox" checked style="width:auto;margin:0">
+          <span style="color:var(--text);font-size:13px">This key is on the <strong>same Arkesel account</strong> as the gateway</span>
+        </label>
+        <p class="text-muted" style="margin:6px 0 0 26px">
+          Two keys on one account share a balance, so the reconciliation job cannot separate
+          notification spend from metered gateway spend — it reports drift without alerting while
+          this is ticked. Untick it once notifications have their own Arkesel account and drift
+          alerts become meaningful again on the next run.
+        </p>
+
+        <p class="text-muted" style="margin:10px 0 0">
+          Encrypted at rest; only the last 4 characters are ever shown again. Both fields are
+          required together. With nothing active here, notification SMS is skipped and logged —
+          emails still send.
+        </p>
+
+        <div class="spacer"></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn primary" type="submit" id="notif-save-btn">Save keys</button>
+          <button class="btn" type="button" id="notif-test-btn">Test connection</button>
+        </div>
+      </form>
+    </div>
   </div>
 
   <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
@@ -97,13 +179,122 @@ function hideError() {
 }
 
 let toastTimer = null;
-function showToast(text) {
+function showToast(text, bad) {
   const t = document.getElementById('toast');
   t.textContent = text;
-  t.classList.add('show');
+  t.className = bad ? 'bad show' : 'show';
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
 }
+
+// ── Operator notification SMS ─────────────────────────────────────────────
+function notifFmtDate(iso) {
+  if (!iso) return '<span class="text-muted">never</span>';
+  return new Date(iso).toLocaleString();
+}
+
+function renderNotif(d) {
+  let badgeClass = 'unset', badgeText = 'No keys', status = '<span class="badge unset">Not configured</span>';
+  if (d.is_stored && d.is_active) {
+    badgeClass = 'db'; badgeText = 'In use'; status = '<span class="badge active">In use</span>';
+  } else if (d.is_stored) {
+    badgeClass = 'off'; badgeText = 'Switched off'; status = '<span class="badge off">Stored — switched off</span>';
+  }
+
+  document.getElementById('notif-key').innerHTML =
+    d.api_key_masked ? d.api_key_masked : '<span class="dots">not set</span>';
+  document.getElementById('notif-sender').textContent = d.sender_id || '—';
+  document.getElementById('notif-validated').innerHTML = notifFmtDate(d.last_validated_at);
+  document.getElementById('notif-status').innerHTML = status;
+
+  const badge = document.getElementById('notif-badge');
+  badge.className = 'badge ' + badgeClass;
+  badge.textContent = badgeText;
+
+  const err = document.getElementById('notif-error');
+  if (d.last_validation_error) {
+    err.textContent = 'Last test failed: ' + d.last_validation_error;
+    err.style.display = 'block';
+  } else {
+    err.style.display = 'none';
+  }
+
+  document.getElementById('notif_is_active').checked = d.is_stored ? d.is_active : true;
+  document.getElementById('notif_shares_account').checked =
+    d.is_stored ? d.shares_gateway_account : true;
+  document.getElementById('notif-loading').style.display = 'none';
+  document.getElementById('notif-card').style.display = 'block';
+}
+
+async function loadNotif() {
+  try {
+    const res = await api('/api/v1/platform/notification-sms-credentials');
+    if (!res.ok) throw new Error('Failed to load');
+    renderNotif(await res.json());
+  } catch (e) {
+    document.getElementById('notif-loading').textContent =
+      'Failed to load notification SMS keys. If migration 039 has not run yet, this is expected.';
+  }
+}
+
+document.getElementById('notif-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  hideError();
+  const api_key = document.getElementById('notif_api_key').value.trim();
+  const sender_id = document.getElementById('notif_sender_id').value.trim();
+  if (!api_key || !sender_id) {
+    showError('Both the API key and the Sender ID are required. Re-enter both to change either.');
+    return;
+  }
+  const btn = document.getElementById('notif-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const res = await api('/api/v1/platform/notification-sms-credentials', {
+      method: 'PUT',
+      body: JSON.stringify({
+        api_key, sender_id,
+        is_active: document.getElementById('notif_is_active').checked,
+        shares_gateway_account: document.getElementById('notif_shares_account').checked,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showError(data.detail || 'Failed to save keys.'); }
+    else {
+      document.getElementById('notif_api_key').value = '';
+      document.getElementById('notif_sender_id').value = '';
+      renderNotif(data);
+      showToast('Notification SMS keys saved');
+    }
+  } catch (err) {
+    showError('Network error. Please try again.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save keys';
+  }
+});
+
+document.getElementById('notif-test-btn').addEventListener('click', async () => {
+  hideError();
+  const btn = document.getElementById('notif-test-btn');
+  btn.disabled = true; btn.textContent = 'Testing…';
+  try {
+    const res = await api('/api/v1/platform/notification-sms-credentials/test', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showError(data.detail || 'Test failed.');
+      showToast('Test failed', true);
+      await loadNotif();
+    } else {
+      renderNotif(data);
+      showToast(data.test_detail ? `Connection OK — ${data.test_detail}` : 'Connection OK');
+    }
+  } catch (err) {
+    showError('Network error. Please try again.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Test connection';
+  }
+});
+
+loadNotif();
 
 function fill(settings) {
   KEYS.forEach(k => { document.getElementById(k).value = settings[k] || ''; });

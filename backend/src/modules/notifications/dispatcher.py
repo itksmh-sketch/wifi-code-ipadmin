@@ -8,7 +8,6 @@ from decimal import Decimal
 
 from src.modules.notifications.email.service import get_email_service
 from src.modules.notifications.email import templates as t
-from src.modules.sms.dependencies import get_sms_service
 from src.config import get_settings
 
 logger = logging.getLogger("notifications.dispatcher")
@@ -23,9 +22,45 @@ async def _send_email(to: str, subject: str, html: str, text: str) -> None:
 
 
 async def _send_sms(to: str, message: str) -> None:
+    """Best-effort operator notification SMS.
+
+    Opens its own short-lived session rather than taking a db parameter: the
+    9 notify_* functions below are called from 10 sites across 5 modules
+    (application service, three jobs, the billing webhook), and threading a
+    session through all of them to reach one leaf would be a far larger change
+    than this leaf warrants. Same approach sms.metering takes for the same
+    reason.
+
+    Credentials are read per send — notifications are low volume, and a cached
+    provider could not see a credential change made through the settings card.
+    """
     try:
-        svc = get_sms_service()
-        await svc.send(to=to, message=message)
+        from src.db.base import async_session_factory
+        from src.modules.platform.notification_sms_credentials_service import (
+            resolve_notification_sms,
+        )
+        from src.modules.sms.providers.arkesel import ArkeselSMSProvider
+
+        async with async_session_factory() as db:
+            resolved = await resolve_notification_sms(db)
+
+        if resolved is None:
+            logger.warning("notification_sms_skipped to=%s reason=no_active_credential", to)
+            return
+
+        # Constructed directly rather than through sms.providers.registry: that
+        # registry maps an OPERATOR's chosen provider to an implementation, and
+        # its three arkesel branches already differ only in credential key
+        # naming. This path is never operator-chosen — it is always the
+        # platform's own account — so a fourth near-identical branch would add
+        # nothing but another thing to keep in sync.
+        _, credentials = resolved
+        provider = ArkeselSMSProvider(
+            api_key=credentials["api_key"], sender_id=credentials["sender_id"]
+        )
+        result = await provider.send(to=to, message=message)
+        if result is not None and not result.success:
+            logger.error("notification_sms_failed to=%s error=%s", to, result.error)
     except Exception as exc:
         logger.error("notification_sms_error to=%s error=%s", to, exc)
 

@@ -48,6 +48,11 @@ async def platform_providers_page():
     return FileResponse(_DIR / "providers.html")
 
 
+@router.get("/platform/transactions", include_in_schema=False)
+async def platform_transactions_page():
+    return FileResponse(_DIR / "transactions.html")
+
+
 @router.get("/platform/health", include_in_schema=False)
 async def platform_health_page():
     return FileResponse(_DIR / "health.html")

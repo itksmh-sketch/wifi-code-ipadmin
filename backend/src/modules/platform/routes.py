@@ -17,11 +17,14 @@ from src.db.models import (
     PaymentTransaction,
     PlatformOwner,
     PlatformPaymentCredential,
+    PlatformNotificationSMSCredential,
+    PlatformSMSCredential,
     Plan,
     ProviderCatalogEntry,
     Router,
     RouterCredential,
     RouterSetupStatus,
+    SMSUsageRecord,
     Session,
     Site,
     Town,
@@ -33,8 +36,9 @@ from src.modules.mikrotik import setup_status as setup_store
 # drill-down can never disagree with what an operator's own dashboard shows.
 from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 from src.middleware.rate_limit import enforce_rate_limit
-from src.schemas import DefaultMonthlyFeeUpdate, LoginRequest, PlatformAdminCreate, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse
+from src.schemas import DefaultMonthlyFeeUpdate, LoginRequest, PlatformAdminCreate, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, PlatformNotificationSMSCredentialResponse, PlatformNotificationSMSCredentialUpdate, PlatformSMSCredentialResponse, PlatformSMSCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse, TransactionDiagnosticUpdate
 from src.modules.billing.service import DEFAULT_MONTHLY_FEE_KEY, get_default_monthly_fee
+from src.modules.payments.filters import REAL_TRANSACTIONS_ONLY
 from src.utils.encryption import encrypt_secret
 from src.utils.auth import (
     create_platform_owner_access_token,
@@ -109,6 +113,7 @@ async def _operator_row(db: AsyncSession, operator: ISPOperator) -> dict:
                 PaymentTransaction.isp_operator_id == operator.id,
                 PaymentTransaction.status == "success",
                 PaymentTransaction.completed_at >= start,
+                REAL_TRANSACTIONS_ONLY,
             )
         )
     ).scalar() or 0
@@ -802,6 +807,207 @@ async def platform_billing_invoices(
     }
 
 
+# --- Payment transactions (platform owner only) ---
+#
+# Internal tool, not operator-facing: a way to flag a stray test/diagnostic
+# transaction so it can be filtered out of an operator's own transaction
+# history (#4 billing tab), replacing ad hoc SQL edits. No existing view
+# showed individual transactions before this — operator_detail.html and
+# operators.html only ever aggregate PaymentTransaction, they don't list rows.
+
+_TERMINAL_TRANSACTION_STATUSES = {"success", "failed", "reversed"}
+
+
+@router.get("/payment-transactions")
+async def list_payment_transactions(
+    page: int = 1,
+    page_size: int = 50,
+    operator_id: uuid.UUID | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Paginated list of every transaction, newest first. Same pattern as
+    /billing/invoices above: clamped page_size, deterministic
+    initiated_at DESC, id DESC ordering, a page past the end returns empty.
+
+    Unlike the operator-facing /billing/transactions, there is deliberately no
+    tenant predicate here — this view is platform-owner-scoped and spans every
+    operator, so operator_id is an optional filter rather than a boundary.
+    Diagnostic rows are shown too: this is the page you flag them from."""
+    page = max(1, page)
+    page_size = max(1, min(page_size, _INVOICES_PAGE_SIZE_MAX))
+
+    # Built once, applied to both the count and the page query, so a total can
+    # never disagree with the rows it is counting.
+    filters = []
+    if operator_id:
+        filters.append(PaymentTransaction.isp_operator_id == operator_id)
+    if start_date:
+        filters.append(PaymentTransaction.initiated_at >= start_date)
+    if end_date:
+        filters.append(PaymentTransaction.initiated_at <= end_date)
+
+    total_count = (
+        await db.execute(
+            select(func.count()).select_from(PaymentTransaction).where(*filters)
+        )
+    ).scalar() or 0
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+
+    rows = (
+        await db.execute(
+            select(PaymentTransaction, ISPOperator.name, ISPOperator.slug)
+            .join(ISPOperator, PaymentTransaction.isp_operator_id == ISPOperator.id)
+            .where(*filters)
+            .order_by(PaymentTransaction.initiated_at.desc(), PaymentTransaction.id.desc())
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        )
+    ).all()
+
+    return {
+        "transactions": [
+            {
+                "id": str(tx.id),
+                "operator_name": name,
+                "operator_slug": slug,
+                "amount_ghs": float(tx.amount_ghs),
+                "payment_method": tx.payment_method,
+                "provider": tx.provider,
+                "status": tx.status,
+                "is_diagnostic": bool(tx.is_diagnostic),
+                "phone_number": tx.phone_number,
+                "internal_reference": tx.internal_reference,
+                "initiated_at": tx.initiated_at.isoformat() if tx.initiated_at else None,
+            }
+            for tx, name, slug in rows
+        ],
+        "page": page,
+        "page_size": page_size,
+        "total_count": total_count,
+        "total_pages": total_pages,
+    }
+
+
+@router.patch("/payment-transactions/{transaction_id}/diagnostic")
+async def set_transaction_diagnostic(
+    transaction_id: uuid.UUID,
+    body: TransactionDiagnosticUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Flag (or un-flag, for a mistaken mark) a transaction as an internal
+    test artifact. Only terminal transactions — success/failed/reversed —
+    can be marked; an in-flight one being flagged mid-flow doesn't mean
+    anything, so this is a 409, not a silently-ignored write."""
+    tx = (
+        await db.execute(select(PaymentTransaction).where(PaymentTransaction.id == transaction_id))
+    ).scalar_one_or_none()
+    if tx is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if tx.status not in _TERMINAL_TRANSACTION_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only terminal transactions ({', '.join(sorted(_TERMINAL_TRANSACTION_STATUSES))}) can be marked diagnostic.",
+        )
+
+    tx.is_diagnostic = body.is_diagnostic
+    await db.commit()
+    return {"id": str(tx.id), "is_diagnostic": bool(tx.is_diagnostic)}
+
+
+# --- SMS usage records (platform owner only) ---
+#
+# The other half of a platform-gateway send. Deliberately its own list rather
+# than a column on the transactions table above: sms_usage_records has no FK to
+# payment_transactions, so the two can only be correlated by operator + a few
+# seconds of timing, which is not a relationship this endpoint should pretend
+# to have. Flagging one does not flag the other.
+
+
+@router.get("/sms-usage-records")
+async def list_sms_usage_records(
+    page: int = 1,
+    page_size: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Paginated list of every metered platform-gateway send, newest first.
+    Same pagination contract as /billing/invoices and /payment-transactions."""
+    page = max(1, page)
+    page_size = max(1, min(page_size, _INVOICES_PAGE_SIZE_MAX))
+
+    total_count = (
+        await db.execute(select(func.count()).select_from(SMSUsageRecord))
+    ).scalar() or 0
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+
+    rows = (
+        await db.execute(
+            select(SMSUsageRecord, ISPOperator.name, ISPOperator.slug)
+            .join(ISPOperator, SMSUsageRecord.isp_operator_id == ISPOperator.id)
+            .order_by(SMSUsageRecord.sent_at.desc(), SMSUsageRecord.id.desc())
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        )
+    ).all()
+
+    return {
+        "records": [
+            {
+                "id": str(rec.id),
+                "operator_name": name,
+                "operator_slug": slug,
+                "segment_count": rec.segment_count,
+                "rate_ghs_per_segment": str(rec.rate_ghs_per_segment),
+                "amount_ghs": float(rec.amount_ghs),
+                "provider_reference": rec.provider_reference,
+                "sent_at": rec.sent_at.isoformat() if rec.sent_at else None,
+                "is_billed": rec.invoice_line_item_id is not None,
+                "is_diagnostic": bool(rec.is_diagnostic),
+            }
+            for rec, name, slug in rows
+        ],
+        "page": page,
+        "page_size": page_size,
+        "total_count": total_count,
+        "total_pages": total_pages,
+    }
+
+
+@router.patch("/sms-usage-records/{record_id}/diagnostic")
+async def set_sms_usage_diagnostic(
+    record_id: uuid.UUID,
+    body: TransactionDiagnosticUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Flag (or un-flag) a metered send as an internal test artifact, excluding
+    it from roll_up_sms_usage.
+
+    409 once the row has already been billed: the charge is on an issued
+    invoice by then, and clearing the flag here would not remove it from that
+    invoice — it would only make the record disagree with what the operator was
+    actually charged. Unbilled rows are the only ones this can still change the
+    outcome for."""
+    rec = (
+        await db.execute(select(SMSUsageRecord).where(SMSUsageRecord.id == record_id))
+    ).scalar_one_or_none()
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Usage record not found")
+    if rec.invoice_line_item_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This usage record has already been billed on an invoice and can no longer be flagged.",
+        )
+
+    rec.is_diagnostic = body.is_diagnostic
+    await db.commit()
+    return {"id": str(rec.id), "is_diagnostic": bool(rec.is_diagnostic)}
+
+
 @router.put("/operators/{operator_id}/billing")
 async def update_operator_billing(
     operator_id: uuid.UUID,
@@ -992,8 +1198,8 @@ def _catalog_row(entry: ProviderCatalogEntry) -> dict:
         "is_platform_provided": bool(entry.is_platform_provided),
         # String, not float: the rate is Numeric(10,4) and money must not go
         # through a binary float on the way to the browser.
-        "platform_rate_per_message": (
-            str(entry.platform_rate_per_message) if entry.platform_rate_per_message is not None else None
+        "platform_rate_per_segment": (
+            str(entry.platform_rate_per_segment) if entry.platform_rate_per_segment is not None else None
         ),
         "sort_order": entry.sort_order,
     }
@@ -1052,8 +1258,8 @@ async def update_provider_catalog_entry(
         entry.is_available = body.is_available
 
     if body.clear_platform_rate:
-        entry.platform_rate_per_message = None
-    elif body.platform_rate_per_message is not None:
+        entry.platform_rate_per_segment = None
+    elif body.platform_rate_per_segment is not None:
         if not entry.is_platform_provided:
             raise HTTPException(
                 status_code=400,
@@ -1062,7 +1268,7 @@ async def update_provider_catalog_entry(
                     "provider directly, so there is no platform rate to set."
                 ),
             )
-        entry.platform_rate_per_message = body.platform_rate_per_message
+        entry.platform_rate_per_segment = body.platform_rate_per_segment
 
     entry.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -1213,3 +1419,228 @@ async def test_platform_payment_credentials(
         row.last_validation_error = None
         await db.commit()
     return await _credential_response(db)
+
+
+# --- Platform SMS credentials (platform owner only) ---
+#
+# The platform's own Arkesel keys — how the platform-provided SMS gateway
+# option (the operator-facing arkesel_platform marker in
+# operator_sms_credentials.provider) is actually sent. Distinct from
+# /sms-credentials, which is an operator's own bring-your-own keys.
+#
+# Single-blob shape (platform_sms_credentials.credentials_encrypted), not
+# PlatformPaymentCredential's per-field columns — see PlatformSMSCredential's
+# model docstring. No .env fallback: a platform-gateway send with nothing
+# stored here is simply refused, not silently degraded.
+
+async def _sms_credential_response(
+    db: AsyncSession, test_detail: str | None = None
+) -> PlatformSMSCredentialResponse:
+    from src.modules.credentials.service import load_credentials, mask
+    from src.modules.platform import platform_sms_credentials_service as creds_service
+
+    row = await creds_service.get_credential(db)
+    api_key_masked = None
+    sender_id = None
+    if row is not None:
+        values = load_credentials(row)
+        api_key_masked = mask(values.get("api_key"))
+        sender_id = values.get("sender_id")
+    return PlatformSMSCredentialResponse(
+        provider=row.provider if row else creds_service.ARKESEL,
+        api_key_masked=api_key_masked,
+        sender_id=sender_id,
+        is_stored=row is not None,
+        stored_updated_at=row.updated_at if row else None,
+        is_active=bool(row.is_active) if row else False,
+        last_validated_at=row.last_validated_at if row else None,
+        last_validation_error=row.last_validation_error if row else None,
+        test_detail=test_detail,
+    )
+
+
+@router.get("/sms-credentials", response_model=PlatformSMSCredentialResponse)
+async def get_platform_sms_credentials(
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Masked view of the platform's own Arkesel keys."""
+    return await _sms_credential_response(db)
+
+
+@router.put("/sms-credentials", response_model=PlatformSMSCredentialResponse)
+async def update_platform_sms_credentials(
+    body: PlatformSMSCredentialUpdate,
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Store the platform's Arkesel keys, encrypted at rest as a single Fernet
+    blob — the same shape an operator's own sms credentials use."""
+    from src.modules.credentials.service import dump_credentials
+    from src.modules.platform import platform_sms_credentials_service as creds_service
+
+    if not body.api_key.strip() or not body.sender_id.strip():
+        raise HTTPException(status_code=400, detail="api_key and sender_id are both required")
+
+    row = await creds_service.get_credential(db)
+    if row is None:
+        row = PlatformSMSCredential(provider=creds_service.ARKESEL)
+        db.add(row)
+
+    row.credentials_encrypted = dump_credentials(
+        {"api_key": body.api_key.strip(), "sender_id": body.sender_id.strip()}
+    )
+    row.is_active = body.is_active
+    # The keys changed, so any previous validation result no longer describes them.
+    row.last_validated_at = None
+    row.last_validation_error = None
+    row.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    return await _sms_credential_response(db)
+
+
+@router.post("/sms-credentials/test", response_model=PlatformSMSCredentialResponse)
+async def test_platform_sms_credentials(
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Auth-only check against Arkesel's balance endpoint — never sends a real
+    message, same discipline as every other provider's Test Connection."""
+    from src.modules.credentials.service import load_credentials
+    from src.modules.platform import platform_sms_credentials_service as creds_service
+    from src.modules.sms.providers.arkesel import ArkeselSMSProvider
+
+    row = await creds_service.get_active_credential(db)
+    if row is None:
+        raise HTTPException(status_code=400, detail="No active platform SMS credential is stored.")
+
+    values = load_credentials(row)
+    provider = ArkeselSMSProvider(api_key=values["api_key"], sender_id=values["sender_id"])
+    try:
+        detail = await provider.verify_credentials()
+    except Exception as exc:
+        row.last_validation_error = str(exc)
+        row.last_validated_at = None
+        await db.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    row.last_validated_at = datetime.now(timezone.utc)
+    row.last_validation_error = None
+    await db.commit()
+    return await _sms_credential_response(
+        db, test_detail=detail if isinstance(detail, str) and detail.strip() else None
+    )
+
+
+# --- Platform NOTIFICATION SMS credentials (platform owner only) ---
+#
+# The account used to text OPERATORS about their own account (trial expiry,
+# invoices, suspension). Distinct from /sms-credentials above, which is the
+# gateway operators resell to their customers — these are separate Arkesel
+# accounts on purpose; see PlatformNotificationSMSCredential's model docstring.
+
+
+async def _notification_sms_response(
+    db: AsyncSession, test_detail: str | None = None
+) -> PlatformNotificationSMSCredentialResponse:
+    from src.modules.credentials.service import load_credentials, mask
+    from src.modules.platform import notification_sms_credentials_service as creds_service
+
+    row = await creds_service.get_credential(db)
+    api_key_masked = None
+    sender_id = None
+    shares_gateway_account = True
+    if row is not None:
+        values = load_credentials(row)
+        api_key_masked = mask(values.get("api_key"))
+        sender_id = values.get("sender_id")
+        shares_gateway_account = bool(values.get("shares_gateway_account", True))
+    return PlatformNotificationSMSCredentialResponse(
+        provider=row.provider if row else creds_service.ARKESEL,
+        api_key_masked=api_key_masked,
+        sender_id=sender_id,
+        is_stored=row is not None,
+        stored_updated_at=row.updated_at if row else None,
+        is_active=bool(row.is_active) if row else False,
+        last_validated_at=row.last_validated_at if row else None,
+        last_validation_error=row.last_validation_error if row else None,
+        shares_gateway_account=shares_gateway_account,
+        test_detail=test_detail,
+    )
+
+
+@router.get("/notification-sms-credentials", response_model=PlatformNotificationSMSCredentialResponse)
+async def get_platform_notification_sms_credentials(
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Masked view of the account used to notify operators."""
+    return await _notification_sms_response(db)
+
+
+@router.put("/notification-sms-credentials", response_model=PlatformNotificationSMSCredentialResponse)
+async def update_platform_notification_sms_credentials(
+    body: PlatformNotificationSMSCredentialUpdate,
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Store the notification account's keys, encrypted at rest."""
+    from src.modules.credentials.service import dump_credentials
+    from src.modules.platform import notification_sms_credentials_service as creds_service
+
+    if not body.api_key.strip() or not body.sender_id.strip():
+        raise HTTPException(status_code=400, detail="api_key and sender_id are both required")
+
+    row = await creds_service.get_credential(db)
+    if row is None:
+        row = PlatformNotificationSMSCredential(provider=creds_service.ARKESEL)
+        db.add(row)
+
+    row.credentials_encrypted = dump_credentials(
+        {
+            "api_key": body.api_key.strip(),
+            "sender_id": body.sender_id.strip(),
+            "shares_gateway_account": body.shares_gateway_account,
+        }
+    )
+    row.is_active = body.is_active
+    row.last_validated_at = None
+    row.last_validation_error = None
+    row.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    return await _notification_sms_response(db)
+
+
+@router.post("/notification-sms-credentials/test", response_model=PlatformNotificationSMSCredentialResponse)
+async def test_platform_notification_sms_credentials(
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Auth-only balance check — never sends a message, same as every other
+    Test Connection in the portal."""
+    from src.modules.credentials.service import load_credentials
+    from src.modules.platform import notification_sms_credentials_service as creds_service
+    from src.modules.sms.providers.arkesel import ArkeselSMSProvider
+
+    row = await creds_service.get_active_credential(db)
+    if row is None:
+        raise HTTPException(status_code=400, detail="No active notification SMS credential is stored.")
+
+    values = load_credentials(row)
+    provider = ArkeselSMSProvider(api_key=values["api_key"], sender_id=values["sender_id"])
+    try:
+        detail = await provider.verify_credentials()
+    except Exception as exc:
+        row.last_validation_error = str(exc)
+        row.last_validated_at = None
+        await db.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    row.last_validated_at = datetime.now(timezone.utc)
+    row.last_validation_error = None
+    await db.commit()
+    return await _notification_sms_response(
+        db, test_detail=detail if isinstance(detail, str) and detail.strip() else None
+    )

@@ -13,15 +13,21 @@ Two SMS delivery models are represented:
     charges nothing.
   * ``is_platform_provided=True`` — the platform's own gateway.  The *platform
     admin's* credentials are used, and operators on this option are billed
-    per-message on their monthly invoice at ``platform_rate_per_message``.
+    per-segment on their monthly invoice at ``platform_rate_per_segment``.
     ``credential_schema.configured_by`` says which side owns the credentials, so
     the operator-facing config UI knows not to ask the operator for keys here.
 
 Re-seeding is idempotent and deliberately partial: display_name, description,
 credential_schema, is_integrated, is_platform_provided and sort_order are
-refreshed from this file, but ``is_available`` and ``platform_rate_per_message``
+refreshed from this file, but ``is_available`` and ``platform_rate_per_segment``
 are never touched — those are the platform admin's choices and a redeploy must
 not clobber them.
+
+``arkesel_platform`` is the platform-provided SMS gateway actually being
+built (metered per segment, computed locally — never from Arkesel's
+response). ``africastalking_platform`` above it is earlier, unrelated
+scaffolding for a different provider that was never built out — it stays
+exactly as it is, ``is_integrated: False``, not repurposed or removed.
 """
 from __future__ import annotations
 
@@ -139,6 +145,35 @@ PROVIDER_CATALOG: list[dict] = [
     },
     {
         "category": "sms",
+        "provider_key": "arkesel_platform",
+        "display_name": "Arkesel (platform gateway)",
+        "description": (
+            "Operators send through the platform's own Arkesel account and are "
+            "billed per SMS segment on their monthly invoice. No operator "
+            "credentials required."
+        ),
+        # The send path (resolver branch, registry branch, metering write,
+        # billing rollup, reconciliation backstop) is built and deployed —
+        # same meaning of is_integrated as hubtel/africastalking/arkesel
+        # (bring-your-own) and flutterwave below: "the code exists", not
+        # "verified live". is_available is the separate, deliberate gate for
+        # that — flipped by the platform admin only after the real live
+        # transaction in docs/deferred-provider-launch-gates.md.
+        "is_integrated": True,
+        "is_available": False,
+        "is_platform_provided": True,
+        "sort_order": 15,
+        "credential_schema": {
+            # Platform admin's own Arkesel account — never asked of an operator.
+            "configured_by": "platform_admin",
+            "fields": [
+                {"name": "api_key", "label": "Arkesel API key", "type": "string", "required": True, "secret": True},
+                {"name": "sender_id", "label": "Sender ID", "type": "string", "required": True, "secret": False},
+            ],
+        },
+    },
+    {
+        "category": "sms",
         "provider_key": "hubtel",
         "display_name": "Hubtel SMS",
         "description": "Operator supplies their own Hubtel credentials and is billed by Hubtel directly.",
@@ -202,7 +237,7 @@ PROVIDER_CATALOG: list[dict] = [
 ]
 
 
-# is_available and platform_rate_per_message are intentionally absent from the
+# is_available and platform_rate_per_segment are intentionally absent from the
 # UPDATE clause: they belong to the platform admin, not to this file.
 _UPSERT_SQL = text(
     """
