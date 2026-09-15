@@ -3,7 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ISP Hotspot Admin</title>
+    <title>IpAdmin</title>
+    <link rel="icon" href="/platform-ui/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png" />
+    <!-- Platform identity tokens + auth-page styles, served by the backend (see
+         backend/src/admin_portal/routes.py). vite-ignore: runtime URLs, not bundled. -->
+    <link rel="stylesheet" href="/platform-ui/tokens.css" vite-ignore />
+    <link rel="stylesheet" href="/platform-ui/auth.css" vite-ignore />
   </head>
   <body>
     <div id="root"></div>

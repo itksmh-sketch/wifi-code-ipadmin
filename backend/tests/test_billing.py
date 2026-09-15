@@ -64,7 +64,7 @@ def _submit_application(isp_name: str, email: str) -> dict:
             "phone": "0244123456",
             "region": "Greater Accra",
             "expected_sites": 2,
-            "message": "Test application",
+            "message": "Test application for the billing suite",
         },
     )
     assert status == 201, body

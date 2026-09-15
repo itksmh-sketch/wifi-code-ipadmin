@@ -1,0 +1,70 @@
+/*
+ * Platform identity tokens — the single source for the platform's own colours.
+ *
+ * Platform-fixed: these are NOT operator branding. Operator-customisable colours
+ * live in the captive portal (portal/statics/style.css + branding.js); neither
+ * system reads or overrides the other.
+ *
+ * Served at /platform-ui/tokens.css (backend/src/admin_portal/routes.py).
+ * Consumers: auth.css (operator apply page + operator login). The admin SPA
+ * loads this file globally via frontend/index.html, so a future SPA visual pass
+ * can use var(--platform-*) directly instead of re-deriving values.
+ */
+:root {
+    /* Signature "Signal" gradient stops */
+    --platform-indigo: #1e1b4b;
+    --platform-blue: #2563eb;
+    --platform-cyan: #06b6d4;
+    --platform-teal: #0e7490;
+    --platform-violet: #6366f1;
+    --platform-gradient: linear-gradient(135deg, var(--platform-indigo) 0%, var(--platform-blue) 55%, var(--platform-cyan) 100%);
+    /* Darker end-stop than the brand gradient so white button text keeps >= 4.5:1 contrast */
+    --platform-gradient-action: linear-gradient(135deg, var(--platform-blue) 0%, var(--platform-teal) 100%);
+
+    /* Ink & surfaces */
+    --platform-ink: #0f172a;
+    --platform-ink-soft: #334155;
+    --platform-muted: #64748b;
+    --platform-subtle: #94a3b8;
+    --platform-border: #e2e8f0;
+    --platform-border-strong: #cbd5e1;
+    --platform-canvas: #f1f5f9;
+    --platform-surface: #ffffff;
+    --platform-field: #f8fafc;
+    --platform-blue-wash: #eff6ff;
+    --platform-blue-edge: #dbeafe;
+
+    /* Status */
+    --platform-success: #15803d;
+    --platform-success-line: rgba(22, 163, 74, 0.55);
+    --platform-warning: #b45309;
+    --platform-warning-line: #f59e0b;
+    --platform-warning-ring: rgba(245, 158, 11, 0.2);
+    --platform-danger: #dc2626;
+    --platform-danger-ring: rgba(220, 38, 38, 0.14);
+    --platform-danger-bg: #fef2f2;
+    --platform-danger-edge: #fecaca;
+    --platform-danger-ink: #991b1b;
+    --platform-focus-ring: rgba(37, 99, 235, 0.18);
+
+    /* Shape, depth, type, motion */
+    --platform-radius: 12px;
+    --platform-radius-lg: 20px;
+    --platform-shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06), 0 18px 48px -18px rgba(15, 23, 42, 0.22);
+    --platform-font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --platform-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+    /* Identity: name + logo mark. The single source both auth pages draw the
+     * lockup from (auth.css .auth-wordmark-*) — neither page's markup hardcodes
+     * the asset path. --platform-mark is consumed as a CSS background-image.
+     * --platform-name documents the string; it is written as literal text in
+     * each page's markup rather than injected via CSS `content` (accessible-name
+     * support for generated content is inconsistent across browsers/AT) — but
+     * every place this token names must read exactly "IpAdmin".
+     * Source: ipadmin_logo.png, mark extracted with a transparent background
+     * (the original is a flattened 727x567 PNG with a baked-in grid backdrop,
+     * unusable as-is at logo/favicon sizes) — see backend/static/platform-ui/.
+     */
+    --platform-name: "IpAdmin";
+    --platform-mark: url("/platform-ui/ipadmin-mark.png");
+}

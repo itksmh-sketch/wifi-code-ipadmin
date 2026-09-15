@@ -16,10 +16,39 @@ from src.modules.applications.schemas import (
     ApplicationSubmit,
     ApplicationResponse,
     ApplicationReject,
+    EmailCheckRequest,
+    EmailCheckResponse,
 )
 
 public_router = APIRouter(prefix="/public", tags=["public"])
 platform_router = APIRouter(prefix="/platform", tags=["platform"])
+
+# Email availability pre-check: generous for a human filling in the form (the
+# page debounces and caches), but caps how fast one IP can probe addresses.
+EMAIL_CHECK_RATE_LIMIT = 20
+EMAIL_CHECK_RATE_WINDOW_SECONDS = 60
+
+
+@public_router.post("/apply/check-email", response_model=EmailCheckResponse)
+async def check_application_email(
+    body: EmailCheckRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Live availability hint for the public apply form.
+
+    Unauthenticated, so it is an enumeration surface by nature. Two mitigations:
+    the answer is a bare boolean (never admin vs. pending vs. approved), and it is
+    rate-limited per IP against bulk harvesting. Submit re-checks authoritatively.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    await enforce_rate_limit(
+        client_ip,
+        "public:apply-email-check",
+        limit=EMAIL_CHECK_RATE_LIMIT,
+        window_seconds=EMAIL_CHECK_RATE_WINDOW_SECONDS,
+    )
+    return {"available": not await service.email_in_use(db, body.email)}
 
 
 @public_router.post("/apply", status_code=201)
@@ -31,7 +60,10 @@ async def submit_application(
     client_ip = request.client.host if request.client else "unknown"
     await enforce_rate_limit(client_ip, "public:apply", limit=3, window_seconds=3600)
 
-    app = await service.submit_application(db, body)
+    try:
+        app = await service.submit_application(db, body)
+    except service.EmailUnavailableError:
+        raise HTTPException(409, service.EMAIL_UNAVAILABLE_MESSAGE)
     return {
         "message": "Your application has been received. We'll review it and contact you within 24-48 hours.",
         "id": str(app.id),
@@ -82,6 +114,14 @@ async def approve_application(
         raise HTTPException(404, "Application not found")
     if app.status != "pending":
         raise HTTPException(400, f"Application is already {app.status}")
+    # admin_users.email is UNIQUE: without this, approval dies on the INSERT with a 500.
+    # Platform-owner-only endpoint, so the specific reason is fine here.
+    if await service.admin_email_exists(db, app.email):
+        raise HTTPException(
+            409,
+            "An admin account with this email already exists, so this application can't be approved. "
+            "Reject it, or change the existing admin's email first.",
+        )
 
     operator, temp_password = await service.approve_application(db, app, owner.id)
     return {

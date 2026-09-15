@@ -3,144 +3,487 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Apply to Join — YourISP Platform</title>
-<style>
-  *, *::before, *::after { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; background: #f8fafc; margin: 0; padding: 24px; color: #1e293b; }
-  .card { max-width: 560px; margin: 40px auto; background: #fff; border-radius: 12px; padding: 40px; box-shadow: 0 2px 16px rgba(0,0,0,0.08); }
-  h1 { margin: 0 0 8px; font-size: 26px; }
-  .sub { color: #64748b; margin-bottom: 28px; font-size: 15px; }
-  label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
-  input, select, textarea { width: 100%; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 12px; font-size: 15px; outline: none; }
-  input:focus, select:focus, textarea:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
-  .field { margin-bottom: 18px; }
-  .error { color: #ef4444; font-size: 13px; margin-top: 4px; display: none; }
-  button[type=submit] { width: 100%; background: #6366f1; color: #fff; border: none; border-radius: 8px; padding: 12px; font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 8px; }
-  button[type=submit]:hover { background: #4f46e5; }
-  button[type=submit]:disabled { background: #a5b4fc; cursor: not-allowed; }
-  .success { background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 24px; text-align: center; display: none; }
-  .success h2 { color: #15803d; margin-top: 0; }
-</style>
+<meta name="theme-color" content="#1e1b4b">
+<title>Apply to Join — IpAdmin</title>
+<link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
+<!-- Platform identity, shared with the operator login (frontend/src/pages/Login.jsx) -->
+<link rel="stylesheet" href="/platform-ui/tokens.css">
+<link rel="stylesheet" href="/platform-ui/auth.css">
 </head>
-<body>
-<div class="card">
-  <div id="form-section">
-    <h1>Apply to Join YourISP Platform</h1>
-    <p class="sub">Fill in the form below. We'll review your application and contact you within 24-48 hours.</p>
+<body class="auth-body">
+<div class="auth-shell">
 
-    <form id="apply-form" novalidate>
-      <div class="field">
-        <label for="isp_name">ISP / Business Name *</label>
-        <input type="text" id="isp_name" name="isp_name" placeholder="e.g. AccraNet ISP" required minlength="3">
-        <div class="error" id="err_isp_name">Must be at least 3 characters.</div>
-      </div>
-      <div class="field">
-        <label for="contact_name">Your Full Name *</label>
-        <input type="text" id="contact_name" name="contact_name" placeholder="e.g. Kwame Mensah" required>
-        <div class="error" id="err_contact_name">Please enter your name.</div>
-      </div>
-      <div class="field">
-        <label for="email">Email Address *</label>
-        <input type="email" id="email" name="email" placeholder="you@example.com" required>
-        <div class="error" id="err_email">Please enter a valid email address.</div>
-      </div>
-      <div class="field">
-        <label for="phone">Phone Number (Ghana) *</label>
-        <input type="tel" id="phone" name="phone" placeholder="e.g. 0244123456" required>
-        <div class="error" id="err_phone">Please enter a valid Ghana mobile number (e.g. 0244123456).</div>
-      </div>
-      <div class="field">
-        <label for="region">Region / Area of Operation *</label>
-        <input type="text" id="region" name="region" placeholder="e.g. Greater Accra" required>
-        <div class="error" id="err_region">Please enter your region.</div>
-      </div>
-      <div class="field">
-        <label for="expected_sites">How many hotspot sites are you planning?</label>
-        <select id="expected_sites" name="expected_sites">
-          <option value="">— Select —</option>
-          <option value="2">1-2 sites</option>
-          <option value="5">3-5 sites</option>
-          <option value="10">6-10 sites</option>
-          <option value="11">10+ sites</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="message">Tell us about your setup (optional)</label>
-        <textarea id="message" name="message" rows="3" placeholder="Anything else you'd like us to know..."></textarea>
-      </div>
-      <div class="error" id="err_submit" style="margin-bottom:8px;font-size:14px;"></div>
-      <button type="submit" id="submit-btn">Apply to Join</button>
-    </form>
-  </div>
+  <aside class="auth-brand">
+    <span class="auth-glow auth-glow--a" aria-hidden="true"></span>
+    <span class="auth-glow auth-glow--b" aria-hidden="true"></span>
+    <div class="auth-signal" aria-hidden="true">
+      <span class="auth-ring"></span><span class="auth-ring"></span><span class="auth-ring"></span>
+      <span class="auth-signal-core"><svg class="auth-icon"><use href="/platform-ui/icons.svg#router"/></svg></span>
+    </div>
 
-  <div class="success" id="success-section">
-    <h2>✓ Application Received!</h2>
-    <p>Thank you for applying. We'll review your application and contact you within <strong>24-48 hours</strong>.</p>
-    <p style="color:#64748b;font-size:14px;">Check your email for a confirmation message.</p>
-  </div>
+    <div class="auth-wordmark auth-reveal" style="--i:0">
+      <span class="auth-wordmark-mark" aria-hidden="true"></span>
+      <span class="auth-wordmark-name">IpAdmin</span>
+    </div>
+
+    <div class="auth-brand-body">
+      <span class="auth-eyebrow auth-reveal" style="--i:1"><span class="auth-eyebrow-dot" aria-hidden="true"></span>For internet service providers in Ghana</span>
+      <h1 class="auth-headline auth-reveal" style="--i:2">Launch and grow your <em>hotspot business</em>.</h1>
+      <p class="auth-lede auth-reveal" style="--i:3">Connect your MikroTik routers, sell vouchers with mobile money, and watch revenue come in — all from one dashboard.</p>
+      <ul class="auth-props">
+        <li class="auth-prop auth-reveal" style="--i:4">
+          <span class="auth-prop-icon"><svg class="auth-icon" aria-hidden="true"><use href="/platform-ui/icons.svg#router"/></svg></span>
+          <span><span class="auth-prop-title">Router management</span><span class="auth-prop-text">Set up and monitor MikroTik routers over a secure VPN tunnel.</span></span>
+        </li>
+        <li class="auth-prop auth-reveal" style="--i:5">
+          <span class="auth-prop-icon"><svg class="auth-icon" aria-hidden="true"><use href="/platform-ui/icons.svg#smartphone"/></svg></span>
+          <span><span class="auth-prop-title">MoMo &amp; card payments</span><span class="auth-prop-text">Customers buy vouchers themselves with mobile money or card.</span></span>
+        </li>
+        <li class="auth-prop auth-reveal" style="--i:6">
+          <span class="auth-prop-icon"><svg class="auth-icon" aria-hidden="true"><use href="/platform-ui/icons.svg#trending-up"/></svg></span>
+          <span><span class="auth-prop-title">Revenue tracking</span><span class="auth-prop-text">See sales, sessions and payouts in real time.</span></span>
+        </li>
+      </ul>
+    </div>
+
+    <div class="auth-brand-foot auth-reveal" style="--i:7">
+      <svg class="auth-icon" aria-hidden="true"><use href="/platform-ui/icons.svg#shield-check"/></svg>
+      Every application is reviewed by our team within 24–48 hours.
+    </div>
+  </aside>
+
+  <main class="auth-main">
+    <div class="auth-stack auth-stack--wide">
+
+      <a class="auth-callout auth-reveal" style="--i:1" href="/admin/login">
+        <span class="auth-callout-icon"><svg class="auth-icon" aria-hidden="true"><use href="/platform-ui/icons.svg#log-in"/></svg></span>
+        <span class="auth-callout-text"><strong>Already registered?</strong>Approved operators sign in to their dashboard.</span>
+        <span class="auth-callout-go"><span>Sign in</span><svg class="auth-icon" aria-hidden="true"><use href="/platform-ui/icons.svg#arrow-right"/></svg></span>
+      </a>
+
+      <section class="auth-card auth-reveal" style="--i:2" id="form-card" aria-labelledby="apply-title">
+        <header class="auth-card-head">
+          <h2 class="auth-title" id="apply-title">Apply to join</h2>
+          <p class="auth-subtitle">Tell us about your business — it takes about two minutes.</p>
+        </header>
+
+        <div class="auth-alert auth-alert--error" id="form-alert" role="alert" hidden>
+          <svg class="auth-icon" aria-hidden="true"><use href="/platform-ui/icons.svg#alert-circle"/></svg>
+          <span id="form-alert-text"></span>
+        </div>
+
+        <form id="apply-form" novalidate>
+          <section class="auth-section" aria-labelledby="sec-business">
+            <h3 class="auth-section-label" id="sec-business">About your business</h3>
+
+            <div class="auth-field" data-field="isp_name">
+              <label class="auth-label" for="isp_name">Business name</label>
+              <div class="auth-control">
+                <svg class="auth-icon auth-lead" aria-hidden="true"><use href="/platform-ui/icons.svg#building"/></svg>
+                <input class="auth-input" id="isp_name" name="isp_name" type="text" autocomplete="organization" placeholder="e.g. AccraNet ISP" aria-describedby="isp_name-msg">
+              </div>
+              <div class="auth-msg" id="isp_name-msg"><div class="auth-msg-inner"><div class="auth-msg-body"></div></div></div>
+            </div>
+
+            <div class="auth-row">
+              <div class="auth-field" data-field="region">
+                <label class="auth-label" for="region">Region</label>
+                <div class="auth-control">
+                  <svg class="auth-icon auth-lead" aria-hidden="true"><use href="/platform-ui/icons.svg#map-pin"/></svg>
+                  <input class="auth-input" id="region" name="region" type="text" list="gh-regions" autocomplete="address-level1" placeholder="e.g. Greater Accra" aria-describedby="region-msg">
+                </div>
+                <div class="auth-msg" id="region-msg"><div class="auth-msg-inner"><div class="auth-msg-body"></div></div></div>
+              </div>
+
+              <div class="auth-field" data-field="expected_sites">
+                <label class="auth-label" for="expected_sites">Hotspot sites <span class="auth-label-aside">Optional</span></label>
+                <div class="auth-control">
+                  <svg class="auth-icon auth-lead" aria-hidden="true"><use href="/platform-ui/icons.svg#router"/></svg>
+                  <select class="auth-input" id="expected_sites" name="expected_sites">
+                    <option value="">Select…</option>
+                    <option value="2">1–2 sites</option>
+                    <option value="5">3–5 sites</option>
+                    <option value="10">6–10 sites</option>
+                    <option value="11">More than 10</option>
+                  </select>
+                  <span class="auth-trail auth-trail--passive" aria-hidden="true"><svg class="auth-icon"><use href="/platform-ui/icons.svg#chevron-down"/></svg></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="auth-field" data-field="message">
+              <label class="auth-label" for="message">Tell us about your setup <span class="auth-label-aside" id="message-count" aria-live="polite"></span></label>
+              <div class="auth-control">
+                <svg class="auth-icon auth-lead" aria-hidden="true"><use href="/platform-ui/icons.svg#message"/></svg>
+                <textarea class="auth-input" id="message" name="message" rows="4" maxlength="2000" placeholder="e.g. We run 3 hotspot sites around Madina market and want customers to pay with MoMo." aria-describedby="message-msg"></textarea>
+              </div>
+              <div class="auth-msg" id="message-msg"><div class="auth-msg-inner"><div class="auth-msg-body"></div></div></div>
+            </div>
+          </section>
+
+          <section class="auth-section" aria-labelledby="sec-contact">
+            <h3 class="auth-section-label" id="sec-contact">How we’ll reach you</h3>
+
+            <div class="auth-field" data-field="contact_name">
+              <label class="auth-label" for="contact_name">Full name</label>
+              <div class="auth-control">
+                <svg class="auth-icon auth-lead" aria-hidden="true"><use href="/platform-ui/icons.svg#user"/></svg>
+                <input class="auth-input" id="contact_name" name="contact_name" type="text" autocomplete="name" placeholder="e.g. Kwame Mensah" aria-describedby="contact_name-msg">
+              </div>
+              <div class="auth-msg" id="contact_name-msg"><div class="auth-msg-inner"><div class="auth-msg-body"></div></div></div>
+            </div>
+
+            <div class="auth-field" data-field="email">
+              <label class="auth-label" for="email">Email address</label>
+              <div class="auth-control">
+                <svg class="auth-icon auth-lead" aria-hidden="true"><use href="/platform-ui/icons.svg#mail"/></svg>
+                <input class="auth-input" id="email" name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false" placeholder="you@yourbusiness.com" aria-describedby="email-msg">
+                <span class="auth-trail auth-trail--passive" id="email-status" aria-hidden="true"></span>
+              </div>
+              <div class="auth-msg" id="email-msg" aria-live="polite"><div class="auth-msg-inner"><div class="auth-msg-body"></div></div></div>
+            </div>
+
+            <div class="auth-field" data-field="phone">
+              <label class="auth-label" for="phone">Phone number</label>
+              <div class="auth-control">
+                <svg class="auth-icon auth-lead" aria-hidden="true"><use href="/platform-ui/icons.svg#phone"/></svg>
+                <input class="auth-input" id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="e.g. 024 412 3456" aria-describedby="phone-msg">
+              </div>
+              <div class="auth-msg" id="phone-msg"><div class="auth-msg-inner"><div class="auth-msg-body"></div></div></div>
+            </div>
+          </section>
+
+          <button class="auth-btn" type="submit" id="submit-btn" aria-busy="false">
+            <span class="auth-btn-face auth-btn-face--idle">Submit application <svg class="auth-icon" aria-hidden="true"><use href="/platform-ui/icons.svg#arrow-right"/></svg></span>
+            <span class="auth-btn-face auth-btn-face--busy" aria-hidden="true"><svg class="auth-icon auth-spin" aria-hidden="true"><use href="/platform-ui/icons.svg#loader"/></svg>Submitting…</span>
+          </button>
+        </form>
+      </section>
+
+      <section class="auth-card auth-success auth-reveal" id="success-card" tabindex="-1" aria-labelledby="success-title" hidden>
+        <div class="auth-success-badge" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></div>
+        <h2 class="auth-title" id="success-title">Application received!</h2>
+        <p class="auth-subtitle">Thanks for applying. Here’s what happens next.</p>
+        <ol class="auth-steps">
+          <li class="auth-step">
+            <span class="auth-step-icon"><svg class="auth-icon" aria-hidden="true"><use href="/platform-ui/icons.svg#clock"/></svg></span>
+            <span><span class="auth-step-title">We review your application</span><span class="auth-step-text">Usually within 24–48 hours.</span></span>
+          </li>
+          <li class="auth-step">
+            <span class="auth-step-icon"><svg class="auth-icon" aria-hidden="true"><use href="/platform-ui/icons.svg#mail-check"/></svg></span>
+            <span><span class="auth-step-title">You receive your login details</span><span class="auth-step-text">We’ll send them to <strong id="success-email"></strong> once you’re approved.</span></span>
+          </li>
+          <li class="auth-step">
+            <span class="auth-step-icon"><svg class="auth-icon" aria-hidden="true"><use href="/platform-ui/icons.svg#log-in"/></svg></span>
+            <span><span class="auth-step-title">Sign in and get set up</span><span class="auth-step-text">Add your routers, plans and payment details.</span></span>
+          </li>
+        </ol>
+      </section>
+
+      <p class="auth-fine-print auth-reveal" style="--i:3">We only use these details to review your application and contact you about it.</p>
+    </div>
+  </main>
 </div>
 
+<datalist id="gh-regions">
+  <option value="Ahafo"><option value="Ashanti"><option value="Bono"><option value="Bono East">
+  <option value="Central"><option value="Eastern"><option value="Greater Accra"><option value="North East">
+  <option value="Northern"><option value="Oti"><option value="Savannah"><option value="Upper East">
+  <option value="Upper West"><option value="Volta"><option value="Western"><option value="Western North">
+</datalist>
+
 <script>
-const ghanaPhoneRe = /^(0[2-9]\d{8}|233[2-9]\d{8})$/;
-const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+(() => {
+  'use strict';
 
-function show(id) { document.getElementById(id).style.display = 'block'; }
-function hide(id) { document.getElementById(id).style.display = 'none'; }
-function val(id) { return document.getElementById(id).value.trim(); }
+  const ICONS = '/platform-ui/icons.svg';
+  // Mirror the server rules in src/modules/applications/schemas.py
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const PHONE_RE = /^(233\d{9}|0[2-9]\d{8})$/;
+  const MESSAGE_MIN = 20;
+  const EMAIL_CHECK_DEBOUNCE_MS = 600;
+  const FIELD_ORDER = ['isp_name', 'region', 'expected_sites', 'message', 'contact_name', 'email', 'phone'];
+  // Same meaning as service.EMAIL_UNAVAILABLE_MESSAGE: deliberately never says *why*.
+  const EMAIL_UNAVAILABLE_HTML =
+    'This email can’t be used for a new application. If you’ve already applied or have an account, ' +
+    '<a href="/admin/login">sign in</a> instead.';
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-document.getElementById('apply-form').addEventListener('submit', async e => {
-  e.preventDefault();
-  let ok = true;
+  const $ = (id) => document.getElementById(id);
+  const form = $('apply-form');
+  const submitBtn = $('submit-btn');
+  const fields = {};
+  form.querySelectorAll('.auth-field').forEach((wrap) => {
+    const name = wrap.dataset.field;
+    fields[name] = { wrap, input: $(name), msg: wrap.querySelector('.auth-msg') };
+  });
 
-  ['err_isp_name','err_contact_name','err_email','err_phone','err_region','err_submit'].forEach(hide);
+  const raw = (name) => fields[name].input.value;
+  const val = (name) => raw(name).trim();
+  const phoneDigits = () => raw('phone').replace(/\D/g, '');
+  const normEmail = () => val('email').toLowerCase();
+  const icon = (name, cls = '') =>
+    `<svg class="auth-icon ${cls}" aria-hidden="true"><use href="${ICONS}#${name}"/></svg>`;
 
-  if (val('isp_name').length < 3) { show('err_isp_name'); ok = false; }
-  if (!val('contact_name')) { show('err_contact_name'); ok = false; }
-  if (!emailRe.test(val('email'))) { show('err_email'); ok = false; }
-  if (!ghanaPhoneRe.test(val('phone').replace(/\s/g,''))) { show('err_phone'); ok = false; }
-  if (!val('region')) { show('err_region'); ok = false; }
-  if (!ok) return;
+  // ── Field presentation ────────────────────────────────────────────────
+  const MSG_ICONS = { error: 'alert-circle', warning: 'alert-circle', success: 'check', hint: '' };
 
-  const btn = document.getElementById('submit-btn');
-  btn.disabled = true;
-  btn.textContent = 'Submitting…';
-
-  const payload = {
-    isp_name: val('isp_name'),
-    contact_name: val('contact_name'),
-    email: val('email'),
-    phone: val('phone').replace(/\s/g,''),
-    region: val('region'),
-    message: val('message') || null,
-  };
-  const es = val('expected_sites');
-  if (es) payload.expected_sites = parseInt(es);
-
-  try {
-    const resp = await fetch('/api/v1/public/apply', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (resp.status === 201 || resp.ok) {
-      hide('form-section');
-      show('success-section');
-    } else {
-      const data = await resp.json();
-      const err = document.getElementById('err_submit');
-      err.textContent = data.detail || 'An error occurred. Please try again.';
-      show('err_submit');
-      btn.disabled = false;
-      btn.textContent = 'Apply to Join';
-    }
-  } catch (ex) {
-    const err = document.getElementById('err_submit');
-    err.textContent = 'Network error. Please check your connection and try again.';
-    show('err_submit');
-    btn.disabled = false;
-    btn.textContent = 'Apply to Join';
+  function setMessage(name, variant, content, isHtml = false) {
+    const el = fields[name].msg;
+    if (!variant) { el.classList.remove('is-shown'); return; } // text stays for the collapse animation
+    const body = el.querySelector('.auth-msg-body');
+    body.innerHTML = MSG_ICONS[variant] ? icon(MSG_ICONS[variant]) : '';
+    const text = document.createElement('span');
+    if (isHtml) text.innerHTML = content; else text.textContent = content;
+    body.appendChild(text);
+    el.className = `auth-msg auth-msg--${variant} is-shown`;
   }
-});
+
+  function setFieldState(name, state) {
+    const { wrap, input } = fields[name];
+    wrap.classList.toggle('is-invalid', state === 'invalid');
+    wrap.classList.toggle('is-warning', state === 'warning');
+    wrap.classList.toggle('is-valid', state === 'valid');
+    if (state === 'invalid' || state === 'warning') input.setAttribute('aria-invalid', 'true');
+    else input.removeAttribute('aria-invalid');
+  }
+
+  function shake(name) {
+    const { wrap } = fields[name];
+    wrap.classList.remove('is-shaking');
+    void wrap.offsetWidth; // restart the animation
+    wrap.classList.add('is-shaking');
+  }
+  form.addEventListener('animationend', (e) => {
+    const wrap = e.target.closest('.auth-field');
+    if (wrap && e.animationName === 'auth-shake') wrap.classList.remove('is-shaking');
+  });
+
+  // ── Validation (on blur, then live once a field has shown an error) ──
+  const validators = {
+    isp_name: () => (val('isp_name').length >= 3 ? '' : 'Business name needs at least 3 characters.'),
+    region: () => (val('region') ? '' : 'Tell us where you operate.'),
+    message: () => {
+      const short = MESSAGE_MIN - val('message').length;
+      if (short <= 0) return '';
+      if (short === MESSAGE_MIN) return `Tell us a little about your setup — at least ${MESSAGE_MIN} characters.`;
+      return `A little more detail helps us review faster — ${short} more character${short === 1 ? '' : 's'} to go.`;
+    },
+    contact_name: () => (val('contact_name') ? '' : 'Please enter your full name.'),
+    email: () => (EMAIL_RE.test(val('email')) ? '' : 'Enter a valid email address, like you@example.com.'),
+    phone: () => (PHONE_RE.test(phoneDigits()) ? '' : 'Enter a Ghana mobile number, e.g. 024 412 3456.'),
+  };
+  const erroring = new Set();
+
+  function showFieldError(name, text) {
+    erroring.add(name);
+    setFieldState(name, 'invalid');
+    setMessage(name, 'error', text);
+    if (name === 'email') renderEmailStatus();
+  }
+
+  function validate(name) {
+    const error = validators[name]();
+    if (error) { showFieldError(name, error); return false; }
+    const wasErroring = erroring.delete(name);
+    if (name === 'email') renderEmailStatus();
+    else if (wasErroring) { setFieldState(name, null); setMessage(name, null); }
+    return true;
+  }
+
+  FIELD_ORDER.filter((name) => validators[name] && name !== 'email').forEach((name) => {
+    const { input } = fields[name];
+    input.addEventListener('blur', () => { if (val(name) || erroring.has(name)) validate(name); });
+    input.addEventListener('input', () => { if (erroring.has(name)) validate(name); });
+  });
+
+  const counter = $('message-count');
+  function renderCounter() {
+    const n = val('message').length;
+    counter.textContent = n >= MESSAGE_MIN ? `${n} characters` : `${n} / ${MESSAGE_MIN} min`;
+    counter.classList.toggle('is-met', n >= MESSAGE_MIN);
+  }
+  fields.message.input.addEventListener('input', renderCounter);
+
+  // ── Email availability ────────────────────────────────────────────────
+  const emailCache = new Map(); // normalized email -> available?
+  let emailState = 'idle';      // idle | checking | available | unavailable | unknown
+  let emailFor = '';
+  let emailTimer = 0;
+  let emailRequest = null;      // AbortController of the in-flight check
+  let renderedEmail = 'idle';
+
+  function setEmailState(state, addr) {
+    emailState = state;
+    emailFor = addr;
+    renderEmailStatus();
+    syncSubmit();
+  }
+
+  function renderEmailStatus() {
+    const key = erroring.has('email') ? 'format-error' : emailState;
+    if (key === renderedEmail) return; // don't restart icon animations for an unchanged state
+    renderedEmail = key;
+    const trail = $('email-status');
+    if (key === 'format-error') { trail.innerHTML = ''; return; } // validate() owns the message
+    const [trailHtml, fieldState, message] = {
+      idle: ['', null, null],
+      checking: [icon('loader', 'auth-status auth-status--checking'), null, null],
+      available: [icon('check', 'auth-status auth-status--ok'), 'valid', ['success', 'Looks good.']],
+      unavailable: [icon('alert-circle', 'auth-status auth-status--warn'), 'warning', ['warning', EMAIL_UNAVAILABLE_HTML, true]],
+      unknown: ['', null, ['hint', 'We’ll confirm this email when you submit.']],
+    }[key];
+    trail.innerHTML = trailHtml;
+    setFieldState('email', fieldState);
+    if (message) setMessage('email', ...message); else setMessage('email', null);
+  }
+
+  function cancelEmailCheck() {
+    clearTimeout(emailTimer);
+    if (emailRequest) { emailRequest.abort(); emailRequest = null; }
+  }
+
+  function queueEmailCheck(delay) {
+    const addr = normEmail();
+    if (!EMAIL_RE.test(addr)) { cancelEmailCheck(); setEmailState('idle', ''); return; }
+    if (emailCache.has(addr)) {
+      cancelEmailCheck();
+      setEmailState(emailCache.get(addr) ? 'available' : 'unavailable', addr);
+      return;
+    }
+    if (emailFor === addr && emailState === 'checking') return; // already asking about this address
+    clearTimeout(emailTimer);
+    emailTimer = setTimeout(() => checkEmail(addr), delay);
+  }
+
+  async function checkEmail(addr) {
+    if (emailRequest) emailRequest.abort();
+    const request = new AbortController();
+    emailRequest = request;
+    setEmailState('checking', addr);
+    try {
+      const res = await fetch('/api/v1/public/apply/check-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: addr }),
+        signal: request.signal,
+      });
+      // 429 / 422 / 5xx: claim nothing. Submit re-checks authoritatively.
+      const data = res.ok ? await res.json() : null;
+      if (request !== emailRequest) return;
+      if (!data || typeof data.available !== 'boolean') { setEmailState('unknown', addr); return; }
+      emailCache.set(addr, data.available);
+      setEmailState(data.available ? 'available' : 'unavailable', addr);
+    } catch (err) {
+      if (request === emailRequest && err.name !== 'AbortError') setEmailState('unknown', addr);
+    } finally {
+      if (request === emailRequest) emailRequest = null;
+    }
+  }
+
+  fields.email.input.addEventListener('input', () => {
+    if (normEmail() !== emailFor) { cancelEmailCheck(); setEmailState('idle', ''); }
+    if (erroring.has('email')) validate('email');
+    queueEmailCheck(EMAIL_CHECK_DEBOUNCE_MS);
+  });
+  fields.email.input.addEventListener('blur', () => {
+    if (val('email') && validate('email')) queueEmailCheck(0);
+  });
+
+  // ── Submit ────────────────────────────────────────────────────────────
+  let submitting = false;
+
+  function syncSubmit() {
+    submitBtn.disabled = submitting || (emailState === 'unavailable' && emailFor === normEmail());
+  }
+
+  function setSubmitting(on) {
+    submitting = on;
+    submitBtn.classList.toggle('is-loading', on);
+    submitBtn.setAttribute('aria-busy', String(on));
+    submitBtn.querySelector('.auth-btn-face--idle').setAttribute('aria-hidden', String(on));
+    submitBtn.querySelector('.auth-btn-face--busy').setAttribute('aria-hidden', String(!on));
+    syncSubmit();
+  }
+
+  function showAlert(text) {
+    const alert = $('form-alert');
+    $('form-alert-text').textContent = text;
+    alert.hidden = true;
+    void alert.offsetWidth; // replay the entrance animation
+    alert.hidden = false;
+  }
+
+  function showSuccess(email) {
+    $('success-email').textContent = email;
+    $('form-card').hidden = true;
+    const card = $('success-card');
+    card.hidden = false;
+    card.focus({ preventScroll: true });
+    window.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (submitting) return;
+    $('form-alert').hidden = true;
+
+    const invalid = FIELD_ORDER.filter((name) => validators[name] && !validate(name));
+    if (emailState === 'unavailable' && emailFor === normEmail() && !invalid.includes('email')) invalid.push('email');
+    if (invalid.length) {
+      invalid.forEach(shake);
+      const first = FIELD_ORDER.find((name) => invalid.includes(name));
+      fields[first].input.focus({ preventScroll: true });
+      fields[first].wrap.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' });
+      return;
+    }
+
+    const payload = {
+      isp_name: val('isp_name'),
+      region: val('region'),
+      message: val('message'),
+      contact_name: val('contact_name'),
+      email: normEmail(),
+      phone: phoneDigits(),
+    };
+    if (raw('expected_sites')) payload.expected_sites = Number(raw('expected_sites'));
+
+    setSubmitting(true);
+    try {
+      const res = await fetch('/api/v1/public/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) { showSuccess(payload.email); return; }
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        emailCache.set(payload.email, false);
+        setEmailState('unavailable', payload.email);
+        shake('email');
+        fields.email.input.focus();
+      } else if (res.status === 422 && Array.isArray(data.detail)) {
+        const fieldErrors = data.detail
+          .map((d) => [Array.isArray(d.loc) ? d.loc[d.loc.length - 1] : '', String(d.msg || '').replace(/^Value error, /, '')])
+          .filter(([name]) => validators[name]);
+        if (!fieldErrors.length) showAlert('Please check the form and try again.');
+        fieldErrors.forEach(([name, text]) => { showFieldError(name, text); shake(name); });
+      } else if (res.status === 429) {
+        showAlert('Too many applications from this network. Please wait a while and try again.');
+      } else {
+        showAlert(typeof data.detail === 'string' ? data.detail : 'Something went wrong on our side. Please try again.');
+      }
+    } catch {
+      showAlert('Network error — check your connection and try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  });
+
+  renderCounter();
+})();
 </script>
 </body>
 </html>

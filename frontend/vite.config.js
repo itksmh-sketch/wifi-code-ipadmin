@@ -22,6 +22,11 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      // Platform identity CSS/icons linked from index.html (served by the backend).
+      '/platform-ui': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 })

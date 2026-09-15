@@ -7,6 +7,17 @@ import re
 
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
+# Business description bounds. The apply page mirrors MESSAGE_MIN_LENGTH.
+MESSAGE_MIN_LENGTH = 20
+MESSAGE_MAX_LENGTH = 2000
+
+
+def _normalize_email(v: str) -> str:
+    v = v.strip().lower()
+    if not _EMAIL_RE.match(v):
+        raise ValueError("Invalid email address")
+    return v
+
 
 class ApplicationSubmit(BaseModel):
     isp_name: str
@@ -15,14 +26,24 @@ class ApplicationSubmit(BaseModel):
     phone: str
     region: str
     expected_sites: Optional[int] = None
-    message: Optional[str] = None
+    message: str
 
     @field_validator("email")
     @classmethod
     def valid_email(cls, v: str) -> str:
-        if not _EMAIL_RE.match(v.strip()):
-            raise ValueError("Invalid email address")
-        return v.strip().lower()
+        return _normalize_email(v)
+
+    @field_validator("message")
+    @classmethod
+    def message_has_substance(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < MESSAGE_MIN_LENGTH:
+            raise ValueError(
+                f"Please tell us a little more about your business (at least {MESSAGE_MIN_LENGTH} characters)"
+            )
+        if len(v) > MESSAGE_MAX_LENGTH:
+            raise ValueError(f"Please keep this under {MESSAGE_MAX_LENGTH} characters")
+        return v
 
     @field_validator("isp_name")
     @classmethod
@@ -41,6 +62,20 @@ class ApplicationSubmit(BaseModel):
         if re.match(r"^0[2-9][0-9]{8}$", digits):
             return "233" + digits[1:]
         raise ValueError("Phone must be a valid Ghana mobile number (e.g. 0244123456)")
+
+
+class EmailCheckRequest(BaseModel):
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, v: str) -> str:
+        return _normalize_email(v)
+
+
+class EmailCheckResponse(BaseModel):
+    # A bare boolean on purpose: never which record (admin/application) matched.
+    available: bool
 
 
 class ApplicationResponse(BaseModel):
