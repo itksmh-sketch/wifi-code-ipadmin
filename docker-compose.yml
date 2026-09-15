@@ -42,7 +42,7 @@ services:
         if [ "$$RUN_SEED" = "true" ]; then
           python -m src.db.seeds.seed
         fi
-        exec uvicorn src.app:app --host 0.0.0.0 --port 8000 --reload
+        exec uvicorn src.app:app --host 127.0.0.1 --port 8000 --forwarded-allow-ips 127.0.0.1 --reload
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hotspot_user}:${POSTGRES_PASSWORD:-hotspot_pass}@127.0.0.1:6432/${POSTGRES_DB:-hotspot_db}
       SYNC_DATABASE_URL: postgresql://${POSTGRES_USER:-hotspot_user}:${POSTGRES_PASSWORD:-hotspot_pass}@127.0.0.1:6432/${POSTGRES_DB:-hotspot_db}
@@ -118,8 +118,12 @@ services:
       WG_SERVER_TUNNEL_IP: ${WG_SERVER_TUNNEL_IP:-10.100.0.1}
       WG_INTERFACE: ${WG_INTERFACE:-wg0}
       WG_MANAGER_URL: ${WG_MANAGER_URL:-http://127.0.0.1:8999}
-    # No `ports:` — host networking ignores port mappings; uvicorn binds
-    # 0.0.0.0:8000 directly on the host (Nginx proxies to 127.0.0.1:8000).
+    # No `ports:` — host networking ignores port mappings. uvicorn binds
+    # 127.0.0.1:8000 only: all public traffic must come through Nginx (which
+    # proxies to 127.0.0.1:8000 and appends X-Forwarded-For). Trusting forwarded
+    # headers only from 127.0.0.1 is pinned explicitly so a stray
+    # FORWARDED_ALLOW_IPS env var can't widen it ("*" would trust the leftmost,
+    # client-supplied X-Forwarded-For entry and make rate-limit IPs spoofable).
     volumes:
       - ./backend:/app
       - ./frontend/admin:/frontend/admin
