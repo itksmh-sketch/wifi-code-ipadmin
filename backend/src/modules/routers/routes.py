@@ -98,19 +98,13 @@ async def update_router(router_id: uuid.UUID, body: RouterUpdate, db: AsyncSessi
     return r
 
 
-@router.delete("/routers/{router_id}", status_code=204, responses={404: {"model": ErrorResponse}})
-async def delete_router(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
-    result = await db.execute(select(Router).where(Router.id == router_id, Router.isp_operator_id == tenant.isp_operator_id))
-    r = result.scalar_one_or_none()
-    if not r:
-        raise HTTPException(status_code=404, detail="Router not found")
-    # Remove the WireGuard peer from the interface before deleting the router.
-    # The wg_ip_allocations row is removed by the ON DELETE CASCADE.
-    if r.wg_peer_public_key:
-        from src.modules.wireguard.service import WireGuardError, WireGuardService
-        try:
-            await WireGuardService().remove_peer(r.wg_peer_public_key)
-        except WireGuardError:
-            pass  # best-effort; never block router deletion on the sidecar
-    await db.delete(r)
-    await db.commit()
+# A hard-delete DELETE /routers/{id} used to live here. Retired: it would
+# raise an unhandled FK-violation 500 for any router with a Session,
+# RouterMetric (collected automatically every 5 minutes for any router that's
+# ever been online), RouterProvisionLog, or RouterCredential row — i.e. any
+# real router beyond the bare-onboarded stage — and for the rare router with
+# none of those, it would silently destroy the row anyway. It was never wired
+# to a UI button. Router removal is now the soft-delete at
+# DELETE /admin/routers/{router_id} (src/modules/mikrotik/removal.py), which
+# disconnects active sessions, tears down the WireGuard tunnel, and sets
+# is_active=false — see that module for why the row itself is never deleted.

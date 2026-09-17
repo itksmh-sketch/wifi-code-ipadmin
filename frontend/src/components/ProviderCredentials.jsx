@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiCall } from '../App';
+import PageHeader from './PageHeader';
 
 // Shared bring-your-own-credentials page, driven entirely by the provider
 // catalog. Used for both payment (`/payment-credentials`) and SMS
@@ -228,7 +229,7 @@ export default function ProviderCredentials({ category, apiPrefix, title, blurb,
 
     return (
         <div>
-            <h1 style={{ fontSize: 24, fontWeight: 700 }}>{title}</h1>
+            <PageHeader title={title} />
             <p style={{ color: '#6b7280', fontSize: 14, marginTop: 4 }}>{blurb}</p>
 
             {loadError && <div className="badge badge-red" style={{ marginBottom: 16 }}>{loadError}</div>}

@@ -394,6 +394,17 @@ class Router(Base):
     wg_last_handshake_at = Column(DateTime(timezone=True), nullable=True)
     wg_is_connected = Column(Boolean, server_default="false", nullable=False)
 
+    # Removal outcome — set once by remove_router() (modules/mikrotik/removal.py)
+    # at removal time, never touched again. NULL means "never removed". These
+    # exist so a removed router's own page can state, durably and accurately,
+    # whether already-online customers were actually confirmed disconnected —
+    # a one-time API response or log line isn't enough for that (see migration
+    # 040 and its docstring for why).
+    removed_at = Column(DateTime(timezone=True), nullable=True)
+    removal_router_reachable = Column(Boolean, nullable=True)
+    removal_sessions_disconnected = Column(Integer, nullable=True)
+    removal_sessions_failed = Column(Integer, nullable=True)
+
     site = relationship("Site", back_populates="routers")
     sessions = relationship("Session", back_populates="router")
     credentials = relationship("RouterCredential", back_populates="router", uselist=False)

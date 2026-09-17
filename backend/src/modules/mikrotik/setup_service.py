@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.modules.mikrotik.api_service import (
+    HOTSPOT_COOKIE_LIFETIME,
     MikroTikAPIService,
     MikroTikOperationError,
     SyncCommandRunner,
@@ -190,12 +191,21 @@ def _op_apply_network(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
     if not _find(bridges, "name", bridge):
         runner.execute("/interface/bridge", "add", params={"name": bridge, "comment": "hotspot-bridge"})
 
-    # 2. Bridge ports — skip interfaces already a member of any bridge (constraint #7)
+    # 2. Bridge ports — idempotent per (interface, target bridge) (constraint #7).
+    #    A port already sitting under a *different* bridge (e.g. the router's
+    #    factory-default bridge on out-of-box hardware) is moved into ours rather
+    #    than silently left where it is: leaving it meant the hotspot bridge had
+    #    no real LAN member even though apply reported success.
     ports = runner.execute("/interface/bridge/port", "print")
-    existing_members = {p.get("interface") for p in ports}
     for iface in data["interfaces"]:
-        if iface in existing_members:
+        current = _find(ports, "interface", iface)
+        current_bridge = current.get("bridge") if current else None
+        if current_bridge == bridge:
             continue
+        if current_bridge:
+            other_id = _row_id(current)
+            if other_id:
+                runner.execute("/interface/bridge/port", "remove", params={".id": other_id})
         runner.execute("/interface/bridge/port", "add", params={"bridge": bridge, "interface": iface})
 
     # 3. Gateway IP on the bridge (idempotent by address)
@@ -297,6 +307,7 @@ def _op_apply_hotspot(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
         "use-radius": "yes",
         "nas-port-type": "wireless-802.11",
         "dns-name": data["dns_name"],
+        "http-cookie-lifetime": HOTSPOT_COOKIE_LIFETIME,
     }
     # Always target hsprof1 — never configure default, since portal redirect,
     # walled-garden, DNS name, and all per-profile settings live on hsprof1.
@@ -340,6 +351,7 @@ def _op_apply_hotspot(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
             "session-timeout": _minutes_to_clock(data.get("session_timeout", 0)),
             "idle-timeout": "none" if not data.get("idle_timeout") else _minutes_to_clock(data["idle_timeout"]),
             "shared-users": data.get("addresses_per_mac", 2),
+            "mac-cookie-timeout": HOTSPOT_COOKIE_LIFETIME,
         }
         runner.execute("/ip/hotspot/user/profile", "set", params=up_params)
 
@@ -587,8 +599,8 @@ def hotspot_terminal_commands(cfg: dict[str, Any]) -> list[str]:
     login_by = ",".join(cfg.get("login_by") or ["http-pap", "cookie"])
     return [
         f"/ip/hotspot/add name={HOTSPOT_SERVER_NAME} interface={bridge} address-pool={pool_name} disabled=no",
-        f'/ip/hotspot/profile/set [find name=hsprof1] login-by={login_by} use-radius=yes nas-port-type=wireless-802.11 dns-name={cfg["dns_name"]}',
-        f'/ip/hotspot/user/profile/set [find name=default] session-timeout={_minutes_to_clock(cfg.get("session_timeout", 0))} idle-timeout={"none" if not cfg.get("idle_timeout") else _minutes_to_clock(cfg["idle_timeout"])} shared-users={cfg.get("addresses_per_mac", 2)}',
+        f'/ip/hotspot/profile/set [find name=hsprof1] login-by={login_by} use-radius=yes nas-port-type=wireless-802.11 dns-name={cfg["dns_name"]} http-cookie-lifetime={HOTSPOT_COOKIE_LIFETIME}',
+        f'/ip/hotspot/user/profile/set [find name=default] session-timeout={_minutes_to_clock(cfg.get("session_timeout", 0))} idle-timeout={"none" if not cfg.get("idle_timeout") else _minutes_to_clock(cfg["idle_timeout"])} shared-users={cfg.get("addresses_per_mac", 2)} mac-cookie-timeout={HOTSPOT_COOKIE_LIFETIME}',
     ]
 
 

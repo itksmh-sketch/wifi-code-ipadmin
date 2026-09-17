@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import CoAEvent, Router, Session, Voucher
+from src.modules.mikrotik.access_revocation import clear_router_cookies, voucher_login_names
 from src.radius.coa_sender import send_disconnect_request
 from src.utils.encryption import decrypt_secret
 
@@ -68,4 +69,14 @@ async def send_disconnect_with_event(
     event.attempt_count = int(event.attempt_count or 0) + 1
     event.last_attempted_at = now
     await db.flush()
+
+    # CoA ends only the current session; the router's hotspot cookie would log
+    # the client straight back in. Clear it whatever the CoA outcome (clearing a
+    # cookie never kicks a live session, so this can't mask a failed CoA).
+    result["cookies_cleared"] = await clear_router_cookies(
+        db,
+        router,
+        voucher_login_names(voucher, session),
+        str(session.mac_address) if session is not None and session.mac_address else None,
+    )
     return result

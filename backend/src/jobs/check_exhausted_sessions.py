@@ -183,6 +183,18 @@ async def _handle_via_api(
                 )
             )
             stats["phantoms_closed"] += 1
+            # The client isn't online, but a stored hotspot cookie would let it
+            # straight back in. (The API-disconnect branch below clears cookies
+            # inside disconnect_hotspot_user.)
+            try:
+                await service.clear_hotspot_cookies(
+                    router_id_str,
+                    [n for n in (session.username, voucher.username, voucher.code) if n],
+                    str(session.mac_address) if session.mac_address else None,
+                )
+            except Exception as exc:
+                stats["api_errors"] += 1
+                logger.warning("backstop_cookie_clear_failed", session_id=str(session.id), router_id=router_id_str, error=str(exc))
             logger.info(
                 "backstop_phantom_closed",
                 session_id=str(session.id),

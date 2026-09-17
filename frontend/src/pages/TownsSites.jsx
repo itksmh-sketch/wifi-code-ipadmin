@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { apiCall } from '../App';
+import PageHeader from '../components/PageHeader';
 
 export default function TownsSites() {
     const [towns, setTowns] = useState([]);
@@ -73,7 +74,7 @@ export default function TownsSites() {
     return (
         <div>
             <div className="flex-between">
-                <h1 style={{ fontSize: 24, fontWeight: 700 }}>Towns & Sites</h1>
+                <PageHeader title="Towns & Sites" />
                 <button className="btn btn-primary" onClick={() => setShowTownForm(true)}>+ New Town</button>
             </div>
 

@@ -318,6 +318,55 @@ th {
     .sidebar-backdrop.is-open { display: block; }
 }
 
+/* ── PageHeader (components/PageHeader.jsx) ───────────────────────────────
+   Scope is deliberately just this: the same title weight/size every page
+   already used inline (24px/700), now reading the shared tokens, plus a thin
+   --platform-gradient accent. Nothing here touches tables, cards, forms, or
+   any other page content — a page opts in by swapping its own <h1> for
+   <PageHeader title=... />, one page at a time. */
+.page-header {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    position: relative;
+    padding-bottom: 10px;
+}
+.page-header-title {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--platform-ink, inherit);
+}
+.page-header::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 40px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--platform-gradient, #2563eb);
+}
+.page-header-icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    background: var(--platform-gradient, #2563eb);
+    color: #fff;
+}
+.page-header-icon-svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
 /* ── Shared utility classes: small-viewport behavior ─────────────────────
    Scoped to what's already generic here (card/table/modal/stat-card/flex
    utilities) — per-page inline-styled layouts are a separate pass. */

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { apiCall } from '../App';
+import PageHeader from '../components/PageHeader';
 
 // Server-side bounds live in vouchers/engine.py (MIN_CODE_LENGTH / MAX_CODE_LENGTH);
 // these are the offered steps, and the API re-validates whatever is sent.
@@ -91,7 +92,7 @@ export default function Vouchers() {
     return (
         <div>
             <div className="flex-between">
-                <h1 style={{ fontSize: 24, fontWeight: 700 }}>Vouchers</h1>
+                <PageHeader title="Vouchers" />
                 <button className="btn btn-primary" onClick={() => setShowForm(true)}>Generate Batch</button>
             </div>
 

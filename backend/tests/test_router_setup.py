@@ -37,6 +37,9 @@ class FakeRunner:
     def sets(self, path):
         return [c for c in self.calls if c["path"] == path and c["command"] == "set"]
 
+    def removes(self, path):
+        return [c for c in self.calls if c["path"] == path and c["command"] == "remove"]
+
 
 # ─── Subnet maths (server-side validation) ──────────────────────────────────
 
@@ -145,6 +148,26 @@ def test_network_apply_is_idempotent_and_skips_existing_bridge_member():
     assert runner.adds("/ip/address") == []                       # address already present
     assert runner.adds("/ip/pool") == [] and runner.sets("/ip/pool")  # updated, not added
     assert runner.adds("/ip/dhcp-server") == [] and runner.sets("/ip/dhcp-server")
+
+
+def test_network_apply_moves_port_off_a_different_bridge():
+    # ether3 is still a member of the router's factory-default bridge — out-of-box
+    # hardware ships this way. Apply must move it into bridge-hotspot rather than
+    # silently leaving it behind (the field bug: apply reported success while the
+    # hotspot bridge never actually got a LAN member).
+    runner = FakeRunner({
+        ("/interface/bridge", "print"): [{".id": "*1", "name": "bridge-hotspot"}],
+        ("/interface/bridge/port", "print"): [
+            {".id": "*2", "bridge": "bridgeLocal", "interface": "ether2"},
+            {".id": "*3", "bridge": "bridgeLocal", "interface": "ether3"},
+        ],
+    })
+    svc._op_apply_network(runner, _network_data())
+    removed_ids = {c["params"][".id"] for c in runner.removes("/interface/bridge/port")}
+    assert removed_ids == {"*2", "*3"}
+    added_ports = {c["params"]["interface"] for c in runner.adds("/interface/bridge/port")}
+    assert added_ports == {"ether2", "ether3"}
+    assert all(c["params"]["bridge"] == "bridge-hotspot" for c in runner.adds("/interface/bridge/port"))
 
 
 # ─── Section 2: Hotspot apply ───────────────────────────────────────────────

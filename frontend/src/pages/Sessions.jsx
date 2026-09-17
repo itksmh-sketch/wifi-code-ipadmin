@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { apiCall } from '../App';
+import PageHeader from '../components/PageHeader';
 
 export default function Sessions() {
     const [sessions, setSessions] = useState([]);
@@ -41,7 +42,7 @@ export default function Sessions() {
     return (
         <div>
             <div className="flex-between">
-                <h1 style={{ fontSize: 24, fontWeight: 700 }}>Sessions</h1>
+                <PageHeader title="Sessions" />
                 <div className="gap-2">
                     <label style={{ fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
                         <input type="checkbox" checked={activeOnly} onChange={e => setActiveOnly(e.target.checked)} />

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import or_, select
 from src.db.models import Voucher, Plan, Site, Session, Router
 from src.schemas import VoucherStatus, VoucherGenerate
+from src.modules.mikrotik.access_revocation import revoke_voucher_access
 from src.radius.coa_events import create_pending_disconnect_event, send_disconnect_with_event
 
 # Valid transitions for voucher lifecycle
@@ -254,29 +255,33 @@ async def disable_voucher_with_disconnect(
 
     voucher = await transition_voucher_status(db, voucher_id, "disabled", isp_operator_id)
 
-    if not active_session:
-        return voucher
+    router = None
+    if active_session:
+        router = (
+            await db.execute(select(Router).where(Router.id == active_session.router_id, Router.isp_operator_id == isp_operator_id))
+        ).scalar_one_or_none()
+    if active_session and router:
+        event = await create_pending_disconnect_event(
+            db,
+            isp_operator_id=isp_operator_id,
+            voucher_id=voucher.id,
+            router_id=router.id,
+            session_row_id=active_session.id,
+        )
+        await send_disconnect_with_event(
+            db,
+            event=event,
+            router=router,
+            voucher=voucher,
+            session=active_session,
+        )
 
-    router = (
-        await db.execute(select(Router).where(Router.id == active_session.router_id, Router.isp_operator_id == isp_operator_id))
-    ).scalar_one_or_none()
-    if not router:
-        return voucher
+    # Router-side cleanup AFTER the CoA (running it first made every CoA NAK
+    # because the session was already gone): removes any active entry the CoA
+    # didn't reach — including a client with no session row at all — and
+    # clears stored hotspot cookies.
+    await revoke_voucher_access(db, voucher)
 
-    event = await create_pending_disconnect_event(
-        db,
-        isp_operator_id=isp_operator_id,
-        voucher_id=voucher.id,
-        router_id=router.id,
-        session_row_id=active_session.id,
-    )
-    await send_disconnect_with_event(
-        db,
-        event=event,
-        router=router,
-        voucher=voucher,
-        session=active_session,
-    )
     await db.commit()
     await db.refresh(voucher)
     return voucher

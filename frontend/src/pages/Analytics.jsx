@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiCall } from '../App';
 import { RevenueChart, RedemptionsChart } from '../components/AnalyticsCharts';
+import PageHeader from '../components/PageHeader';
 
 function fmtMoney(n) {
     if (n == null || isNaN(Number(n))) return '—';
@@ -72,7 +73,7 @@ export default function Analytics() {
     return (
         <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                <h1 style={{ fontSize: 24, fontWeight: 700 }}>Analytics</h1>
+                <PageHeader title="Analytics" />
                 <button className="btn btn-sm" onClick={load} disabled={loading}>
                     {loading ? 'Refreshing…' : 'Refresh'}
                 </button>

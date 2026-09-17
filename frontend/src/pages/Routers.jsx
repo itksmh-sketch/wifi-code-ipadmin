@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { apiCall } from '../App';
+import PageHeader from '../components/PageHeader';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -70,12 +71,13 @@ function RouterList({ onAdd, onSelect }) {
     const [routers, setRouters] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [showRemoved, setShowRemoved] = useState(false);
 
-    const load = useCallback(async () => {
+    const load = useCallback(async (includeRemoved) => {
         setLoading(true);
         setError('');
         try {
-            const data = await apiCall('/admin/routers');
+            const data = await apiCall(`/admin/routers${includeRemoved ? '?include_removed=true' : ''}`);
             setRouters(data || []);
         } catch (e) {
             setError(e.message || 'Failed to load routers.');
@@ -84,15 +86,18 @@ function RouterList({ onAdd, onSelect }) {
         }
     }, []);
 
-    useEffect(() => { load(); }, [load]);
+    useEffect(() => { load(showRemoved); }, [load, showRemoved]);
 
     if (loading) return <p>Loading routers…</p>;
+
+    const removedCount = routers.filter(r => !r.is_active).length;
+    const visible = showRemoved ? routers : routers.filter(r => r.is_active);
 
     return (
         <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
                 <div>
-                    <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700 }}>Router Fleet</h1>
+                    <PageHeader title="Router Fleet" />
                     <p style={{ margin: '4px 0 0', color: '#5c677d' }}>Live reachability, last contact time, and provisioning.</p>
                 </div>
                 <button className="btn btn-primary" onClick={onAdd}>+ Add Router</button>
@@ -101,6 +106,14 @@ function RouterList({ onAdd, onSelect }) {
             {error && <p style={{ color: '#b42318' }}>{error}</p>}
 
             <div className="card">
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+                    <button
+                        onClick={() => setShowRemoved(v => !v)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#5c677d', fontSize: 13, padding: 0 }}
+                    >
+                        {showRemoved ? 'Hide removed routers' : `Show removed routers${removedCount ? ` (${removedCount})` : ''}`}
+                    </button>
+                </div>
                 <div className="table-wrap">
                     <table>
                         <thead>
@@ -115,11 +128,11 @@ function RouterList({ onAdd, onSelect }) {
                             </tr>
                         </thead>
                         <tbody>
-                            {routers.length === 0 && (
+                            {visible.length === 0 && (
                                 <tr><td colSpan="7" style={{ color: '#9ca3af', padding: 24 }}>No routers found.</td></tr>
                             )}
-                            {routers.map(r => (
-                                <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => onSelect(r.id)}>
+                            {visible.map(r => (
+                                <tr key={r.id} style={{ cursor: 'pointer', opacity: r.is_active ? 1 : 0.6 }} onClick={() => onSelect(r.id)}>
                                     <td>
                                         <span style={{ color: '#0d6e5f', fontWeight: 600, textDecoration: 'underline' }}>{r.name}</span>
                                     </td>
@@ -127,10 +140,25 @@ function RouterList({ onAdd, onSelect }) {
                                     <td><code>{r.ip_address || 'VPN only'}</code></td>
                                     <td><code>{r.nas_identifier}</code></td>
                                     <td>
-                                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                                            <span style={{ width: 10, height: 10, borderRadius: '50%', background: r.is_online ? '#12b76a' : '#f04438', display: 'inline-block' }} />
-                                            {r.is_online ? 'Online' : 'Offline'}
-                                        </span>
+                                        {r.is_active ? (
+                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                                <span style={{ width: 10, height: 10, borderRadius: '50%', background: r.is_online ? '#12b76a' : '#f04438', display: 'inline-block' }} />
+                                                {r.is_online ? 'Online' : 'Offline'}
+                                            </span>
+                                        ) : (
+                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                                <span className="badge badge-gray">Removed</span>
+                                                {/* Anything short of a CONFIRMED true — false, or missing/null because
+                                                   removal didn't fully finish — gets the caution marker. "We don't
+                                                   know" must never look the same as "confirmed clean". */}
+                                                {r.removal_router_reachable !== true && (
+                                                    <span
+                                                        title="Removed without confirming it was reachable — a customer connected at the time may still be online. Open the router for details."
+                                                        className="badge badge-yellow"
+                                                    >⚠ unconfirmed</span>
+                                                )}
+                                            </span>
+                                        )}
                                     </td>
                                     <td>
                                         <span className={`badge ${r.connection_status === 'connected' ? 'badge-green' : 'badge-gray'}`}>
@@ -835,7 +863,7 @@ function useSection(routerId, section, onApplied) {
     return { detecting, applying, log, error, detected, detect, apply };
 }
 
-function NetworkSection({ routerId, online, status, cfg, ifaces, expanded, onToggle, onApplied }) {
+function NetworkSection({ routerId, online, status, cfg, ifaces, onRefreshIfaces, expanded, onToggle, onApplied }) {
     const s = useSection(routerId, 'network', onApplied);
     const [form, setForm] = useState({
         bridge_name: cfg?.bridge_name || 'bridge-hotspot',
@@ -847,6 +875,7 @@ function NetworkSection({ routerId, online, status, cfg, ifaces, expanded, onTog
         dns: cfg?.dns || '8.8.8.8',
         lease_time: cfg?.lease_time || '1h',
     });
+    const [staleError, setStaleError] = useState('');
     const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
     const plan = subnetPlan(form.gateway_ip, Number(form.prefix));
     const poolStart = form.pool_start || plan?.poolStart || '';
@@ -863,6 +892,30 @@ function NetworkSection({ routerId, online, status, cfg, ifaces, expanded, onTog
     ] : [];
 
     const toggleIface = (name) => set('interfaces', form.interfaces.includes(name) ? form.interfaces.filter(i => i !== name) : [...form.interfaces, name]);
+
+    // The router's interface names can drift out from under this page (port
+    // renames, manual reconfig at the site). Re-check against a fresh list
+    // right before applying instead of trusting whatever was loaded earlier.
+    const handleApply = async () => {
+        setStaleError('');
+        const fresh = await onRefreshIfaces();
+        if (!fresh) {
+            setStaleError('Could not refresh the router’s current interface list — check the connection and try again before applying.');
+            return;
+        }
+        const freshNames = new Set(fresh.map(i => i.name || i));
+        const missing = form.interfaces.filter(i => !freshNames.has(i));
+        if (missing.length) {
+            // Drop the stale names rather than leaving them stuck in the selection
+            // forever — they may be invisible in the checkboxes above (which only
+            // list interfaces that still exist), so just re-checking a current
+            // port wouldn't clear them on its own.
+            set('interfaces', form.interfaces.filter(i => freshNames.has(i)));
+            setStaleError(`Removed interface(s) that no longer exist on the router (it may have been reconfigured since this page loaded): ${missing.join(', ')}. Re-check the correct port(s) below and click Apply again.`);
+            return;
+        }
+        s.apply({ bridge_name: form.bridge_name, interfaces: form.interfaces, gateway_ip: form.gateway_ip, prefix: Number(form.prefix), pool_start: poolStart, pool_end: poolEnd, dns: form.dns, lease_time: form.lease_time });
+    };
 
     return (
         <SectionCard index={1} title="Network" status={s.applying ? 'applying' : status} expanded={expanded} onToggle={onToggle}>
@@ -900,19 +953,22 @@ function NetworkSection({ routerId, online, status, cfg, ifaces, expanded, onTog
                 <input style={{ marginTop: 8 }} placeholder="Add interface names comma-separated, e.g. ether2,ether3" onBlur={e => { const v = e.target.value.trim(); if (v) { set('interfaces', Array.from(new Set([...form.interfaces, ...v.split(',').map(x => x.trim()).filter(Boolean)]))); e.target.value = ''; } }} />
             </Field>
             <ActionRow online={online} detecting={s.detecting} applying={s.applying}
-                onDetect={() => s.detect(res => {
-                    const d = res?.detected || {};
-                    const addr = (d.addresses || []).find(a => a.interface === form.bridge_name);
-                    if (addr?.address) {
-                        const [ip, pfx] = addr.address.split('/');
-                        setForm(f => ({ ...f, gateway_ip: ip || f.gateway_ip, prefix: Number(pfx) || f.prefix }));
-                    }
-                    const members = (d.bridge_ports || []).filter(p => p.bridge === form.bridge_name).map(p => p.interface);
-                    if (members.length) set('interfaces', members);
-                })}
-                onApply={() => s.apply({ bridge_name: form.bridge_name, interfaces: form.interfaces, gateway_ip: form.gateway_ip, prefix: Number(form.prefix), pool_start: poolStart, pool_end: poolEnd, dns: form.dns, lease_time: form.lease_time })}
+                onDetect={() => {
+                    onRefreshIfaces();
+                    s.detect(res => {
+                        const d = res?.detected || {};
+                        const addr = (d.addresses || []).find(a => a.interface === form.bridge_name);
+                        if (addr?.address) {
+                            const [ip, pfx] = addr.address.split('/');
+                            setForm(f => ({ ...f, gateway_ip: ip || f.gateway_ip, prefix: Number(pfx) || f.prefix }));
+                        }
+                        const members = (d.bridge_ports || []).filter(p => p.bridge === form.bridge_name).map(p => p.interface);
+                        if (members.length) set('interfaces', members);
+                    });
+                }}
+                onApply={handleApply}
                 applyLabel="Apply network" />
-            <ApplyLog commands={s.log} error={s.error} />
+            <ApplyLog commands={s.log} error={staleError || s.error} />
             <TerminalPanel lines={terminal} />
         </SectionCard>
     );
@@ -933,8 +989,8 @@ function HotspotSection({ routerId, online, status, cfg, networkReady, bridges, 
     const bridgeList = bridges.length ? bridges : (s.detected?.detected?.bridges || []);
     const terminal = [
         `/ip/hotspot/add name=hotspot1 interface=${form.bridge_name} address-pool=hs-pool disabled=no`,
-        `/ip/hotspot/profile/set [find name=hsprof1] login-by=${login_by.join(',')} use-radius=yes nas-port-type=wireless-802.11 dns-name=${form.dns_name}`,
-        `/ip/hotspot/user/profile/set [find name=default] session-timeout=${form.session_timeout} idle-timeout=${form.idle_timeout || 'none'} shared-users=${form.addresses_per_mac}`,
+        `/ip/hotspot/profile/set [find name=hsprof1] login-by=${login_by.join(',')} use-radius=yes nas-port-type=wireless-802.11 dns-name=${form.dns_name} http-cookie-lifetime=1m`,
+        `/ip/hotspot/user/profile/set [find name=default] session-timeout=${form.session_timeout} idle-timeout=${form.idle_timeout || 'none'} shared-users=${form.addresses_per_mac} mac-cookie-timeout=1m`,
     ];
     return (
         <SectionCard index={2} title="Hotspot" status={s.applying ? 'applying' : status} expanded={expanded} onToggle={onToggle}>
@@ -1028,7 +1084,7 @@ function RadiusSection({ routerId, online, status, cfg, expanded, onToggle, onAp
     );
 }
 
-function NatSection({ routerId, online, status, cfg, hotspotNetwork, ifaces, expanded, onToggle, onApplied }) {
+function NatSection({ routerId, online, status, cfg, hotspotNetwork, ifaces, onRefreshIfaces, expanded, onToggle, onApplied }) {
     const s = useSection(routerId, 'nat', onApplied);
     const [form, setForm] = useState({
         wan_interface: cfg?.wan_interface || '',
@@ -1037,10 +1093,30 @@ function NatSection({ routerId, online, status, cfg, hotspotNetwork, ifaces, exp
         invalid: (cfg?.firewall_options || ['established', 'invalid', 'icmp']).includes('invalid'),
         icmp: (cfg?.firewall_options || ['established', 'invalid', 'icmp']).includes('icmp'),
     });
+    const [staleError, setStaleError] = useState('');
     const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
     const network = cfg?.hotspot_network || hotspotNetwork || '';
     const wanList = ifaces.length ? ifaces : (s.detected?.detected?.interfaces || []);
     const firewall_options = [form.established && 'established', form.invalid && 'invalid', form.icmp && 'icmp'].filter(Boolean);
+
+    // Same staleness guard as the Network section: re-check the WAN interface
+    // against a fresh list right before applying rather than trusting the
+    // mount-time snapshot, since the router's ports can be renamed outside this page.
+    const handleApply = async (extra) => {
+        setStaleError('');
+        const fresh = await onRefreshIfaces();
+        if (!fresh) {
+            setStaleError('Could not refresh the router’s current interface list — check the connection and try again before applying.');
+            return;
+        }
+        const freshNames = new Set(fresh.map(i => i.name || i));
+        if (form.wan_interface && !freshNames.has(form.wan_interface)) {
+            set('wan_interface', '');
+            setStaleError(`WAN interface "${form.wan_interface}" no longer exists on the router (it may have been reconfigured since this page loaded). Cleared it — re-select it from the dropdown and apply again.`);
+            return;
+        }
+        s.apply({ wan_interface: form.wan_interface, hotspot_network: network || null, enable_nat: form.enable_nat, firewall_options, ...extra });
+    };
     const terminal = [
         form.enable_nat && `/ip/firewall/nat/add chain=srcnat src-address=${network || '<hotspot-network>'} out-interface=${form.wan_interface || '<wan>'} action=masquerade comment="hotspot-nat"`,
         form.established && '/ip/firewall/filter/add chain=forward connection-state=established,related action=accept comment="allow-established"',
@@ -1077,11 +1153,14 @@ function NatSection({ routerId, online, status, cfg, hotspotNetwork, ifaces, exp
                 </div>
             )}
             <ActionRow online={online} detecting={s.detecting} applying={s.applying}
-                onDetect={() => s.detect(res => { const w = res?.detected?.suggested_wan; if (w) set('wan_interface', w); })}
-                onApply={() => s.apply({ wan_interface: form.wan_interface, hotspot_network: network || null, enable_nat: form.enable_nat, firewall_options })}
+                onDetect={() => {
+                    onRefreshIfaces();
+                    s.detect(res => { const w = res?.detected?.suggested_wan; if (w) set('wan_interface', w); });
+                }}
+                onApply={() => handleApply()}
                 applyLabel="Apply NAT"
-                extra={duplicate ? <button className="btn" style={{ background: '#fef3f2', color: '#b42318' }} onClick={() => s.apply({ wan_interface: form.wan_interface, hotspot_network: network || null, enable_nat: form.enable_nat, firewall_options, remove_duplicates: true })} disabled={!online || s.applying}>Remove duplicates</button> : null} />
-            <ApplyLog commands={s.log} error={s.error} />
+                extra={duplicate ? <button className="btn" style={{ background: '#fef3f2', color: '#b42318' }} onClick={() => handleApply({ remove_duplicates: true })} disabled={!online || s.applying}>Remove duplicates</button> : null} />
+            <ApplyLog commands={s.log} error={staleError || s.error} />
             <TerminalPanel lines={terminal} />
         </SectionCard>
     );
@@ -1107,10 +1186,22 @@ function RouterSetupTab({ routerId }) {
         if (data && !data.detail) setStatus(data);
     }, [routerId]);
 
+    // The router's interface names can change outside this page (port renames,
+    // manual reconfig at the site) — refetch on demand rather than trusting the
+    // mount-time snapshot. Returns the fresh list, or null if the fetch failed,
+    // so callers can tell "no interfaces" apart from "couldn't check."
+    const refreshIfaces = useCallback(async () => {
+        try {
+            const d = await apiCall(`/admin/routers/${routerId}/interfaces`);
+            if (Array.isArray(d)) { setIfaces(d); return d; }
+        } catch { /* keep previous list; caller treats null as "couldn't verify" */ }
+        return null;
+    }, [routerId]);
+
     useEffect(() => {
         loadStatus().catch(() => {});
-        apiCall(`/admin/routers/${routerId}/interfaces`).then(d => { if (Array.isArray(d)) setIfaces(d); }).catch(() => {});
-    }, [routerId, loadStatus]);
+        refreshIfaces();
+    }, [routerId, loadStatus, refreshIfaces]);
 
     if (!status) return <p>Loading setup status…</p>;
     const toggle = (k) => setExpanded(e => ({ ...e, [k]: !e[k] }));
@@ -1126,10 +1217,10 @@ function RouterSetupTab({ routerId }) {
                     This router is offline. Detect and Apply require a live connection (VPN tunnel or direct IP). Forms remain editable.
                 </div>
             )}
-            <NetworkSection routerId={routerId} online={online} status={status.network?.status} cfg={status.network?.config} ifaces={ifaces} expanded={expanded.network} onToggle={() => toggle('network')} onApplied={loadStatus} />
+            <NetworkSection routerId={routerId} online={online} status={status.network?.status} cfg={status.network?.config} ifaces={ifaces} onRefreshIfaces={refreshIfaces} expanded={expanded.network} onToggle={() => toggle('network')} onApplied={loadStatus} />
             <HotspotSection routerId={routerId} online={online} status={status.hotspot?.status} cfg={status.hotspot?.config} networkReady={networkReady} bridges={[]} expanded={expanded.hotspot} onToggle={() => toggle('hotspot')} onApplied={loadStatus} />
             <RadiusSection routerId={routerId} online={online} status={status.radius?.status} cfg={status.radius?.config} expanded={expanded.radius} onToggle={() => toggle('radius')} onApplied={loadStatus} />
-            <NatSection routerId={routerId} online={online} status={status.nat?.status} cfg={status.nat?.config} hotspotNetwork={hotspotNetwork} ifaces={ifaces} expanded={expanded.nat} onToggle={() => toggle('nat')} onApplied={loadStatus} />
+            <NatSection routerId={routerId} online={online} status={status.nat?.status} cfg={status.nat?.config} hotspotNetwork={hotspotNetwork} ifaces={ifaces} onRefreshIfaces={refreshIfaces} expanded={expanded.nat} onToggle={() => toggle('nat')} onApplied={loadStatus} />
         </div>
     );
 }
@@ -1142,11 +1233,18 @@ function RouterDetail({ routerId, onBack }) {
     const [logs, setLogs] = useState([]);
     const [diagnostics, setDiagnostics] = useState(null);
     const [diagLoading, setDiagLoading] = useState(false);
-    const [banner, setBanner] = useState('');
+    // { text, tone: 'success' | 'warning' } | null. tone controls the banner's
+    // color — a router-unreachable removal must not look identical to a
+    // clean success, so this can't be a plain string the way it used to be.
+    const [banner, setBanner] = useState(null);
+    const showBanner = (text, tone = 'success') => setBanner({ text, tone });
     const [editOpen, setEditOpen] = useState(false);
     const [reprovisionOpen, setReprovisionOpen] = useState(false);
     const [rebootOpen, setRebootOpen] = useState(false);
     const [rebootConfirm, setRebootConfirm] = useState('');
+    const [removeOpen, setRemoveOpen] = useState(false);
+    const [removeConfirm, setRemoveConfirm] = useState('');
+    const [removing, setRemoving] = useState(false);
     const [editForm, setEditForm] = useState({});
     const [rpIfaces, setRpIfaces] = useState([]);
     const [rpTemplates, setRpTemplates] = useState([]);
@@ -1222,7 +1320,7 @@ function RouterDetail({ routerId, onBack }) {
         }
         setEditOpen(false);
         await Promise.all([loadOverview(), loadLogs()]);
-        setBanner(editForm.api_password ? 'Router record and credentials updated.' : 'Router record updated.');
+        showBanner(editForm.api_password ? 'Router record and credentials updated.' : 'Router record updated.');
     }
 
     async function loadReprovisionData() {
@@ -1244,7 +1342,7 @@ function RouterDetail({ routerId, onBack }) {
         setReprovisionOpen(false);
         await Promise.all([loadOverview(), loadLogs()]);
         setTab('logs');
-        setBanner('Reprovision started. Watch the Provision log tab.');
+        showBanner('Reprovision started. Watch the Provision log tab.');
     }
 
     async function doReboot() {
@@ -1253,9 +1351,47 @@ function RouterDetail({ routerId, onBack }) {
             await apiCall(`/admin/routers/${routerId}/reboot`, { method: 'POST', body: JSON.stringify({ confirm: true }) });
             setRebootOpen(false);
             setRebootConfirm('');
-            setBanner('Reboot command queued.');
+            showBanner('Reboot command queued.');
         } catch (e) {
             alert(e.message);
+        }
+    }
+
+    async function doRemove() {
+        if (removeConfirm !== router.name) { alert(`Type the router's name (${router.name}) to confirm.`); return; }
+        setRemoving(true);
+        try {
+            const summary = await apiCall(`/admin/routers/${routerId}`, { method: 'DELETE' });
+            setRemoveOpen(false);
+            setRemoveConfirm('');
+            // Two honestly different outcomes — see the removal design notes:
+            // we can only actively disconnect already-online customers, and
+            // confirm the router can no longer reach us, when it responded.
+            // This banner is a one-time convenience; the permanent, reload-proof
+            // record is the "removal" block on the router itself, rendered below.
+            if (!summary.router_reachable) {
+                showBanner(
+                    `${router.name} could not be reached, so we can't confirm anyone currently online through it was ` +
+                    `disconnected — they may still have access. ` +
+                    (summary.wireguard_removed
+                        ? 'It can no longer reach our servers, so no new customer can connect through it going forward.'
+                        : "Its VPN tunnel couldn't be confirmed removed either; this will be retried automatically."),
+                    'warning',
+                );
+            } else {
+                const parts = [`${router.name} has been removed.`];
+                if (summary.sessions_disconnected > 0) parts.push(`${summary.sessions_disconnected} active session(s) disconnected.`);
+                if (summary.sessions_failed > 0) parts.push(`${summary.sessions_failed} active session(s) could not be disconnected.`);
+                parts.push(summary.wireguard_removed
+                    ? 'New login attempts will fail immediately — its VPN tunnel has been removed.'
+                    : 'Its VPN tunnel could not be confirmed removed yet; this will be retried automatically.');
+                showBanner(parts.join(' '), summary.sessions_failed > 0 || !summary.wireguard_removed ? 'warning' : 'success');
+            }
+            await loadOverview();
+        } catch (e) {
+            alert(e.message || 'Could not remove the router.');
+        } finally {
+            setRemoving(false);
         }
     }
 
@@ -1288,16 +1424,54 @@ function RouterDetail({ routerId, onBack }) {
     return (
         <div>
             {banner && (
-                <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 12, background: '#ecfdf3', color: '#067647' }}>
-                    {banner} <button onClick={() => setBanner('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#067647', float: 'right' }}>✕</button>
+                <div style={{
+                    marginBottom: 16, padding: '10px 14px', borderRadius: 12,
+                    background: banner.tone === 'warning' ? '#fffbeb' : '#ecfdf3',
+                    color: banner.tone === 'warning' ? '#92400e' : '#067647',
+                    border: banner.tone === 'warning' ? '1px solid #fde68a' : 'none',
+                }}>
+                    {banner.tone === 'warning' ? '⚠ ' : ''}{banner.text}
+                    <button
+                        onClick={() => setBanner(null)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', float: 'right' }}
+                    >✕</button>
                 </div>
+            )}
+
+            {/* Permanent, reload-proof record of what removal actually confirmed —
+               not the transient banner above, which is gone on refresh or dismiss.
+               router.removal.router_reachable is the load-bearing field: whether we
+               could ask the router who was online and kick them off at removal time.
+               Anything short of a CONFIRMED true (false, or null because removal
+               didn't fully finish) gets the caution treatment — "unknown" must never
+               look the same as "confirmed clean". */}
+            {!router.is_active && router.removal && (
+                router.removal.router_reachable !== true ? (
+                    <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 12, background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' }}>
+                        ⚠ This router was removed on {fmt(router.removal.removed_at)}
+                        {router.removal.router_reachable === false
+                            ? ", but it couldn't be reached at the time"
+                            : " — removal didn't fully complete"}
+                        {' '}— <strong>we could not confirm that anyone connected through it was disconnected</strong>.
+                        If it was still powered with customers online, they may still have access. {router.wireguard?.enabled
+                            ? "Its VPN tunnel also hasn't been confirmed removed; this is retried automatically."
+                            : 'It can no longer reach our servers going forward, so no new customer can connect through it.'}
+                        {' '}Its sessions, vouchers and history are kept below.
+                    </div>
+                ) : (
+                    <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 12, background: '#f3f4f6', color: '#374151', border: '1px solid #d7deea' }}>
+                        This router was removed on {fmt(router.removal.removed_at)}
+                        {router.removal.sessions_disconnected ? ` — ${router.removal.sessions_disconnected} active session(s) were disconnected at the time` : ''}
+                        {' '}and it can no longer connect. Its sessions, vouchers and history are kept below.
+                    </div>
+                )
             )}
 
             <button onClick={onBack} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#0d6e5f', fontWeight: 600, marginBottom: 12, padding: 0 }}>← Back to Routers</button>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
                 <div>
-                    <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700 }}>{router.name}</h1>
+                    <PageHeader title={router.name} />
                     <p style={{ margin: '4px 0 0', color: '#5c677d' }}>{router.site_name} — {router.ip_address || 'VPN only'} — {router.nas_identifier}</p>
                     {setupSummary && (
                         <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#5c677d' }}>
@@ -1311,10 +1485,13 @@ function RouterDetail({ routerId, onBack }) {
                     )}
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <button className="btn" style={{ background: '#e5e7eb' }} onClick={() => setEditOpen(true)}>Edit</button>
-                    <button className="btn btn-primary" onClick={() => { setReprovisionOpen(true); loadReprovisionData(); }}>Reprovision</button>
-                    <button className="btn" style={{ background: '#e5e7eb' }} onClick={runDiagnostics} disabled={diagLoading}>{diagLoading ? 'Running…' : 'Diagnostics'}</button>
-                    <button className="btn" style={{ background: '#fef3f2', color: '#b42318' }} onClick={() => setRebootOpen(true)}>Reboot</button>
+                    <button className="btn" style={{ background: '#e5e7eb' }} onClick={() => setEditOpen(true)} disabled={!router.is_active}>Edit</button>
+                    <button className="btn btn-primary" onClick={() => { setReprovisionOpen(true); loadReprovisionData(); }} disabled={!router.is_active}>Reprovision</button>
+                    <button className="btn" style={{ background: '#e5e7eb' }} onClick={runDiagnostics} disabled={diagLoading || !router.is_active}>{diagLoading ? 'Running…' : 'Diagnostics'}</button>
+                    <button className="btn" style={{ background: '#fef3f2', color: '#b42318' }} onClick={() => setRebootOpen(true)} disabled={!router.is_active}>Reboot</button>
+                    {router.is_active && (
+                        <button className="btn" style={{ background: '#fef3f2', color: '#b42318' }} onClick={() => setRemoveOpen(true)}>Remove router</button>
+                    )}
                 </div>
             </div>
 
@@ -1515,6 +1692,32 @@ function RouterDetail({ routerId, onBack }) {
                 <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                     <button className="btn" style={{ background: '#fef3f2', color: '#b42318' }} onClick={doReboot}>Send reboot</button>
                     <button className="btn" style={{ background: '#e5e7eb' }} onClick={() => { setRebootOpen(false); setRebootConfirm(''); }}>Cancel</button>
+                </div>
+            </Modal>
+
+            {/* Remove-router modal — precise about what this does and doesn't guarantee:
+               it stops new logins (within seconds — the VPN tunnel is removed, which is
+               what actually blocks RADIUS reaching the router, not any RADIUS-side change),
+               and it disconnects already-online customers ONLY if the router responds to
+               the disconnect command right now. It does not delete anything. */}
+            <Modal open={removeOpen} onClose={() => { setRemoveOpen(false); setRemoveConfirm(''); }} title="Remove router">
+                <p>
+                    This will disconnect anyone currently online through <strong>{router.name}</strong> (if it responds
+                    right now) and remove its VPN tunnel, so it can no longer reach our servers — new login attempts
+                    will fail within seconds. <strong>{router.name}</strong>'s sessions, vouchers and history are kept;
+                    nothing is deleted.
+                </p>
+                <p style={{ color: '#b42318', fontSize: 13 }}>
+                    If the router can't be reached right now, customers already connected through it will stay online
+                    until it comes back — we can't force off a device we can't talk to.
+                </p>
+                <p>Type <strong>{router.name}</strong> to confirm.</p>
+                <input value={removeConfirm} onChange={e => setRemoveConfirm(e.target.value)} placeholder={router.name} />
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <button className="btn" style={{ background: '#fef3f2', color: '#b42318' }} onClick={doRemove} disabled={removing}>
+                        {removing ? 'Removing…' : 'Remove router'}
+                    </button>
+                    <button className="btn" style={{ background: '#e5e7eb' }} onClick={() => { setRemoveOpen(false); setRemoveConfirm(''); }} disabled={removing}>Cancel</button>
                 </div>
             </Modal>
         </div>

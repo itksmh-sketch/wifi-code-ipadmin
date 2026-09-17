@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import async_session_factory
 from src.db.models import Plan, Router, Session, Voucher
 from src.modules.vouchers.engine import transition_voucher_status
+from src.modules.mikrotik.access_revocation import revoke_voucher_access
 from src.radius.coa_events import create_pending_disconnect_event, send_disconnect_with_event
 import structlog
 
@@ -107,7 +108,15 @@ async def expire_vouchers(ctx=None):
 
 async def _transition_and_disconnect(db: AsyncSession, voucher: Voucher, next_status: str):
     await transition_voucher_status(db, voucher.id, next_status, voucher.isp_operator_id)
+    await _disconnect_open_session(db, voucher)
+    # Router-side cleanup AFTER the CoA (running it first made every CoA NAK
+    # because the session was already gone): removes any active entry the CoA
+    # didn't reach — including a client with no session row at all — and
+    # clears stored hotspot cookies. See access_revocation.
+    await revoke_voucher_access(db, voucher)
 
+
+async def _disconnect_open_session(db: AsyncSession, voucher: Voucher):
     session_result = await db.execute(
         select(Session)
         .where(

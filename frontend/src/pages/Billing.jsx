@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { apiCall } from '../App';
 import TransactionsTab from '../components/TransactionsTab';
 import SmsUsageTab from '../components/SmsUsageTab';
+import PageHeader from '../components/PageHeader';
 
 const TABS = [
     ['invoices', 'Invoices'],
@@ -45,7 +46,7 @@ export default function Billing() {
 
     return (
         <div>
-            <h1 style={{ marginBottom: 24 }}>Billing</h1>
+            <PageHeader title="Billing" style={{ marginBottom: 24 }} />
 
             {status && (
                 <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 20, marginBottom: 24 }}>

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { apiCall } from '../App';
+import PageHeader from '../components/PageHeader';
 
 // Mirrors the platform defaults in backend src/modules/branding/service.py.
 const DEFAULTS = {
@@ -163,7 +164,7 @@ export default function Branding() {
         <div>
             <div className="flex-between">
                 <div>
-                    <h1 style={{ fontSize: 24, fontWeight: 700 }}>Portal Branding</h1>
+                    <PageHeader title="Portal Branding" />
                     <p style={{ color: '#6b7280', fontSize: 14, marginTop: 4 }}>
                         Customise how your captive portal looks to customers. Unset fields use the platform defaults.
                     </p>

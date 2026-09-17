@@ -14,6 +14,7 @@ from src.middleware.auth import TenantContext, get_admin_tenant_context, get_cur
 from src.modules.mikrotik.api_service import MikroTikAPIService, MikroTikOperationError, RouterCredentialsMissingError
 from src.modules.mikrotik.diagnostics import MikroTikDiagnosticsService
 from src.modules.mikrotik.provisioner import MikroTikProvisioner
+from src.modules.mikrotik.removal import RouterAlreadyRemovedError, remove_router
 from src.modules.mikrotik.template_engine import ConfigTemplateService, TemplateValidationError
 from src.modules.mikrotik.types import (
     ApplyTemplateRequest,
@@ -30,14 +31,17 @@ from src.modules.mikrotik.types import (
     RouterCredentialsRequest,
     RouterCredentialsResponse,
     RouterMetricResponse,
+    RouterRemovalSummary,
     TempInterfacesRequest,
 )
+from src.modules.wireguard.service import WireGuardService
 from src.utils.encryption import encrypt_secret
 from src.utils.freeradius_reload import reload_freeradius_clients
 
 router = APIRouter(prefix="/admin", tags=["mikrotik-admin"])
 service = MikroTikAPIService()
 diagnostics_service = MikroTikDiagnosticsService()
+wg_service = WireGuardService()
 provisioner = MikroTikProvisioner()
 template_service = ConfigTemplateService()
 
@@ -135,12 +139,22 @@ async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tena
 
 
 @router.get("/routers")
-async def admin_router_list(db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+async def admin_router_list(
+    include_removed: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(get_admin_tenant_context),
+):
+    # Removed (is_active=false) routers are hidden by default — they're retired
+    # fleet, not working inventory — but never deleted, so ?include_removed=true
+    # (and direct navigation to /routers/{id}) still reaches their full history.
+    conditions = [Router.isp_operator_id == tenant.isp_operator_id, Site.isp_operator_id == tenant.isp_operator_id]
+    if not include_removed:
+        conditions.append(Router.is_active.is_(True))
     result = await db.execute(
         select(Router, Site, RouterCredential)
         .join(Site, Site.id == Router.site_id)
         .join(RouterCredential, RouterCredential.router_id == Router.id, isouter=True)
-        .where(Router.isp_operator_id == tenant.isp_operator_id, Site.isp_operator_id == tenant.isp_operator_id)
+        .where(*conditions)
         .order_by(Router.name.asc())
     )
     rows = result.all()
@@ -157,6 +171,10 @@ async def admin_router_list(db: AsyncSession = Depends(get_db), tenant: TenantCo
             "last_seen_at": router_row.last_seen_at.isoformat() if router_row.last_seen_at else None,
             "connection_status": credentials.connection_status if credentials else "unknown",
             "last_connected_at": credentials.last_connected_at.isoformat() if credentials and credentials.last_connected_at else None,
+            # Only meaningful when is_active is false — see Router.removed_at.
+            # False here (not None) is the "may still have an online customer"
+            # signal the fleet list surfaces without opening the router.
+            "removal_router_reachable": router_row.removal_router_reachable,
         }
         for router_row, site, credentials in rows
     ]
@@ -189,6 +207,14 @@ async def admin_router_detail(router_id: uuid.UUID, db: AsyncSession = Depends(g
         "last_seen_at": router_row.last_seen_at.isoformat() if router_row.last_seen_at else None,
         "connection_status": credentials.connection_status if credentials else "unknown",
         "last_connected_at": credentials.last_connected_at.isoformat() if credentials and credentials.last_connected_at else None,
+        # Durable removal outcome (Router.removed_at etc — see models.py comment
+        # and migration 040). All null when the router has never been removed.
+        "removal": {
+            "removed_at": router_row.removed_at.isoformat() if router_row.removed_at else None,
+            "router_reachable": router_row.removal_router_reachable,
+            "sessions_disconnected": router_row.removal_sessions_disconnected,
+            "sessions_failed": router_row.removal_sessions_failed,
+        },
         "wireguard": {
             "enabled": bool(router_row.wg_enabled),
             "connected": bool(router_row.wg_is_connected),
@@ -208,6 +234,24 @@ async def admin_router_detail(router_id: uuid.UUID, db: AsyncSession = Depends(g
             "memory_used_percent": latest_metric.memory_used_percent if latest_metric else None,
         },
     }
+
+
+@router.delete("/routers/{router_id}", response_model=RouterRemovalSummary)
+async def remove_router_endpoint(
+    router_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(get_admin_tenant_context),
+):
+    """Soft-delete: is_active=false. Never a hard row delete — see removal.py
+    for why (Session/RouterMetric/RouterProvisionLog/CoAEvent/RouterCredential
+    all reference router_id with no ON DELETE, so a hard delete would fail
+    with a FK violation for any router with real history, and silently
+    destroy it for the rare one that has none)."""
+    router_row = await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
+    try:
+        return await remove_router(db, router_row, tenant.isp_operator_id, api_service=service, wg_service=wg_service)
+    except RouterAlreadyRemovedError:
+        raise HTTPException(status_code=409, detail="Router has already been removed")
 
 
 @router.post("/routers/{router_id}/credentials", response_model=RouterCredentialsResponse, status_code=201)
@@ -369,19 +413,32 @@ async def disconnect_router_user(
                 .order_by(Session.started_at.desc())
             )
         ).scalars().first()
-    event = CoAEvent(
-        session_id=session_row.id if session_row else None,
-        voucher_id=voucher_id,
-        router_id=router_id,
-        isp_operator_id=tenant.isp_operator_id,
-        event_type="disconnect",
-        status="confirmed",
-        attempt_count=1,
-        last_attempted_at=datetime.now(timezone.utc),
+    # disconnect_hotspot_user also clears the client's hotspot cookie, so the
+    # router can't silently log it back in. The audit event is written from the
+    # real outcome (never left "pending", which the backstop treats as in-flight).
+    error = None
+    try:
+        result = await service.disconnect_hotspot_user(str(router_id), body.active_id)
+    except Exception as exc:
+        error = exc
+    db.add(
+        CoAEvent(
+            session_id=session_row.id if session_row else None,
+            voucher_id=voucher_id,
+            router_id=router_id,
+            isp_operator_id=tenant.isp_operator_id,
+            event_type="disconnect",
+            status="failed" if error else "confirmed",
+            error_message=str(error)[:500] if error else None,
+            # A failed manual click is surfaced to the operator directly; mark it
+            # retry-exhausted so coa_retry doesn't fire unrequested CoAs later.
+            attempt_count=3 if error else 1,
+            last_attempted_at=datetime.now(timezone.utc),
+        )
     )
-    db.add(event)
     await db.commit()
-    result = await service.disconnect_hotspot_user(str(router_id), body.active_id)
+    if error:
+        raise error
     return result.model_dump()
 
 

@@ -6,6 +6,7 @@ from src.jobs.check_exhausted_sessions import check_exhausted_sessions
 from src.jobs.coa_retry import retry_failed_coa_events
 from src.jobs.collect_router_metrics import collect_router_metrics
 from src.jobs.payment_reconciliation import run_payment_reconciliation
+from src.jobs.reconcile_hotspot import reconcile_hotspot
 from src.jobs.router_health import check_router_health
 from src.jobs.sms_reconciliation import reconcile_sms_usage
 from src.jobs.voucher_expiry import expire_vouchers
@@ -33,7 +34,7 @@ def _redis_settings() -> RedisSettings:
 
 class WorkerSettings:
     redis_settings = _redis_settings()
-    functions = [process_webhook_event, run_payment_reconciliation, expire_vouchers, retry_failed_coa_events, check_exhausted_sessions, check_router_health, collect_router_metrics, generate_monthly_invoices, handle_trial_expiry, enforce_billing, check_wireguard_tunnels, reconcile_sms_usage]
+    functions = [process_webhook_event, run_payment_reconciliation, expire_vouchers, retry_failed_coa_events, check_exhausted_sessions, check_router_health, collect_router_metrics, generate_monthly_invoices, handle_trial_expiry, enforce_billing, check_wireguard_tunnels, reconcile_sms_usage, reconcile_hotspot]
     cron_jobs = [
         cron(check_router_health, minute={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58}),
         cron(check_wireguard_tunnels, minute={0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58}),
@@ -50,6 +51,9 @@ class WorkerSettings:
         # retrospective monitoring with no load-bearing role, so it costs
         # nothing to keep off that clustering.
         cron(reconcile_sms_usage, hour=2, minute=17),
+        # Router-vs-DB hotspot drift + cookie-policy re-push. Offset from the
+        # backstop (:00/:05/...) so the two never race on the same session.
+        cron(reconcile_hotspot, minute={2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57}),
     ]
 
 

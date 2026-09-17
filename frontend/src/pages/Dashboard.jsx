@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiCall } from '../App';
 import { RevenueChart, RedemptionsChart } from '../components/AnalyticsCharts';
+import PageHeader from '../components/PageHeader';
 
 function fmtMoney(n) {
     if (n == null || isNaN(Number(n))) return '—';
@@ -52,7 +53,7 @@ export default function Dashboard() {
 
     return (
         <div>
-            <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 24 }}>Dashboard</h1>
+            <PageHeader title="Dashboard" style={{ marginBottom: 24 }} />
             <div style={{
                 display: 'grid',
                 gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',

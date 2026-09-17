@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { apiCall } from '../App';
+import PageHeader from '../components/PageHeader';
 
 export default function Plans() {
     const [plans, setPlans] = useState([]);
@@ -61,7 +62,7 @@ export default function Plans() {
     return (
         <div>
             <div className="flex-between">
-                <h1 style={{ fontSize: 24, fontWeight: 700 }}>Plans</h1>
+                <PageHeader title="Plans" />
                 <button className="btn btn-primary" onClick={openForm}>+ New Plan</button>
             </div>
 

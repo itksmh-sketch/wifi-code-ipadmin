@@ -188,3 +188,15 @@ class DisconnectUserRequest(BaseModel):
     active_id: str
     voucher_id: str | None = None
     username: str | None = None
+
+
+class RouterRemovalSummary(BaseModel):
+    """Result of removing (soft-deleting) a router. Every field describes what
+    actually happened, not what was attempted, so the UI can render an honest
+    outcome rather than assume success."""
+    router_id: str
+    router_reachable: bool
+    sessions_disconnected: int
+    sessions_failed: int
+    wireguard_removed: bool
+    wireguard_message: str | None = None

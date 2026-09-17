@@ -9,6 +9,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlsplit
 
 import routeros_api
+import structlog
 from routeros_api.exceptions import RouterOsApiError
 from sqlalchemy import select
 
@@ -27,6 +28,14 @@ from src.modules.mikrotik.types import (
 from src.utils.encryption import decrypt_secret
 
 settings = get_settings()
+logger = structlog.get_logger(__name__)
+
+# Short hotspot cookie lifetimes: a stored HTTP/MAC cookie lets the router log a
+# client straight back in, silently undoing an operator or CoA disconnect.
+# Applied at provisioning (setup_service) and re-enforced on live routers by the
+# reconciliation job (src/jobs/reconcile_hotspot.py).
+HOTSPOT_COOKIE_LIFETIME = "1m"
+HOTSPOT_PROFILE_NAME = "hsprof1"
 
 
 class RouterCredentialsMissingError(Exception):
@@ -329,6 +338,35 @@ class MikroTikAPIService:
             data={"active_id": active_id},
         )
         return ProvisionResult(success=True, message=result, commands_executed=commands)
+
+    async def remove_hotspot_user_access(self, router_id: str, usernames: list[str], mac: str | None = None) -> dict[str, int]:
+        """End a client's access on the router regardless of what the DB believes:
+        remove every /ip/hotspot/active entry for the usernames and every hotspot
+        cookie for the usernames or MAC. Used by paths that may have no open
+        session row to target (e.g. a voucher whose session went untracked)."""
+        result, _ = await self._run_router_operation(
+            router_id,
+            self._sync_remove_hotspot_user_access,
+            data={"users": usernames, "mac": mac},
+        )
+        return result
+
+    async def clear_hotspot_cookies(self, router_id: str, usernames: list[str], mac: str | None = None) -> int:
+        result, _ = await self._run_router_operation(
+            router_id,
+            self._sync_clear_hotspot_cookies,
+            data={"users": usernames, "mac": mac},
+        )
+        return result
+
+    async def get_hotspot_cookies(self, router_id: str) -> list[dict[str, Any]]:
+        result, _ = await self._run_router_operation(router_id, self._sync_get_hotspot_cookies)
+        return result
+
+    async def enforce_cookie_policy(self, router_id: str) -> list[str]:
+        """Idempotently apply HOTSPOT_COOKIE_LIFETIME; returns what was changed."""
+        result, _ = await self._run_router_operation(router_id, self._sync_enforce_cookie_policy)
+        return result
 
     async def reboot_router(self, router_id: str) -> ProvisionResult:
         result, commands = await self._run_router_operation(router_id, self._sync_reboot_router)
@@ -825,8 +863,75 @@ class MikroTikAPIService:
         return "Provisioning verified"
 
     def _sync_disconnect_hotspot_user(self, runner: SyncCommandRunner, data: dict[str, Any]) -> str:
+        # Read the entry first so the cookie clear is keyed on what the router
+        # itself reports for this client, not on caller-supplied identifiers.
+        active = next(
+            (row for row in runner.execute("/ip/hotspot/active", "print") if _routeros_id(row) == data["active_id"]),
+            None,
+        )
         runner.execute("/ip/hotspot/active", "remove", params={".id": data["active_id"]})
-        return "Active hotspot user disconnected"
+        if not active:
+            logger.info("hotspot_user_disconnected", active_id=data["active_id"], cookies_cleared=0, entry_found=False)
+            return "Active hotspot user disconnected"
+        cleared = self._sync_clear_hotspot_cookies(runner, {"users": [active.get("user")], "mac": active.get("mac-address")})
+        logger.info(
+            "hotspot_user_disconnected",
+            active_id=data["active_id"],
+            username=active.get("user"),
+            mac_address=active.get("mac-address"),
+            cookies_cleared=cleared,
+        )
+        return f"Active hotspot user disconnected; {cleared} cookie(s) cleared"
+
+    def _sync_clear_hotspot_cookies(self, runner: SyncCommandRunner, data: dict[str, Any]) -> int:
+        users = {u for u in (data.get("users") or []) if u}
+        mac = (data.get("mac") or "").upper()
+        if not users and not mac:
+            return 0
+        cleared = 0
+        for row in runner.execute("/ip/hotspot/cookie", "print"):
+            if row.get("user") in users or (mac and (row.get("mac-address") or "").upper() == mac):
+                runner.execute("/ip/hotspot/cookie", "remove", params={".id": _routeros_id(row)})
+                cleared += 1
+        return cleared
+
+    def _sync_remove_hotspot_user_access(self, runner: SyncCommandRunner, data: dict[str, Any]) -> dict[str, int]:
+        users = {u for u in (data.get("users") or []) if u}
+        mac = data.get("mac")
+        removed = 0
+        if users:
+            for row in runner.execute("/ip/hotspot/active", "print"):
+                if row.get("user") in users:
+                    runner.execute("/ip/hotspot/active", "remove", params={".id": _routeros_id(row)})
+                    removed += 1
+        cleared = self._sync_clear_hotspot_cookies(runner, {"users": list(users), "mac": mac})
+        return {"active_removed": removed, "cookies_cleared": cleared}
+
+    def _sync_get_hotspot_cookies(self, runner: SyncCommandRunner, _: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            {"id": _routeros_id(row), "user": row.get("user"), "mac_address": row.get("mac-address"), "expires_in": row.get("expires-in")}
+            for row in runner.execute("/ip/hotspot/cookie", "print")
+        ]
+
+    def _sync_enforce_cookie_policy(self, runner: SyncCommandRunner, _: dict[str, Any]) -> list[str]:
+        changed = []
+        profile = next(
+            (row for row in runner.execute("/ip/hotspot/profile", "print") if row.get("name") == HOTSPOT_PROFILE_NAME),
+            None,
+        )
+        if profile and profile.get("http-cookie-lifetime") != HOTSPOT_COOKIE_LIFETIME:
+            runner.execute("/ip/hotspot/profile", "set", params={".id": _routeros_id(profile), "http-cookie-lifetime": HOTSPOT_COOKIE_LIFETIME})
+            changed.append(f"{HOTSPOT_PROFILE_NAME} http-cookie-lifetime {profile.get('http-cookie-lifetime')} -> {HOTSPOT_COOKIE_LIFETIME}")
+        # The MAC-cookie timeout lives on the user profile; the RADIUS-backed
+        # hotspot users all land on "default".
+        user_profile = next(
+            (row for row in runner.execute("/ip/hotspot/user/profile", "print") if row.get("name") == "default"),
+            None,
+        )
+        if user_profile and user_profile.get("mac-cookie-timeout") != HOTSPOT_COOKIE_LIFETIME:
+            runner.execute("/ip/hotspot/user/profile", "set", params={".id": _routeros_id(user_profile), "mac-cookie-timeout": HOTSPOT_COOKIE_LIFETIME})
+            changed.append(f"default mac-cookie-timeout {user_profile.get('mac-cookie-timeout')} -> {HOTSPOT_COOKIE_LIFETIME}")
+        return changed
 
     def _sync_reboot_router(self, runner: SyncCommandRunner, _: dict[str, Any]) -> str:
         runner.execute("/system", "reboot")
