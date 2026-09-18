@@ -1,4 +1,13 @@
-"""All email templates as (subject, html, text) tuples."""
+"""All email templates as (subject, html, text) tuples.
+
+RETIRED FROM THE SEND PATH. Nothing in production calls these any more — the
+wording now lives in platform_notification_templates, seeded by migration 044
+from modules/notifications/template_catalog.py and editable by a platform
+owner. This module is kept as the reference implementation that
+tests/test_notification_templates.py renders against, asserting the shipped
+defaults are character-identical to what these functions produce. Delete it
+only together with that test.
+"""
 from __future__ import annotations
 from decimal import Decimal
 

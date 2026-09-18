@@ -20,6 +20,8 @@ from src.modules.payments.types import PaymentMethod, PaymentProviderName
 PLATFORM_OWNER_EMAIL = os.getenv("PLATFORM_OWNER_EMAIL", "owner@yourisp.com")
 PLATFORM_OWNER_PASSWORD = os.getenv("PLATFORM_OWNER_PASSWORD", "ChangeMe2024Strong!")
 _PLATFORM_OWNER_TOKEN: str | None = None
+# Temp passwords returned (once) by POST /platform/operators, keyed by slug.
+_TEMP_PASSWORDS: dict[str, str] = {}
 
 
 def _login_admin(email: str = "admin@isp.com", password: str = "admin123") -> str:
@@ -53,7 +55,8 @@ def _create_operator(owner_token: str, slug: str) -> dict:
             "contact_email": f"{slug}@example.com",
             "contact_phone": "233200000001",
             "initial_admin_email": f"admin-{slug}@example.com",
-            "initial_admin_password": "admin12345",
+            # No password is accepted any more: one is generated and returned once.
+            "initial_admin_phone": "0244000001",
         },
     )
     assert status in (201, 409), body
@@ -61,6 +64,7 @@ def _create_operator(owner_token: str, slug: str) -> dict:
         status, operators = _request("GET", "/api/v1/platform/operators", token=owner_token)
         assert status == 200, operators
         return next(row for row in operators if row["slug"] == slug)
+    _TEMP_PASSWORDS[slug] = body["initial_admin"]["temp_password"]
     return body
 
 
@@ -69,7 +73,11 @@ def _unique_slug(prefix: str) -> str:
 
 
 def _login_operator_admin(slug: str) -> str:
-    return _login_admin(email=f"admin-{slug}@example.com", password="admin12345")
+    # NOTE: a freshly created admin is on a temp password and must complete
+    # onboarding (SMS OTP) before the admin API serves it; these HTTP-only tests
+    # have no way to read the OTP, so admin API calls made with this token get
+    # 403 X-Onboarding-Required until the suite gains an onboarding fixture.
+    return _login_admin(email=f"admin-{slug}@example.com", password=_TEMP_PASSWORDS[slug])
 
 
 def _create_operator_pair(prefix: str = "phase1") -> tuple[dict, dict, str, str]:

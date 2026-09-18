@@ -65,10 +65,14 @@
           <input id="admin_email" type="email" required placeholder="admin@isp.com">
         </div>
         <div>
-          <label>Admin Password *</label>
-          <input id="admin_password" type="password" required minlength="8" placeholder="Min 8 characters">
+          <label>Admin Mobile Number *</label>
+          <input id="admin_phone" type="tel" required placeholder="0244123456">
         </div>
       </div>
+      <p class="text-muted" style="margin:8px 0 0">
+        A temporary password is generated and sent to this number by SMS, and shown to you once.
+        On first sign-in the admin must verify this phone and choose their own password.
+      </p>
 
       <div class="spacer"></div>
       <div style="display:flex;gap:10px">
@@ -76,6 +80,17 @@
         <a href="/platform/operators" class="btn">Cancel</a>
       </div>
     </form>
+
+    <div id="created" style="display:none">
+      <div class="card-title" style="margin-bottom:6px">Operator created</div>
+      <p class="text-muted" style="margin:0 0 14px">Temporary password for the initial admin. It will not be shown again.</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <input id="temp-password" readonly style="flex:1;padding:9px 12px;font-size:14px;font-family:monospace;background:#f8fafc">
+        <button class="btn" type="button" id="copy-password">Copy</button>
+      </div>
+      <p class="text-muted" id="password-meta" style="margin:0 0 16px;font-size:13px"></p>
+      <a href="/platform/operators" class="btn primary">Done</a>
+    </div>
   </div>
 </div>
 
@@ -123,7 +138,7 @@
     const contact_email = document.getElementById('contact_email').value.trim();
     const contact_phone = document.getElementById('contact_phone').value.trim();
     const admin_email = document.getElementById('admin_email').value.trim();
-    const admin_password = document.getElementById('admin_password').value;
+    const admin_phone = document.getElementById('admin_phone').value.trim();
     const trial_days_raw = document.getElementById('trial_days').value.trim();
 
     if (!name || name.length < 3) { showMsg('Business name must be at least 3 characters.'); return; }
@@ -131,7 +146,7 @@
     if (!contact_email) { showMsg('Contact email is required.'); return; }
     if (!contact_phone) { showMsg('Contact phone is required.'); return; }
     if (!admin_email) { showMsg('Admin email is required.'); return; }
-    if (admin_password.length < 8) { showMsg('Admin password must be at least 8 characters.'); return; }
+    if (!/^(0[2-9]\d{8}|233\d{9})$/.test(admin_phone.replace(/\D/g, ''))) { showMsg('Admin mobile number must be a valid Ghana number (e.g. 0244123456).'); return; }
     if (trial_days_raw !== '' && (!Number.isInteger(Number(trial_days_raw)) || Number(trial_days_raw) < 1 || Number(trial_days_raw) > 365)) {
       showMsg('Trial days must be a whole number between 1 and 365, or left blank.'); return;
     }
@@ -152,7 +167,7 @@
           contact_email,
           contact_phone,
           initial_admin_email: admin_email,
-          initial_admin_password: admin_password,
+          initial_admin_phone: admin_phone,
           trial_days: trial_days_raw === '' ? null : Number(trial_days_raw),
         }),
       });
@@ -165,19 +180,34 @@
 
       const data = await res.json();
       if (!res.ok) {
-        showMsg(data.detail || 'Failed to create operator. Check the form and try again.');
+        const detail = Array.isArray(data.detail) ? data.detail.map(d => d.msg).join('; ') : data.detail;
+        showMsg(detail || 'Failed to create operator. Check the form and try again.');
         btn.disabled = false;
         btn.textContent = 'Create Operator';
         return;
       }
 
-      showMsg(`Operator "${data.name}" created successfully! Redirecting…`, true);
-      setTimeout(() => { window.location.href = '/platform/operators'; }, 1500);
+      // The temp password is shown exactly once — no auto-redirect.
+      const admin = data.initial_admin || {};
+      document.getElementById('form').style.display = 'none';
+      document.getElementById('temp-password').value = admin.temp_password || '';
+      document.getElementById('password-meta').textContent =
+        `Operator: ${data.name} · admin: ${admin.email} · ` +
+        (admin.temp_password_sms_sent
+          ? `also sent by SMS to ${admin.phone}.`
+          : `SMS NOT sent (${admin.temp_password_sms_error || 'unknown error'}) — share it yourself.`);
+      document.getElementById('created').style.display = 'block';
+      showMsg(`Operator "${data.name}" created.`, true);
     } catch {
       showMsg('Network error. Please try again.');
       btn.disabled = false;
       btn.textContent = 'Create Operator';
     }
+  });
+  document.getElementById('copy-password').addEventListener('click', () => {
+    const el = document.getElementById('temp-password');
+    el.select();
+    navigator.clipboard?.writeText(el.value);
   });
 </script>
 </body>

@@ -204,7 +204,9 @@ def test_edits_that_keep_settings_unique_still_work(operator_a):
     assert status == 200, f"Expected 200, got {status}: {body}"
 
     status, body = _request(
-        "PUT", f"/api/v1/plans/{plan['id']}", token=operator_a, body={"is_active": False}
+        # Availability has its own endpoints now; PUT/PATCH are the allowlisted
+        # name/price/speed editors and refuse is_active by name.
+        "POST", f"/api/v1/plans/{plan['id']}/deactivate", token=operator_a
     )
     assert status == 200, f"Expected 200, got {status}: {body}"
 

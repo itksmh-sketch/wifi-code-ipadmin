@@ -57,7 +57,10 @@
     <div id="op-err" class="notice bad" style="display:none;margin-bottom:16px"></div>
     <div class="detail-grid" id="detail-cards" style="display:none">
       <div class="card">
-        <div class="card-title">Contact</div>
+        <div class="card-header">
+          <span class="card-title">Contact</span>
+          <button class="btn sm" id="edit-operator-btn" disabled>Edit</button>
+        </div>
         <div id="c-contact"></div>
       </div>
       <div class="card">
@@ -106,8 +109,9 @@
     <div id="admin-msg" class="notice bad" style="display:none;margin-bottom:12px"></div>
     <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Email</label>
     <input id="admin-email" type="email" required placeholder="admin@isp.com" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:12px">
-    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Password</label>
-    <input id="admin-password" type="password" required minlength="8" placeholder="Min 8 characters" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:12px">
+    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Mobile number</label>
+    <input id="admin-phone" type="tel" required placeholder="0244123456" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:4px">
+    <p class="text-muted" style="margin:0 0 12px;font-size:12.5px">The admin's own phone. A temporary password is sent here; they verify it and choose their own password on first sign-in.</p>
     <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Role</label>
     <select id="admin-role" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:16px">
       <option value="admin" selected>admin</option>
@@ -119,10 +123,52 @@
       <button class="btn primary" id="admin-submit">Create admin</button>
     </div>
   </div>
+  <!-- Edit operator details -->
+  <div id="modal-operator" class="card" style="display:none;max-width:460px;width:100%;padding:24px">
+    <div class="card-title" style="margin-bottom:6px">Edit operator</div>
+    <p class="text-muted" style="margin:0 0 14px">Business name and billing contact details. The URL slug, billing and status are changed elsewhere.</p>
+    <div id="operator-msg" class="notice bad" style="display:none;margin-bottom:12px"></div>
+    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Business name</label>
+    <input id="op-name" type="text" required style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:12px">
+    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Contact email</label>
+    <input id="op-contact-email" type="email" required style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:4px">
+    <p class="text-muted" style="margin:0 0 12px;font-size:12.5px">Used for invoices, trial and suspension notices, and as the payer email when this operator pays an invoice online — keep it a real, monitored address.</p>
+    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Contact phone <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+    <input id="op-contact-phone" type="tel" placeholder="0244123456" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:4px">
+    <p class="text-muted" style="margin:0 0 16px;font-size:12.5px">Where billing SMS notices go. Leave empty to clear it.</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closeModals()">Cancel</button>
+      <button class="btn primary" id="operator-submit">Save changes</button>
+    </div>
+  </div>
+  <!-- Reset password: confirmation -->
+  <div id="modal-reset" class="card" style="display:none;max-width:460px;width:100%;padding:24px">
+    <div class="card-title" style="margin-bottom:6px">Reset password?</div>
+    <p id="reset-sub" style="margin:0 0 10px;font-weight:600"></p>
+    <p class="text-muted" id="reset-explain" style="margin:0 0 12px"></p>
+    <div id="reset-phone-wrap" style="display:none">
+      <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Mobile number <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+      <input id="reset-phone" type="tel" placeholder="0244123456" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:4px">
+      <p class="text-muted" style="margin:0 0 12px;font-size:12.5px">Where to text the new temporary password. Saved unverified; the admin verifies it on next sign-in. Leave empty to keep the number on file.</p>
+    </div>
+    <div id="reset-msg" class="notice bad" style="display:none;margin-bottom:12px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closeModals()">Cancel</button>
+      <button class="btn danger" id="reset-submit">Reset password</button>
+    </div>
+  </div>
+  <!-- Reset password: result -->
+  <div id="modal-reset-done" class="card" style="display:none;max-width:460px;width:100%;padding:24px">
+    <div class="card-title" style="margin-bottom:6px">Password reset</div>
+    <div id="reset-done-body" style="margin-bottom:16px"></div>
+    <div style="display:flex;justify-content:flex-end">
+      <button class="btn primary" onclick="closeModals()">Done</button>
+    </div>
+  </div>
   <!-- Created confirmation -->
   <div id="modal-admin-done" class="card" style="display:none;max-width:460px;width:100%;padding:24px">
     <div class="card-title" style="margin-bottom:6px">Admin created</div>
-    <p class="text-muted" style="margin:0 0 14px">Share these credentials securely. The password is not stored in readable form and cannot be shown again.</p>
+    <p class="text-muted" style="margin:0 0 14px">Temporary password for the new admin. It is not stored in readable form and cannot be shown again.</p>
     <div id="admin-done-body" style="margin-bottom:16px"></div>
     <div style="display:flex;justify-content:flex-end">
       <button class="btn primary" onclick="closeModals()">Done</button>
@@ -365,7 +411,10 @@ async function loadOperator() {
   try {
     const res = await api('/api/v1/platform/operators/' + operatorId);
     if (!res.ok) throw new Error('Could not load operator details (' + res.status + ').');
-    renderOperatorCards(await res.json());
+    const op = await res.json();
+    currentOperator = op;  // pre-fills the edit dialog
+    document.getElementById('edit-operator-btn').disabled = false;
+    renderOperatorCards(op);
   } catch (e) {
     const el = document.getElementById('op-err');
     el.textContent = e.message || 'Could not load operator details.';
@@ -382,7 +431,7 @@ function renderAdmins(admins) {
   }
   document.getElementById('admins-body').innerHTML =
     '<div class="table-wrap"><table class="table"><thead><tr>'
-    + '<th>Email</th><th>Role</th><th>Status</th><th>Created</th><th>Last Login</th>'
+    + '<th>Email</th><th>Role</th><th>Status</th><th>Phone</th><th>Account setup</th><th>Created</th><th>Last Login</th><th></th>'
     + '</tr></thead><tbody>'
     + admins.map(a =>
         '<tr>'
@@ -390,12 +439,103 @@ function renderAdmins(admins) {
         + '<td class="text-muted">' + escHtml(a.role) + '</td>'
         + '<td><span class="badge ' + (a.is_active ? 'approved' : 'cancelled') + '">'
         + (a.is_active ? 'active' : 'inactive') + '</span></td>'
+        + '<td>' + (a.phone ? '<code class="mono-dim">' + escHtml(a.phone) + '</code> ' : '')
+        + (a.phone_verified ? '<span class="badge approved">verified</span>' : '<span class="badge pending">unverified</span>') + '</td>'
+        + '<td>' + (a.must_complete_onboarding ? '<span class="badge pending">onboarding pending</span>'
+                  : a.must_change_password ? '<span class="badge pending">password change pending</span>'
+                  : '<span class="badge approved">complete</span>') + '</td>'
         + '<td>' + fmtDateTime(a.created_at) + '</td>'
         + '<td>' + fmtDateTime(a.last_login_at) + '</td>'
+        + '<td><button class="btn sm" data-reset-admin="' + escHtml(a.id) + '">Reset password</button></td>'
         + '</tr>'
       ).join('')
     + '</tbody></table></div>';
+  adminsById = Object.fromEntries(admins.map(a => [a.id, a]));
 }
+
+// --- Reset an admin's password ---------------------------------------------
+let adminsById = {};
+let resetTarget = null;
+
+function resetMsg(text) {
+  const el = document.getElementById('reset-msg');
+  el.textContent = text || '';
+  el.style.display = text ? 'block' : 'none';
+}
+
+document.getElementById('admins-body').addEventListener('click', e => {
+  const btn = e.target.closest('[data-reset-admin]');
+  if (!btn) return;
+  resetTarget = adminsById[btn.dataset.resetAdmin];
+  if (!resetTarget) return;
+  const verified = resetTarget.phone_verified;
+  document.getElementById('reset-sub').textContent = resetTarget.email;
+  document.getElementById('reset-explain').textContent = verified
+    ? 'This signs ' + resetTarget.email + ' out of every session immediately and texts a new temporary password to their verified phone ('
+      + resetTarget.phone + '). They must choose a new password on next sign-in. You will not see the password.'
+    : 'This signs ' + resetTarget.email + ' out of every session immediately and sets a new temporary password. They have no verified phone, '
+      + 'so on next sign-in they go through full account setup again (verify a phone by SMS code, then choose a password). '
+      + 'The temporary password is shown to you once.';
+  document.getElementById('reset-phone-wrap').style.display = verified ? 'none' : 'block';
+  document.getElementById('reset-phone').value = '';
+  resetMsg('');
+  showOverlay('modal-reset');
+});
+
+document.getElementById('reset-submit').addEventListener('click', async () => {
+  if (!resetTarget) return;
+  const btn = document.getElementById('reset-submit');
+  const phone = resetTarget.phone_verified ? '' : document.getElementById('reset-phone').value.trim();
+  if (phone && !/^(0[2-9]\d{8}|233\d{9})$/.test(phone.replace(/\D/g, ''))) {
+    resetMsg('Enter a valid Ghana mobile number (e.g. 0244123456), or leave it empty.');
+    return;
+  }
+  resetMsg('');
+  btn.disabled = true;
+  btn.textContent = 'Resetting…';
+  try {
+    const res = await api('/api/v1/platform/operators/' + operatorId + '/admins/' + resetTarget.id + '/reset-password', {
+      method: 'POST',
+      body: JSON.stringify(phone ? { phone } : {}),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = typeof body.detail === 'string' ? body.detail
+        : Array.isArray(body.detail) ? body.detail.map(d => d.msg).join('; ')
+        : res.status === 429 ? 'Too many resets for this admin — try again later.'
+        : 'Could not reset the password (' + res.status + ').';
+      resetMsg(detail);
+      return;
+    }
+    const sms = body.sms_sent
+      ? 'The temporary password was texted to ' + escHtml(body.phone) + '.'
+      : 'The SMS was NOT sent (' + escHtml(body.sms_error || 'unknown error') + ').';
+    document.getElementById('reset-done-body').innerHTML =
+      '<p class="detail-line">' + escHtml(body.email) + ' has been signed out everywhere.</p>'
+      + '<p class="detail-line">' + sms + '</p>'
+      + (body.mode === 'onboarding'
+        ? '<p class="detail-line">Temporary password (shown once):</p>'
+          + '<div style="display:flex;gap:8px;align-items:center;margin:6px 0 8px">'
+          + '<input id="reset-temp-password" readonly value="' + escHtml(body.temp_password || '') + '" style="flex:1;padding:9px 12px;font-size:14px;font-family:monospace;background:#f8fafc">'
+          + '<button class="btn" type="button" id="reset-copy-password">Copy</button></div>'
+          + '<p class="detail-line dim">On next sign-in they verify a phone and choose a new password.</p>'
+        : '<p class="detail-line dim">On next sign-in they must choose a new password.'
+          + (body.sms_sent ? '' : ' Try the reset again later, or ask them to use "Forgot password" on the sign-in page.') + '</p>');
+    const copy = document.getElementById('reset-copy-password');
+    if (copy) copy.addEventListener('click', () => {
+      const el = document.getElementById('reset-temp-password');
+      el.select();
+      navigator.clipboard?.writeText(el.value);
+    });
+    showOverlay('modal-reset-done');
+    loadAdmins();
+  } catch (e) {
+    resetMsg(e.message || 'Could not reset the password.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Reset password';
+  }
+});
 
 async function loadAdmins() {
   const err = document.getElementById('admins-err');
@@ -412,10 +552,67 @@ async function loadAdmins() {
   }
 }
 
-// --- Create admin (the one mutation on this page) -------------------------
+// --- Edit operator details -------------------------------------------------
+let currentOperator = null;
+
+function operatorMsg(text) {
+  const el = document.getElementById('operator-msg');
+  el.textContent = text || '';
+  el.style.display = text ? 'block' : 'none';
+}
+
+document.getElementById('edit-operator-btn').addEventListener('click', () => {
+  if (!currentOperator) return;
+  document.getElementById('op-name').value = currentOperator.name || '';
+  document.getElementById('op-contact-email').value = currentOperator.contact_email || '';
+  document.getElementById('op-contact-phone').value = currentOperator.contact_phone || '';
+  operatorMsg('');
+  showOverlay('modal-operator');
+});
+
+document.getElementById('operator-submit').addEventListener('click', async () => {
+  const btn = document.getElementById('operator-submit');
+  const name = document.getElementById('op-name').value.trim();
+  const contact_email = document.getElementById('op-contact-email').value.trim();
+  const contact_phone = document.getElementById('op-contact-phone').value.trim();
+
+  if (name.length < 1) { operatorMsg('Business name is required.'); return; }
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact_email)) { operatorMsg('Enter a valid contact email address.'); return; }
+  if (contact_phone && !/^(0[2-9]\d{8}|233\d{9})$/.test(contact_phone.replace(/\D/g, ''))) {
+    operatorMsg('Contact phone must be a valid Ghana number (e.g. 0244123456), or left empty.');
+    return;
+  }
+
+  operatorMsg('');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    // Only the three editable fields are sent: the endpoint refuses anything else.
+    const res = await api('/api/v1/platform/operators/' + operatorId, {
+      method: 'PATCH',
+      body: JSON.stringify({ name, contact_email, contact_phone }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      operatorMsg(typeof body.detail === 'string' ? body.detail
+        : Array.isArray(body.detail) ? body.detail.map(d => d.msg).join('; ')
+        : 'Could not save the changes (' + res.status + ').');
+      return;
+    }
+    closeModals();
+    await load();
+  } catch (e) {
+    operatorMsg(e.message || 'Could not save the changes.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save changes';
+  }
+});
+
+// --- Create admin ----------------------------------------------------------
 function showOverlay(which) {
   document.getElementById('modal-overlay').style.display = 'flex';
-  ['modal-admin', 'modal-admin-done'].forEach(id => {
+  ['modal-admin', 'modal-admin-done', 'modal-reset', 'modal-reset-done', 'modal-operator'].forEach(id => {
     document.getElementById(id).style.display = id === which ? 'block' : 'none';
   });
 }
@@ -432,7 +629,7 @@ function adminMsg(text) {
 
 document.getElementById('add-admin-btn').addEventListener('click', () => {
   document.getElementById('admin-email').value = '';
-  document.getElementById('admin-password').value = '';
+  document.getElementById('admin-phone').value = '';
   document.getElementById('admin-role').value = 'admin';
   adminMsg('');
   document.getElementById('admin-sub').textContent =
@@ -443,11 +640,11 @@ document.getElementById('add-admin-btn').addEventListener('click', () => {
 document.getElementById('admin-submit').addEventListener('click', async () => {
   const btn = document.getElementById('admin-submit');
   const email = document.getElementById('admin-email').value.trim();
-  const password = document.getElementById('admin-password').value;
+  const phone = document.getElementById('admin-phone').value.trim();
   const role = document.getElementById('admin-role').value;
 
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { adminMsg('Enter a valid email address.'); return; }
-  if (password.length < 8) { adminMsg('Password must be at least 8 characters.'); return; }
+  if (!/^(0[2-9]\d{8}|233\d{9})$/.test(phone.replace(/\D/g, ''))) { adminMsg('Enter a valid Ghana mobile number (e.g. 0244123456).'); return; }
 
   adminMsg('');
   btn.disabled = true;
@@ -455,11 +652,15 @@ document.getElementById('admin-submit').addEventListener('click', async () => {
   try {
     const res = await api('/api/v1/platform/operators/' + operatorId + '/admins', {
       method: 'POST',
-      body: JSON.stringify({ email, password, role }),
+      body: JSON.stringify({ email, phone, role }),
     });
     if (!res.ok) {
       let detail = 'Could not create admin (' + res.status + ').';
-      try { const b = await res.json(); if (b && b.detail) detail = typeof b.detail === 'string' ? b.detail : detail; } catch (_) {}
+      try {
+        const b = await res.json();
+        if (b && typeof b.detail === 'string') detail = b.detail;
+        else if (b && Array.isArray(b.detail)) detail = b.detail.map(d => d.msg).join('; ');
+      } catch (_) {}
       adminMsg(detail);
       return;
     }
@@ -467,7 +668,19 @@ document.getElementById('admin-submit').addEventListener('click', async () => {
     document.getElementById('admin-done-body').innerHTML =
       '<p class="detail-line">Email: <code>' + escHtml(admin.email) + '</code></p>'
       + '<p class="detail-line">Role: <code>' + escHtml(admin.role) + '</code></p>'
-      + '<p class="detail-line dim">They sign in at <code>/admin/login</code> with the password you set.</p>';
+      + '<div style="display:flex;gap:8px;align-items:center;margin:10px 0 8px">'
+      + '<input id="admin-temp-password" readonly value="' + escHtml(admin.temp_password || '') + '" style="flex:1;padding:9px 12px;font-size:14px;font-family:monospace;background:#f8fafc">'
+      + '<button class="btn" type="button" id="admin-copy-password">Copy</button></div>'
+      + '<p class="detail-line dim">' + (admin.temp_password_sms_sent
+          ? 'Also sent by SMS to ' + escHtml(admin.phone) + '.'
+          : 'SMS NOT sent (' + escHtml(admin.temp_password_sms_error || 'unknown error') + ') — share it yourself.')
+      + '</p>'
+      + '<p class="detail-line dim">They sign in at <code>/admin/login</code>, then verify their phone and choose their own password.</p>';
+    document.getElementById('admin-copy-password').addEventListener('click', () => {
+      const el = document.getElementById('admin-temp-password');
+      el.select();
+      navigator.clipboard?.writeText(el.value);
+    });
     showOverlay('modal-admin-done');
     loadAdmins();
   } catch (e) {

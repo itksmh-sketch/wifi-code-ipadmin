@@ -16,6 +16,9 @@ class PlatformOwner(Base):
     is_active = Column(Boolean, nullable=False, server_default="true")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
+    # Embedded in every platform-owner JWT ("tv"); bump it to invalidate all of
+    # this owner's outstanding access and refresh tokens (mirrors AdminUser).
+    token_version = Column(Integer, nullable=False, server_default="0", default=0)
 
 
 class ISPOperator(Base):
@@ -67,6 +70,9 @@ class ISPOperator(Base):
     # existing generic footer text.
     portal_contact_phone = Column(Text, nullable=True)
     portal_contact_email = Column(Text, nullable=True)
+    # Purchase-confirmation SMS text. NULL = the platform default. Rendered with
+    # str.format_map against a fixed placeholder allowlist (sms.templates).
+    voucher_sms_template = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -431,6 +437,37 @@ class PlatformSetting(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
+class PlatformNotificationTemplate(Base):
+    """One editable platform notification text, keyed by (event_type, channel).
+
+    Seeded by migration 044 from modules.notifications.template_catalog.DEFAULTS
+    with exactly the text the old f-strings produced, so editing is opt-in and
+    an untouched platform sends what it always sent. A missing row is not an
+    error: the loader falls back to the catalog default, which is also what
+    "reset to default" restores.
+
+    ``subject``/``body_html`` are email-only and NULL on SMS rows (CHECK
+    constraint). ``body_text`` is the SMS message on SMS rows and the plain-text
+    alternative part on email rows.
+    """
+    __tablename__ = "platform_notification_templates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    event_type = Column(String(64), nullable=False)
+    channel = Column(String(16), nullable=False)
+    subject = Column(Text, nullable=True)
+    body_text = Column(Text, nullable=False)
+    body_html = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by_platform_owner_id = Column(
+        UUID(as_uuid=True), ForeignKey("platform_owners.id", ondelete="SET NULL"), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("event_type", "channel", name="uq_platform_notification_templates_event_channel"),
+    )
+
+
 class ProviderCatalogEntry(Base):
     """Catalog of the payment and SMS providers the platform knows about.
 
@@ -705,6 +742,57 @@ class AdminUser(Base):
     is_active = Column(Boolean, server_default="true")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_login_at = Column(DateTime(timezone=True), nullable=True)
+    # The admin's own mobile number (normalized 233XXXXXXXXX). Only trusted once
+    # phone_verified is true — it is typed by whoever created the account.
+    phone = Column(String(64), nullable=True)
+    phone_verified = Column(Boolean, nullable=False, server_default="false", default=False)
+    # True for every account created with a temp password: the API allows only
+    # the onboarding endpoints until the admin verifies a phone and sets a password.
+    must_complete_onboarding = Column(Boolean, nullable=False, server_default="false", default=False)
+    # True after a platform owner reset the password of an admin with a verified
+    # phone: the API allows only the set-new-password step until they pick one.
+    must_change_password = Column(Boolean, nullable=False, server_default="false", default=False)
+    # Embedded in every admin JWT ("tv"); bump it to invalidate all of this
+    # admin's outstanding access and refresh tokens.
+    token_version = Column(Integer, nullable=False, server_default="0", default=0)
+    # Key into src.modules.admin_accounts.security_questions.SECURITY_QUESTIONS.
+    security_question = Column(String(64), nullable=True)
+    security_answer_hash = Column(Text, nullable=True)
+    security_answer_attempt_count = Column(Integer, nullable=False, server_default="0", default=0)
+
+
+class AdminOtpCode(Base):
+    """Hashed one-time code for onboarding phone verification or password reset."""
+
+    __tablename__ = "admin_otp_codes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    admin_user_id = Column(UUID(as_uuid=True), ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False)
+    purpose = Column(ENUM("onboarding", "reset", name="admin_otp_purpose", create_type=False), nullable=False)
+    # The number the code was sent to — a successful onboarding verification
+    # stores exactly this number on the admin.
+    phone = Column(String(64), nullable=False)
+    code_hash = Column(Text, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    attempt_count = Column(Integer, nullable=False, server_default="0", default=0)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AdminPasswordResetEvent(Base):
+    """Audit trail: a platform owner reset an operator admin's password."""
+
+    __tablename__ = "admin_password_reset_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    admin_user_id = Column(UUID(as_uuid=True), ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False)
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id"), nullable=False)
+    platform_owner_id = Column(UUID(as_uuid=True), ForeignKey("platform_owners.id"), nullable=False)
+    mode = Column(String(32), nullable=False)  # "temp_password" | "onboarding"
+    phone_changed = Column(Boolean, nullable=False, server_default="false", default=False)
+    sms_sent = Column(Boolean, nullable=False, server_default="false", default=False)
+    sms_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class PaymentTransaction(Base):

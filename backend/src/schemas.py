@@ -7,6 +7,9 @@ from src.modules.billing.service import PAYSTACK_MINIMUM_GHS
 import uuid
 from enum import Enum
 
+from src.utils.email_address import normalize_email as _normalize_admin_email
+from src.utils.phone import normalize_ghana_phone
+
 
 def coerce_ip_to_str(v):
     if v is None:
@@ -60,6 +63,12 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    # True while the admin is on a temp password: the API serves only the
+    # onboarding endpoints until they verify a phone and set a password.
+    must_complete_onboarding: bool = False
+    # True after a platform-owner password reset: only the set-new-password step
+    # is served until they choose one.
+    must_change_password: bool = False
 
 
 class RefreshRequest(BaseModel):
@@ -447,7 +456,9 @@ class PlatformOperatorCreate(BaseModel):
     contact_email: str
     contact_phone: Optional[str] = None
     initial_admin_email: str
-    initial_admin_password: str
+    # The initial admin's own mobile number. Required: their temp password is sent
+    # to it and onboarding verifies it. No password is accepted — one is generated.
+    initial_admin_phone: str
     # No fee here: the operator's monthly_fee_ghs is stamped server-side from the
     # platform default (billing.service.get_default_monthly_fee). Change an
     # individual operator's fee afterwards on the billing page.
@@ -456,6 +467,17 @@ class PlatformOperatorCreate(BaseModel):
     # Supply a day count to put the operator on a trial first, matching the
     # self-service application path.
     trial_days: Optional[int] = Field(default=None, ge=1, le=365)
+
+
+    @field_validator("initial_admin_email")
+    @classmethod
+    def _admin_email(cls, v: str) -> str:
+        return _normalize_admin_email(v)
+
+    @field_validator("initial_admin_phone")
+    @classmethod
+    def _admin_phone(cls, v: str) -> str:
+        return normalize_ghana_phone(v)
 
 
 class PlatformOperatorBillingUpdate(BaseModel):
@@ -470,9 +492,34 @@ class PlatformOperatorBillingUpdate(BaseModel):
 
 
 class PlatformAdminCreate(BaseModel):
+    """No password: one is generated and sent to phone, and the new admin
+    must verify that phone and choose their own password on first sign-in."""
     email: str
-    password: str
+    phone: str
     role: AdminRole = AdminRole.admin
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, v: str) -> str:
+        return _normalize_admin_email(v)
+
+    @field_validator("phone")
+    @classmethod
+    def _phone(cls, v: str) -> str:
+        return normalize_ghana_phone(v)
+
+
+class PlatformAdminPasswordReset(BaseModel):
+    """Only used when the admin has no verified phone: where to text the new
+    temp password (stored unverified; onboarding verifies it)."""
+    phone: Optional[str] = None
+
+    @field_validator("phone")
+    @classmethod
+    def _phone(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not v.strip():
+            return None
+        return normalize_ghana_phone(v)
 
 
 class PlatformOperatorStatusUpdate(BaseModel):

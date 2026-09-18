@@ -123,12 +123,14 @@ async def approve_application(
             "Reject it, or change the existing admin's email first.",
         )
 
-    operator, temp_password = await service.approve_application(db, app, owner.id)
+    operator, temp_password, sms_result = await service.approve_application(db, app, owner.id)
     return {
         "operator_id": str(operator.id),
         "slug": operator.slug,
         "admin_email": app.email,
         "temp_password": temp_password,
+        "temp_password_sms_sent": sms_result.success,
+        "temp_password_sms_error": sms_result.error,
         "trial_ends_at": operator.trial_ends_at.isoformat(),
         "message": "Operator approved. Share the temp_password with the operator securely — it is shown only once.",
     }

@@ -9,6 +9,7 @@ credentials could not reflect a change made through the admin UI.
 from __future__ import annotations
 
 from src.db.models import Plan
+from src.modules.sms import templates
 
 
 def _format_duration(plan: Plan) -> str:
@@ -31,21 +32,18 @@ def _format_duration(plan: Plan) -> str:
     return " + ".join(parts) if parts else "N/A"
 
 
-def _truncate(s: str, max_len: int) -> str:
-    s = (s or "").strip()
-    if len(s) <= max_len:
-        return s
-    return s[: max(0, max_len - 1)].rstrip() + "…"
+def build_voucher_sms_message(*, code: str, plan: Plan, template: str | None = None, operator_name: str = "") -> str:
+    """The purchase-confirmation text.
 
-
-def build_voucher_sms_message(*, code: str, plan: Plan) -> str:
-    # Must stay under 160 chars; we enforce by truncating plan name.
-    duration = _format_duration(plan)
-    plan_name = _truncate(plan.name, 24)
-    msg = f"Your WiFi voucher: {code}. Plan: {plan_name}. Valid for {duration}. Connect at the login page. Enjoy!"
-    if len(msg) <= 160:
-        return msg
-    # Tighten plan name further to respect 160-char constraint.
-    plan_name = _truncate(plan.name, 12)
-    msg = f"Your WiFi voucher: {code}. Plan: {plan_name}. Valid for {duration}. Connect at the login page. Enjoy!"
-    return msg[:160]
+    ``template`` is the operator's own message (isp_operators.voucher_sms_template);
+    None uses the platform default. It is rendered through sms.templates.render —
+    str.format_map against a fixed allowlist, never f-string evaluation — and the
+    saved template was validated to fit one segment for the default code length.
+    """
+    return templates.render(
+        template or templates.DEFAULT_VOUCHER_SMS_TEMPLATE,
+        code=code,
+        plan_name=plan.name,
+        validity=_format_duration(plan),
+        operator_name=operator_name,
+    )

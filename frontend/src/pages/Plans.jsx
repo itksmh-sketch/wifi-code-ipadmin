@@ -50,9 +50,38 @@ export default function Plans() {
 
     const togglePlan = async (plan) => {
         try {
-            await apiCall(`/plans/${plan.id}`, { method: 'PUT', body: JSON.stringify({ is_active: !plan.is_active }) });
+            const action = plan.is_active ? 'deactivate' : 'activate';
+            await apiCall(`/plans/${plan.id}/${action}`, { method: 'POST' });
             fetchPlans();
         } catch (e) {
+            alert(e.message);
+        }
+    };
+
+    // Delete removes the plan and its untouched vouchers. The API refuses (409)
+    // as soon as any voucher has been paid for, allocated, used or disconnected;
+    // deactivating is the answer in that case, so offer it right there.
+    const deletePlan = async (plan) => {
+        if (!window.confirm(
+            `Delete the plan "${plan.name}"?\n\n`
+            + 'This also deletes vouchers generated from it that were never sold or used. '
+            + 'It is refused if any voucher has payment, reseller or usage history.'
+        )) return;
+        try {
+            await apiCall(`/plans/${plan.id}`, { method: 'DELETE' });
+            fetchPlans();
+        } catch (e) {
+            if (e.status === 409) {
+                const deactivate = plan.is_active && window.confirm(
+                    `${e.message}\n\nDeactivate "${plan.name}" now instead?`
+                );
+                if (deactivate) {
+                    await togglePlan(plan);
+                    return;
+                }
+                alert(e.message);
+                return;
+            }
             alert(e.message);
         }
     };
@@ -115,7 +144,12 @@ export default function Plans() {
                                     <td>{p.download_speed_kbps}/{p.upload_speed_kbps} kbps</td>
                                     <td>GH₵ {parseFloat(p.price_ghs).toFixed(2)}</td>
                                     <td><span className={`badge ${p.is_active ? 'badge-green' : 'badge-gray'}`}>{p.is_active ? 'Active' : 'Inactive'}</span></td>
-                                    <td><button className="btn btn-sm" style={{ background: '#e5e7eb' }} onClick={() => togglePlan(p)}>{p.is_active ? 'Disable' : 'Enable'}</button></td>
+                                    <td style={{ display: 'flex', gap: 6 }}>
+                                        <button className="btn btn-sm" style={{ background: '#e5e7eb' }} onClick={() => togglePlan(p)}>
+                                            {p.is_active ? 'Deactivate' : 'Activate'}
+                                        </button>
+                                        <button className="btn btn-sm btn-danger" onClick={() => deletePlan(p)}>Delete</button>
+                                    </td>
                                 </tr>
                             ))}
                             {plans.length === 0 && <tr><td colSpan="8" style={{ color: '#9ca3af' }}>No plans yet</td></tr>}

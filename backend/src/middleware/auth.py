@@ -23,11 +23,25 @@ class TenantContext:
     email: str
 
 
-async def get_current_user(
+ONBOARDING_REQUIRED_HEADER = "X-Onboarding-Required"
+
+
+def token_version_matches(payload: dict, user: "AdminUser | PlatformOwner") -> bool:
+    """A token is only valid for the account's current token_version (admin users
+    and platform owners alike). Tokens minted before the claim existed carry none
+    and are rejected (a one-time re-login)."""
+    claim = payload.get("tv")
+    return isinstance(claim, int) and not isinstance(claim, bool) and claim == int(user.token_version or 0)
+
+
+async def get_authenticated_admin(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> AdminUser:
+    """The admin behind a valid, current access token — whether or not they have
+    finished onboarding. Only the onboarding endpoints should depend on this
+    directly; everything else uses get_current_user."""
     client_ip = request.client.host if request.client else "unknown"
     await enforce_rate_limit(client_ip, "admin:api", limit=120, window_seconds=60)
 
@@ -50,7 +64,29 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+    if not token_version_matches(payload, user):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is no longer valid. Please sign in again.")
 
+    return user
+
+
+async def get_current_user(user: AdminUser = Depends(get_authenticated_admin)) -> AdminUser:
+    """An authenticated admin with no pending account-setup step. Every admin API
+    route goes through this (directly or via get_admin_tenant_context /
+    require_role), so an account on a temp password can reach nothing but the
+    onboarding endpoints — including after a platform-owner password reset."""
+    if user.must_complete_onboarding:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Finish setting up your account: verify your phone and choose a new password.",
+            headers={ONBOARDING_REQUIRED_HEADER: "1"},
+        )
+    if user.must_change_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your password was reset. Choose a new password to continue.",
+            headers={ONBOARDING_REQUIRED_HEADER: "1"},
+        )
     return user
 
 
@@ -113,6 +149,8 @@ async def get_platform_owner_context(
     owner = result.scalar_one_or_none()
     if not owner:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Platform owner not found or inactive")
+    if not token_version_matches(payload, owner):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is no longer valid. Please sign in again.")
     return owner
 
 

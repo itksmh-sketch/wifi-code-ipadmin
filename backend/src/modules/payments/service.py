@@ -422,7 +422,23 @@ class PaymentService:
                     pass  # already logged above
                 else:
                     try:
-                        message = build_voucher_sms_message(code=code, plan=plan)
+                        # The operator's own template is a nicety; failing to read
+                        # it must never cost the buyer their voucher SMS, so this
+                        # degrades to the platform default rather than skipping.
+                        operator = None
+                        try:
+                            operator = await db.get(ISPOperator, tx.isp_operator_id)
+                        except Exception as exc:
+                            logger.warning(
+                                "voucher_sms_template_lookup_failed operator=%s error=%s",
+                                tx.isp_operator_id, exc,
+                            )
+                        message = build_voucher_sms_message(
+                            code=code,
+                            plan=plan,
+                            template=getattr(operator, "voucher_sms_template", None),
+                            operator_name=getattr(operator, "name", "") or "",
+                        )
                         result = await build_sms_provider(provider_key, credentials).send(to=to, message=message)
                         if result is not None and not result.success:
                             logger.error(

@@ -16,6 +16,7 @@ from src.schemas import DashboardSummary
 
 # Import routers
 from src.modules.auth.routes import router as auth_router
+from src.modules.admin_accounts.routes import router as admin_accounts_router
 from src.modules.towns.routes import router as towns_router
 from src.modules.routers.routes import router as routers_router
 from src.modules.plans.routes import router as plans_router
@@ -24,6 +25,7 @@ from src.modules.sessions.routes import router as sessions_router
 from src.modules.payments.routes import router as payments_router
 from src.modules.payments.credentials_routes import router as payment_credentials_router
 from src.modules.sms.credentials_routes import router as sms_credentials_router
+from src.modules.sms.template_routes import router as sms_template_router
 from src.modules.catalog.routes import router as catalog_router
 from src.modules.branding.routes import router as branding_router
 from src.modules.webhooks.routes import router as webhooks_router
@@ -36,6 +38,7 @@ from src.modules.mikrotik.routes import router as mikrotik_router
 from src.modules.mikrotik.setup_routes import router as router_setup_router
 from src.modules.wireguard.routes import router as wireguard_router, peers_router as wireguard_peers_router
 from src.modules.platform.routes import router as platform_router
+from src.modules.platform.notification_template_routes import router as notification_template_router
 from src.admin_portal.routes import router as admin_portal_router
 from src.reseller_portal.routes import router as reseller_portal_router
 from src.platform_portal.routes import router as platform_portal_router
@@ -71,6 +74,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(admin_accounts_router, prefix="/api/v1")
 app.include_router(towns_router, prefix="/api/v1")
 app.include_router(routers_router, prefix="/api/v1")
 app.include_router(plans_router, prefix="/api/v1")
@@ -79,6 +83,7 @@ app.include_router(sessions_router, prefix="/api/v1")
 app.include_router(payments_router, prefix="/api/v1")
 app.include_router(payment_credentials_router, prefix="/api/v1")
 app.include_router(sms_credentials_router, prefix="/api/v1")
+app.include_router(sms_template_router, prefix="/api/v1")
 app.include_router(catalog_router, prefix="/api/v1")
 app.include_router(branding_router, prefix="/api/v1")
 app.include_router(radius_router, prefix="/api/v1")
@@ -92,6 +97,7 @@ app.include_router(router_setup_router, prefix="/api/v1")
 app.include_router(wireguard_router, prefix="/api/v1")
 app.include_router(wireguard_peers_router, prefix="/api/v1")
 app.include_router(platform_router, prefix="/api/v1")
+app.include_router(notification_template_router, prefix="/api/v1")
 app.include_router(admin_portal_router)
 app.include_router(platform_portal_router)
 app.include_router(applications_public_router, prefix="/api/v1")
@@ -169,13 +175,26 @@ async def get_dashboard_summary(db: AsyncSession = Depends(get_db), tenant: Tena
 _ADMIN_STATIC = os.path.join(os.path.dirname(__file__), "..", "static", "admin")
 _ADMIN_ASSETS = os.path.join(_ADMIN_STATIC, "assets")
 
+class ImmutableStaticFiles(StaticFiles):
+    """Vite build assets are content-hashed (index-<hash>.js), so a given URL never
+    changes content: let browsers cache them for a year without revalidating."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code in (200, 304):  # never mark a 404 as cacheable
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 if os.path.exists(_ADMIN_ASSETS):
-    app.mount("/admin/assets", StaticFiles(directory=_ADMIN_ASSETS), name="admin-assets")
+    app.mount("/admin/assets", ImmutableStaticFiles(directory=_ADMIN_ASSETS), name="admin-assets")
 
 if os.path.exists(_ADMIN_STATIC):
     @app.get("/admin/{full_path:path}", include_in_schema=False)
     async def serve_admin_spa(full_path: str):
         index = os.path.join(_ADMIN_STATIC, "index.html")
         if os.path.exists(index):
-            return FileResponse(index)
+            # index.html names the current hashed bundle, so it must be re-checked on
+            # every load, or a browser keeps running the previous build after a deploy.
+            return FileResponse(index, headers={"Cache-Control": "no-cache"})
         return {"error": "Admin dashboard not built yet. Run: cd frontend && npm run build"}

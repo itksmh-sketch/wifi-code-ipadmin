@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../App';
 
 // Platform identity assets (tokens.css, auth.css, icons.svg) are served by the
@@ -7,6 +7,11 @@ import { useAuth } from '../App';
 // page (backend/static/apply.html) uses the same files — keep the two in step.
 const ICONS = '/platform-ui/icons.svg';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const NOTICES = {
+    'setup-complete': 'Your account is set up. Sign in with your new password.',
+    'password-reset': 'Your password has been reset. Sign in with your new password.',
+    'password-changed': 'Your new password is saved. Sign in with it.',
+};
 
 function Icon({ name, className = '' }) {
     return (
@@ -45,6 +50,8 @@ export default function Login() {
     // { text, id } — a fresh id re-keys the alert so it animates in on every failure
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
+    const [searchParams] = useSearchParams();
+    const notice = NOTICES[searchParams.get('notice')] || null;
 
     // index.html sets the default document title to "IpAdmin" for the whole
     // dashboard; this page-specific title applies only while Login is mounted.
@@ -81,7 +88,9 @@ export default function Login() {
             const data = await res.json().catch(() => ({}));
             if (res.ok) {
                 login(data.access_token);
-                navigate('/');
+                // Temp-password accounts must finish setup (or, after a platform
+                // reset, choose a new password) before anything else.
+                navigate(data.must_complete_onboarding || data.must_change_password ? '/onboarding' : '/');
                 return;
             }
             setError({ text: typeof data.detail === 'string' ? data.detail : 'Sign-in failed. Please try again.', id: Date.now() });
@@ -142,6 +151,17 @@ export default function Login() {
                             <p className="auth-subtitle">Use the email and password for your operator account.</p>
                         </header>
 
+                        {notice && !error && (
+                            <div className="auth-msg auth-msg--success is-shown" role="status">
+                                <div className="auth-msg-inner">
+                                    <div className="auth-msg-body" style={{ paddingTop: 0, marginBottom: 16 }}>
+                                        <Icon name="check" />
+                                        <span>{notice}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         {error && (
                             <div className="auth-alert auth-alert--error" role="alert" key={error.id}>
                                 <Icon name="alert-circle" />
@@ -174,7 +194,10 @@ export default function Login() {
                             </div>
 
                             <div className={fieldClass('password')} onAnimationEnd={stopShake}>
-                                <label className="auth-label" htmlFor="login-password">Password</label>
+                                <label className="auth-label" htmlFor="login-password">
+                                    Password
+                                    <Link className="auth-label-aside" to="/forgot-password">Forgot password?</Link>
+                                </label>
                                 <div className="auth-control">
                                     <Icon name="lock" className="auth-lead" />
                                     <input

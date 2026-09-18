@@ -1,6 +1,8 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
+import Onboarding from './pages/Onboarding';
+import ForgotPassword from './pages/ForgotPassword';
 import Dashboard from './pages/Dashboard';
 import Analytics from './pages/Analytics';
 import TownsSites from './pages/TownsSites';
@@ -12,6 +14,7 @@ import PaymentCredentials from './pages/PaymentCredentials';
 import SMSCredentials from './pages/SMSCredentials';
 import Branding from './pages/Branding';
 import Billing from './pages/Billing';
+import ChangePassword from './pages/ChangePassword';
 import Sidebar from './components/Sidebar';
 
 const API_BASE = '/api/v1';
@@ -64,6 +67,12 @@ async function request(endpoint, options, { tokenKey, loginPath }) {
     }
     const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
 
+    if (res.status === 403 && res.headers.get('X-Onboarding-Required')) {
+        // Signed in on a temporary password: the API serves nothing else until
+        // account setup is finished.
+        window.location.href = '/admin/onboarding';
+        throw new ApiError(403, null);
+    }
     if (res.status === 401) {
         // Session expired/invalid — drop the token and bounce to login. We still
         // throw so callers don't proceed with a null/garbage value mid-redirect.
@@ -136,6 +145,8 @@ export default function App() {
             <BrowserRouter basename="/admin">
                 <Routes>
                     <Route path="/login" element={<Login />} />
+                    <Route path="/forgot-password" element={<ForgotPassword />} />
+                    <Route path="/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
                     <Route
                         path="/*"
                         element={
@@ -155,6 +166,7 @@ export default function App() {
                                             <Route path="/sms-credentials" element={<SMSCredentials />} />
                                             <Route path="/branding" element={<Branding />} />
                                             <Route path="/billing" element={<Billing />} />
+                                            <Route path="/change-password" element={<ChangePassword />} />
                                             <Route path="*" element={<Navigate to="/" />} />
                                         </Routes>
                                     </div>

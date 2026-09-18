@@ -72,3 +72,32 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
+
+
+# Password-reset grant: proof that an admin passed OTP or security-question
+# verification, exchangeable once for a new password. A distinct issuer means
+# verify_token() (which requires iss == "admin") can never accept it as a login
+# session. It carries the admin's token_version, and setting the password bumps
+# that version — so the grant is single-use and dies with any other reset.
+PASSWORD_RESET_ISSUER = "admin_password_reset"
+PASSWORD_RESET_TTL_MINUTES = 10
+
+
+def create_password_reset_token(*, admin_id: str, token_version: int, via: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=PASSWORD_RESET_TTL_MINUTES)
+    return jwt.encode(
+        {"sub": admin_id, "tv": token_version, "via": via, "type": "password_reset",
+         "iss": PASSWORD_RESET_ISSUER, "exp": expire},
+        settings.jwt_secret,
+        algorithm="HS256",
+    )
+
+
+def verify_password_reset_token(token: str) -> Optional[dict]:
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"], issuer=PASSWORD_RESET_ISSUER)
+    except JWTError:
+        return None
+    if payload.get("type") != "password_reset" or not payload.get("sub"):
+        return None
+    return payload

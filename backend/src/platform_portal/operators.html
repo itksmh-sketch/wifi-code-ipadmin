@@ -339,7 +339,11 @@ document.getElementById('approve-submit').addEventListener('click', async () => 
   if (!res.ok) { alert(data.detail || 'Failed to approve'); return; }
   document.getElementById('temp-password').value = data.temp_password || '';
   document.getElementById('password-meta').textContent =
-    `Operator: ${data.slug} · admin: ${data.admin_email}`;
+    `Operator: ${data.slug} · admin: ${data.admin_email} · ` +
+    (data.temp_password_sms_sent
+      ? 'also sent by SMS to the applicant\'s phone.'
+      : `SMS NOT sent (${data.temp_password_sms_error || 'unknown error'}) — share it yourself.`) +
+    ' They must verify their phone and choose a new password on first sign-in.';
   showOverlay('modal-password');
   await Promise.all([loadApplications(), reloadOperators()]);
 });

@@ -42,6 +42,38 @@
     </div>
   </nav>
 
+  <!-- ── Your account ─────────────────────────────────────────────────── -->
+  <div class="section-title">Your Account</div>
+  <p class="section-sub">Your own platform sign-in. Your email is your login identifier and cannot be changed here.</p>
+
+  <div class="card" style="max-width:600px;margin-bottom:26px">
+    <div id="me-msg" class="notice" style="display:none;margin-bottom:16px"></div>
+
+    <form id="me-form" novalidate>
+      <label>Email</label>
+      <input id="me_email" type="email" disabled style="background:#f8fafc">
+      <label>Name</label>
+      <input id="me_name" type="text" autocomplete="name" placeholder="Your name">
+      <div class="spacer"></div>
+      <button class="btn primary" type="submit" id="me-save-btn">Save name</button>
+    </form>
+
+    <div class="spacer"></div>
+    <div style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Change password</div>
+    <div id="pw-msg" class="notice" style="display:none;margin-bottom:16px"></div>
+    <form id="pw-form" novalidate>
+      <label>Current password</label>
+      <input id="pw_current" type="password" autocomplete="current-password">
+      <label>New password</label>
+      <input id="pw_new" type="password" autocomplete="new-password">
+      <p class="text-muted" style="margin:4px 0 12px;font-size:12.5px">At least 8 characters, with an uppercase letter, a lowercase letter and a number.</p>
+      <label>Confirm new password</label>
+      <input id="pw_confirm" type="password" autocomplete="new-password">
+      <p class="text-muted" style="margin:4px 0 12px;font-size:12.5px">Signs you out everywhere else. This browser stays signed in.</p>
+      <button class="btn primary" type="submit" id="pw-save-btn">Change password</button>
+    </form>
+  </div>
+
   <div class="section-title">Platform Settings</div>
   <p class="section-sub">Platform-level configuration. Operators never see or set these — the WireGuard endpoint is what their routers dial.</p>
 
@@ -340,6 +372,89 @@ document.getElementById('form').addEventListener('submit', async e => {
   }
 });
 
+// ── Your account ──────────────────────────────────────────────────────────
+function accountMsg(id, text, good) {
+  const el = document.getElementById(id);
+  el.textContent = text || '';
+  el.className = 'notice ' + (good ? 'good' : 'bad');
+  el.style.display = text ? 'block' : 'none';
+}
+
+async function loadMe() {
+  try {
+    const res = await api('/api/v1/platform/me');
+    if (!res.ok) return;
+    const me = await res.json();
+    document.getElementById('me_email').value = me.email || '';
+    document.getElementById('me_name').value = me.name || '';
+  } catch (e) { /* the settings form below reports connection problems */ }
+}
+
+document.getElementById('me-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = document.getElementById('me-save-btn');
+  const name = document.getElementById('me_name').value.trim();
+  if (!name) { accountMsg('me-msg', 'Enter your name.'); return; }
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    // Only "name" is sent: the endpoint refuses every other field, email included.
+    const res = await api('/api/v1/platform/me', { method: 'PATCH', body: JSON.stringify({ name }) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { accountMsg('me-msg', body.detail || 'Could not save your name.'); return; }
+    document.getElementById('me_name').value = body.name;
+    accountMsg('me-msg', 'Name updated.', true);
+  } catch (err) {
+    accountMsg('me-msg', 'Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save name';
+  }
+});
+
+document.getElementById('pw-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = document.getElementById('pw-save-btn');
+  const current_password = document.getElementById('pw_current').value;
+  const new_password = document.getElementById('pw_new').value;
+  const confirm_password = document.getElementById('pw_confirm').value;
+
+  if (!current_password) { accountMsg('pw-msg', 'Enter your current password.'); return; }
+  if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/.test(new_password)) {
+    accountMsg('pw-msg', 'New password must be at least 8 characters and include an uppercase letter, a lowercase letter and a number.');
+    return;
+  }
+  if (new_password !== confirm_password) { accountMsg('pw-msg', "The two passwords don't match."); return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Changing…';
+  try {
+    const res = await api('/api/v1/platform/me/password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password, new_password, confirm_password }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      accountMsg('pw-msg', typeof body.detail === 'string' ? body.detail
+        : res.status === 429 ? 'Too many attempts — try again later.'
+        : 'Could not change your password.');
+      return;
+    }
+    // The response carries a fresh token pair: every other session is now
+    // invalid, so this tab must keep the new tokens to stay signed in.
+    localStorage.setItem('platform_access_token', body.access_token);
+    localStorage.setItem('platform_refresh_token', body.refresh_token);
+    document.getElementById('pw-form').reset();
+    accountMsg('pw-msg', 'Password changed. Other sessions have been signed out.', true);
+  } catch (err) {
+    accountMsg('pw-msg', 'Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Change password';
+  }
+});
+
+loadMe();
 load();
 </script>
 </body>

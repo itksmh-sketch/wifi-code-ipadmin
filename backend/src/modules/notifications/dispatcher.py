@@ -1,13 +1,27 @@
 """
 Dispatcher: fires both email and SMS for each notification event.
 Notification failures never raise — always log and continue.
+
+The wording of every message below comes from template_store, which reads the
+platform-owner-editable row and falls back to the shipped default in
+template_catalog. What stays here is which values each event supplies; the text
+those values land in is data, not code.
+
+SMS is no longer truncated to 160 characters on the way out. That cut fell in
+the middle of the message whenever a real URL and email pushed it past the
+limit — on the approval SMS it could take the temp password with it, which is
+the one thing in that message the recipient cannot get anywhere else. Length is
+now bounded where it can be seen and fixed: the editor refuses a template whose
+rendered segment count exceeds template_catalog.MAX_SMS_SEGMENTS and shows the
+count while you type.
 """
 from __future__ import annotations
 import logging
 from decimal import Decimal
 
 from src.modules.notifications.email.service import get_email_service
-from src.modules.notifications.email import templates as t
+from src.modules.notifications import template_store as store
+from src.modules.notifications.template_catalog import DEFAULT_PLATFORM_NAME
 from src.config import get_settings
 
 logger = logging.getLogger("notifications.dispatcher")
@@ -70,16 +84,15 @@ def _settings():
 
 
 async def notify_application_received(*, email: str, contact_name: str, isp_name: str, phone: str) -> None:
-    s = _settings()
-    subj, html, text = t.application_received(
-        contact_name=contact_name, isp_name=isp_name, support_email=s.platform_support_email
-    )
+    values = {
+        "contact_name": contact_name,
+        "isp_name": isp_name,
+        "support_email": _settings().platform_support_email,
+        "platform_name": DEFAULT_PLATFORM_NAME,
+    }
+    subj, html, text = await store.render_email("application_received", values)
     await _send_email(email, subj, html, text)
-    sms = (
-        f"Hi {contact_name}, your application to join YourISP Platform has been received. "
-        f"We'll be in touch within 48 hours. Questions? {s.platform_support_email}"
-    )
-    await _send_sms(phone, sms)
+    await _send_sms(phone, await store.render_sms("application_received", values))
 
 
 async def notify_application_approved(
@@ -91,24 +104,24 @@ async def notify_application_approved(
     admin_email: str,
     temp_password: str,
     trial_days: int,
+    send_sms: bool = True,
 ) -> None:
-    s = _settings()
-    login_url = f"{s.platform_app_url}/admin"
-    subj, html, text = t.application_approved(
-        contact_name=contact_name,
-        isp_name=isp_name,
-        login_url=login_url,
-        admin_email=admin_email,
-        temp_password=temp_password,
-        trial_days=trial_days,
-    )
+    """send_sms=False: the caller delivers the temp password by SMS itself (the
+    admin-provisioning path needs a real send result, which _send_sms can't give)."""
+    values = {
+        "contact_name": contact_name,
+        "isp_name": isp_name,
+        "login_url": f"{_settings().platform_app_url}/admin",
+        "admin_email": admin_email,
+        "temp_password": temp_password,
+        "trial_days": trial_days,
+        "platform_name": DEFAULT_PLATFORM_NAME,
+    }
+    subj, html, text = await store.render_email("application_approved", values)
     await _send_email(email, subj, html, text)
-    sms = (
-        f"Welcome to YourISP Platform! Your ISP account is approved. "
-        f"Login: {login_url} | Email: {admin_email} | Temp password: {temp_password} | "
-        f"{trial_days}-day free trial starts now."
-    )
-    await _send_sms(phone, sms[:160])
+    if not send_sms:
+        return
+    await _send_sms(phone, await store.render_sms("application_approved", values))
 
 
 async def notify_application_rejected(
@@ -119,19 +132,16 @@ async def notify_application_rejected(
     isp_name: str,
     rejection_reason: str,
 ) -> None:
-    s = _settings()
-    subj, html, text = t.application_rejected(
-        contact_name=contact_name,
-        isp_name=isp_name,
-        rejection_reason=rejection_reason,
-        support_email=s.platform_support_email,
-    )
+    values = {
+        "contact_name": contact_name,
+        "isp_name": isp_name,
+        "rejection_reason": rejection_reason,
+        "support_email": _settings().platform_support_email,
+        "platform_name": DEFAULT_PLATFORM_NAME,
+    }
+    subj, html, text = await store.render_email("application_rejected", values)
     await _send_email(email, subj, html, text)
-    sms = (
-        f"Hi {contact_name}, unfortunately we cannot approve your YourISP Platform application "
-        f"at this time. Check your email for details."
-    )
-    await _send_sms(phone, sms)
+    await _send_sms(phone, await store.render_sms("application_rejected", values))
 
 
 async def notify_trial_expiry_warning(
@@ -143,33 +153,28 @@ async def notify_trial_expiry_warning(
     days_remaining: int,
     monthly_fee_ghs: Decimal,
 ) -> None:
-    s = _settings()
-    billing_url = f"{s.platform_app_url}/admin/billing"
-    subj, html, text = t.trial_expiry_warning(
-        isp_name=isp_name,
-        trial_end_date=trial_end_date,
-        days_remaining=days_remaining,
-        monthly_fee_ghs=monthly_fee_ghs,
-        billing_url=billing_url,
-    )
+    values = {
+        "isp_name": isp_name,
+        "trial_end_date": trial_end_date,
+        "days_remaining": days_remaining,
+        "monthly_fee_ghs": monthly_fee_ghs,
+        "billing_url": f"{_settings().platform_app_url}/admin/billing",
+        "platform_name": DEFAULT_PLATFORM_NAME,
+    }
+    subj, html, text = await store.render_email("trial_expiry_warning", values)
     await _send_email(email, subj, html, text)
-    sms = (
-        f"Your YourISP Platform trial ends in {days_remaining} days. "
-        f"Monthly fee: GHS {monthly_fee_ghs}. Pay at: {billing_url} to keep full access."
-    )
-    await _send_sms(phone, sms[:160])
+    await _send_sms(phone, await store.render_sms("trial_expiry_warning", values))
 
 
 async def notify_trial_expired(*, email: str, phone: str, isp_name: str) -> None:
-    s = _settings()
-    billing_url = f"{s.platform_app_url}/admin/billing"
-    subj, html, text = t.trial_expired(isp_name=isp_name, billing_url=billing_url)
+    values = {
+        "isp_name": isp_name,
+        "billing_url": f"{_settings().platform_app_url}/admin/billing",
+        "platform_name": DEFAULT_PLATFORM_NAME,
+    }
+    subj, html, text = await store.render_email("trial_expired", values)
     await _send_email(email, subj, html, text)
-    sms = (
-        f"Your YourISP Platform trial has ended. Account is now read-only. "
-        f"Pay your invoice to restore access: {billing_url}"
-    )
-    await _send_sms(phone, sms[:160])
+    await _send_sms(phone, await store.render_sms("trial_expired", values))
 
 
 async def notify_invoice_issued(
@@ -184,18 +189,19 @@ async def notify_invoice_issued(
     due_date: str,
     payment_url: str,
 ) -> None:
-    subj, html, text = t.invoice_issued(
-        isp_name=isp_name,
-        invoice_number=invoice_number,
-        amount_ghs=amount_ghs,
-        period_start=period_start,
-        period_end=period_end,
-        due_date=due_date,
-        payment_url=payment_url,
-    )
+    values = {
+        "isp_name": isp_name,
+        "invoice_number": invoice_number,
+        "amount_ghs": amount_ghs,
+        "period_start": period_start,
+        "period_end": period_end,
+        "due_date": due_date,
+        "payment_url": payment_url,
+        "platform_name": DEFAULT_PLATFORM_NAME,
+    }
+    subj, html, text = await store.render_email("invoice_issued", values)
     await _send_email(email, subj, html, text)
-    sms = f"Invoice {invoice_number} for GHS {amount_ghs} due {due_date}. Pay: {payment_url}"
-    await _send_sms(phone, sms[:160])
+    await _send_sms(phone, await store.render_sms("invoice_issued", values))
 
 
 async def notify_grace_period(
@@ -208,35 +214,36 @@ async def notify_grace_period(
     suspension_date: str,
     payment_url: str,
 ) -> None:
-    subj, html, text = t.grace_period_warning(
-        isp_name=isp_name,
-        invoice_number=invoice_number,
-        amount_ghs=amount_ghs,
-        suspension_date=suspension_date,
-        payment_url=payment_url,
-    )
+    values = {
+        "isp_name": isp_name,
+        "invoice_number": invoice_number,
+        "amount_ghs": amount_ghs,
+        "suspension_date": suspension_date,
+        "payment_url": payment_url,
+        "platform_name": DEFAULT_PLATFORM_NAME,
+    }
+    subj, html, text = await store.render_email("grace_period", values)
     await _send_email(email, subj, html, text)
-    sms = (
-        f"YourISP Platform: Invoice {invoice_number} overdue. "
-        f"Pay GHS {amount_ghs} by {suspension_date} to avoid suspension: {payment_url}"
-    )
-    await _send_sms(phone, sms[:160])
+    await _send_sms(phone, await store.render_sms("grace_period", values))
 
 
 async def notify_suspended(*, email: str, phone: str, isp_name: str) -> None:
-    s = _settings()
-    payment_url = f"{s.platform_app_url}/admin/billing"
-    subj, html, text = t.account_suspended(isp_name=isp_name, payment_url=payment_url)
+    values = {
+        "isp_name": isp_name,
+        "payment_url": f"{_settings().platform_app_url}/admin/billing",
+        "platform_name": DEFAULT_PLATFORM_NAME,
+    }
+    subj, html, text = await store.render_email("account_suspended", values)
     await _send_email(email, subj, html, text)
-    sms = (
-        f"YourISP Platform: Account suspended. "
-        f"Existing sessions continue but no new vouchers/payments. Pay to restore: {payment_url}"
-    )
-    await _send_sms(phone, sms[:160])
+    await _send_sms(phone, await store.render_sms("account_suspended", values))
 
 
 async def notify_reactivated(*, email: str, phone: str, isp_name: str, next_invoice_date: str) -> None:
-    subj, html, text = t.account_reactivated(isp_name=isp_name, next_invoice_date=next_invoice_date)
+    values = {
+        "isp_name": isp_name,
+        "next_invoice_date": next_invoice_date,
+        "platform_name": DEFAULT_PLATFORM_NAME,
+    }
+    subj, html, text = await store.render_email("account_reactivated", values)
     await _send_email(email, subj, html, text)
-    sms = f"YourISP Platform: Payment received! Full access restored. Next invoice: {next_invoice_date}."
-    await _send_sms(phone, sms[:160])
+    await _send_sms(phone, await store.render_sms("account_reactivated", values))

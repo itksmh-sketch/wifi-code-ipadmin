@@ -30,19 +30,32 @@ from src.db.models import (
     Town,
     Voucher,
 )
-from src.middleware.auth import get_platform_owner_context
+import logging
+
+from fastapi import Body
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from src.middleware.auth import get_platform_owner_context, token_version_matches
+from src.modules.admin_accounts.passwords import password_policy_error
+from src.modules.auth.tokens import platform_owner_token_response
+from src.utils.email_address import normalize_email
+from src.utils.payload import parse_update as _parse_update, reject_unknown_fields as _reject_unknown_fields
+from src.utils.phone import GHANA_PHONE_ERROR, normalize_ghana_phone
 from src.modules.mikrotik import setup_status as setup_store
 # Reuse the admin view's reachability predicate verbatim so the platform
 # drill-down can never disagree with what an operator's own dashboard shows.
 from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 from src.middleware.rate_limit import enforce_rate_limit
-from src.schemas import DefaultMonthlyFeeUpdate, LoginRequest, PlatformAdminCreate, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, PlatformNotificationSMSCredentialResponse, PlatformNotificationSMSCredentialUpdate, PlatformSMSCredentialResponse, PlatformSMSCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse, TransactionDiagnosticUpdate
+from src.modules.admin_accounts import platform_reset
+from src.modules.admin_accounts.notifications import send_temp_password_sms
+from src.modules.admin_accounts.provisioning import admin_email_taken, provision_operator_admin
+from src.modules.sms.types import SMSSendResult
+from src.utils.phone import mask_phone
+from src.schemas import DefaultMonthlyFeeUpdate, LoginRequest, PlatformAdminCreate, PlatformAdminPasswordReset, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, PlatformNotificationSMSCredentialResponse, PlatformNotificationSMSCredentialUpdate, PlatformSMSCredentialResponse, PlatformSMSCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse, TransactionDiagnosticUpdate
 from src.modules.billing.service import DEFAULT_MONTHLY_FEE_KEY, get_default_monthly_fee
 from src.modules.payments.filters import REAL_TRANSACTIONS_ONLY
 from src.utils.encryption import encrypt_secret
 from src.utils.auth import (
-    create_platform_owner_access_token,
-    create_platform_owner_refresh_token,
     hash_password,
     verify_password,
     verify_platform_owner_token,
@@ -51,6 +64,19 @@ from src.utils.auth import (
 router = APIRouter(prefix="/platform", tags=["platform"])
 
 VALID_OPERATOR_STATUSES = {"pending", "approved", "suspended", "cancelled"}
+
+
+def _provisioned_admin_payload(admin: AdminUser, temp_password: str, sms_result: SMSSendResult) -> dict:
+    """What the platform owner sees once, right after creating an admin."""
+    return {
+        "id": str(admin.id),
+        "email": admin.email,
+        "role": admin.role,
+        "phone": mask_phone(admin.phone),
+        "temp_password": temp_password,
+        "temp_password_sms_sent": sms_result.success,
+        "temp_password_sms_error": sms_result.error,
+    }
 
 
 def _month_start() -> datetime:
@@ -68,11 +94,7 @@ async def platform_auth_login(body: LoginRequest, request: Request, db: AsyncSes
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     owner.last_login_at = datetime.now(timezone.utc)
     await db.commit()
-    token_data = {"sub": str(owner.id), "role": "platform_owner", "email": owner.email}
-    return TokenResponse(
-        access_token=create_platform_owner_access_token(token_data),
-        refresh_token=create_platform_owner_refresh_token(token_data),
-    )
+    return platform_owner_token_response(owner)
 
 
 @router.post("/auth/refresh", response_model=TokenResponse)
@@ -85,11 +107,9 @@ async def platform_auth_refresh(body: RefreshRequest, db: AsyncSession = Depends
     owner = result.scalar_one_or_none()
     if not owner:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Platform owner not found or inactive")
-    token_data = {"sub": str(owner.id), "role": "platform_owner", "email": owner.email}
-    return TokenResponse(
-        access_token=create_platform_owner_access_token(token_data),
-        refresh_token=create_platform_owner_refresh_token(token_data),
-    )
+    if not token_version_matches(payload, owner):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+    return platform_owner_token_response(owner)
 
 
 async def _operator_row(db: AsyncSession, operator: ISPOperator) -> dict:
@@ -142,6 +162,157 @@ async def platform_me(owner: PlatformOwner = Depends(get_platform_owner_context)
     }
 
 
+logger = logging.getLogger("platform.self_service")
+
+
+def _clean_name(value: str) -> str:
+    """Validate what actually gets stored: a whitespace-only name passes a bare
+    min_length check and then strips to empty."""
+    cleaned = (value or "").strip()
+    if not cleaned:
+        raise ValueError("cannot be blank")
+    return cleaned
+
+
+class PlatformOwnerProfileUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(max_length=255)
+
+    _strip_name = field_validator("name")(_clean_name)
+
+
+class PasswordChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    current_password: str = Field(max_length=256)
+    new_password: str = Field(max_length=256)
+    confirm_password: str = Field(max_length=256)
+
+
+class OperatorProfileUpdate(BaseModel):
+    """Identity fields only. Not editable here: slug (unique, appears in webhook
+    URLs), billing, status and credentials — each has its own endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: Optional[str] = Field(default=None, max_length=255)
+    # Reaches Paystack as the payer email when an operator invoice is charged,
+    # and is where billing/trial notifications go, so it must be a real address.
+    contact_email: Optional[str] = Field(default=None, max_length=255)
+    contact_phone: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: Optional[str]) -> Optional[str]:
+        return _clean_name(v) if v is not None else v
+
+
+def _validated_password(admin_or_owner, body: PasswordChange, verify) -> str:
+    """Shared password-change checks for both account types."""
+    if not verify(body.current_password, admin_or_owner.password_hash):
+        raise HTTPException(status_code=400, detail="Your current password is incorrect.")
+    error = password_policy_error(body.new_password)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    if body.new_password != body.confirm_password:
+        raise HTTPException(status_code=400, detail="The two passwords don't match.")
+    if body.new_password == body.current_password:
+        raise HTTPException(status_code=400, detail="Choose a password different from your current one.")
+    return body.new_password
+
+
+@router.patch("/me")
+async def update_platform_me(
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Edit your own display name. Email is the login identifier and is immutable."""
+    _reject_unknown_fields(payload, {"name"})
+    body = _parse_update(PlatformOwnerProfileUpdate, payload)
+    owner.name = body.name
+    await db.commit()
+    await db.refresh(owner)
+    logger.info("platform_owner_profile_updated owner_id=%s", owner.id)
+    return {"id": str(owner.id), "email": owner.email, "name": owner.name}
+
+
+@router.post("/me/password", response_model=TokenResponse)
+async def change_platform_me_password(
+    body: PasswordChange,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Change your own password. Every other session dies immediately; the fresh
+    token pair in this response keeps the caller signed in."""
+    client_ip = request.client.host if request.client else "unknown"
+    await enforce_rate_limit(client_ip, "platform:password-change", limit=10, window_seconds=900)
+    await enforce_rate_limit(f"owner:{owner.id}", "platform:password-change", limit=5, window_seconds=900)
+
+    new_password = _validated_password(owner, body, verify_password)
+    owner.password_hash = hash_password(new_password)
+    owner.token_version = int(owner.token_version or 0) + 1
+    await db.commit()
+    await db.refresh(owner)
+    logger.warning("platform_owner_password_changed owner_id=%s", owner.id)
+    return platform_owner_token_response(owner)
+
+
+@router.patch("/operators/{operator_id}")
+async def update_operator_profile(
+    operator_id: uuid.UUID,
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Edit an operator's business name and billing contact details."""
+    _reject_unknown_fields(payload, {"name", "contact_email", "contact_phone"})
+    body = _parse_update(OperatorProfileUpdate, payload)
+
+    operator = await db.get(ISPOperator, operator_id)
+    if not operator:
+        raise HTTPException(status_code=404, detail="Operator not found")
+
+    changed = []
+    if "name" in payload:
+        operator.name = body.name
+        changed.append("name")
+    if "contact_email" in payload:
+        try:
+            email = normalize_email(body.contact_email or "")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Enter a valid contact email address.")
+        # Not unique in the schema, but a duplicate is almost always a mistake.
+        clash = (
+            await db.execute(
+                select(ISPOperator.id).where(
+                    func.lower(ISPOperator.contact_email) == email, ISPOperator.id != operator.id
+                )
+            )
+        ).first()
+        if clash:
+            raise HTTPException(status_code=409, detail="Another operator already uses that contact email.")
+        operator.contact_email = email
+        changed.append("contact_email")
+    if "contact_phone" in payload:
+        raw = (body.contact_phone or "").strip()
+        if raw:
+            try:
+                operator.contact_phone = normalize_ghana_phone(raw)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=GHANA_PHONE_ERROR)
+        else:
+            operator.contact_phone = None  # explicit clear
+        changed.append("contact_phone")
+
+    await db.commit()
+    await db.refresh(operator)
+    logger.info(
+        "operator_profile_updated operator_id=%s by_platform_owner=%s fields=%s",
+        operator.id, owner.id, ",".join(changed),
+    )
+    return await _operator_row(db, operator)
+
+
 @router.get("/operators")
 async def list_operators(
     db: AsyncSession = Depends(get_db),
@@ -167,10 +338,7 @@ async def create_operator(
     if existing:
         raise HTTPException(status_code=409, detail="Operator slug or contact email already exists")
 
-    existing_admin = (
-        await db.execute(select(AdminUser).where(AdminUser.email == body.initial_admin_email))
-    ).scalar_one_or_none()
-    if existing_admin:
+    if await admin_email_taken(db, body.initial_admin_email):
         raise HTTPException(status_code=409, detail="Initial admin email already exists")
 
     now = datetime.now(timezone.utc)
@@ -203,17 +371,20 @@ async def create_operator(
             )
         )
 
-    admin = AdminUser(
-        isp_operator_id=operator.id,
-        email=str(body.initial_admin_email),
-        password_hash=hash_password(body.initial_admin_password),
+    admin, temp_password = await provision_operator_admin(
+        db,
+        operator_id=operator.id,
+        email=body.initial_admin_email,
+        phone=body.initial_admin_phone,
         role="superadmin",
-        is_active=True,
     )
-    db.add(admin)
     await db.commit()
     await db.refresh(operator)
-    return await _operator_row(db, operator)
+    # Only after the commit: never text credentials for an account that rolled back.
+    sms_result = await send_temp_password_sms(admin, temp_password)
+    row = await _operator_row(db, operator)
+    row["initial_admin"] = _provisioned_admin_payload(admin, temp_password, sms_result)
+    return row
 
 
 @router.get("/operators/{operator_id}")
@@ -317,9 +488,71 @@ async def list_operator_admins(
             "is_active": bool(admin.is_active),
             "created_at": admin.created_at,
             "last_login_at": admin.last_login_at,
+            "phone": mask_phone(admin.phone),
+            "phone_verified": bool(admin.phone_verified),
+            "must_complete_onboarding": bool(admin.must_complete_onboarding),
+            "must_change_password": bool(admin.must_change_password),
         }
         for admin in result.scalars().all()
     ]
+
+
+@router.post("/operators/{operator_id}/admins/{admin_id}/reset-password")
+async def reset_operator_admin_password(
+    operator_id: uuid.UUID,
+    admin_id: uuid.UUID,
+    body: PlatformAdminPasswordReset,
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Reset an operator admin's password. Logs them out everywhere immediately.
+
+    Scoped to operator admins: the target must be an admin_users row belonging to
+    this operator (platform-owner accounts live in a different table and can
+    never match). See admin_accounts.platform_reset for the two outcomes.
+    """
+    # Per target admin, so even an authorised platform account can't spam
+    # resets (each one logs the admin out and texts them).
+    await enforce_rate_limit(
+        f"admin:{admin_id}",
+        "platform:admin-password-reset",
+        limit=platform_reset.RESET_RATE_LIMIT,
+        window_seconds=platform_reset.RESET_RATE_WINDOW_SECONDS,
+    )
+    admin = (
+        await db.execute(
+            select(AdminUser)
+            .where(AdminUser.id == admin_id, AdminUser.isp_operator_id == operator_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if admin is None:
+        raise HTTPException(status_code=404, detail="Admin not found for this operator")
+
+    try:
+        outcome = await platform_reset.reset_admin_password(
+            db, admin=admin, platform_owner_id=owner.id, phone=body.phone
+        )
+    except platform_reset.VerifiedPhoneConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {
+        "admin_id": str(admin.id),
+        "email": admin.email,
+        "mode": outcome.mode,
+        "sessions_revoked": True,
+        "phone": mask_phone(admin.phone),
+        "phone_verified": bool(admin.phone_verified),
+        "phone_changed": outcome.phone_changed,
+        "sms_sent": outcome.sms_sent,
+        "sms_error": outcome.sms_error,
+        # Only when the admin goes back through onboarding (unverified phone).
+        "temp_password": outcome.temp_password,
+        "is_active": bool(admin.is_active),
+        "event_id": str(outcome.event_id),
+    }
 
 
 @router.post("/operators/{operator_id}/admins", status_code=status.HTTP_201_CREATED)
@@ -331,23 +564,17 @@ async def create_operator_admin(
 ):
     if not await db.get(ISPOperator, operator_id):
         raise HTTPException(status_code=404, detail="Operator not found")
-    existing = (await db.execute(select(AdminUser).where(AdminUser.email == body.email))).scalar_one_or_none()
-    if existing:
+    if await admin_email_taken(db, body.email):
         raise HTTPException(status_code=409, detail="Admin email already exists")
-    admin = AdminUser(
-        isp_operator_id=operator_id,
-        email=str(body.email),
-        password_hash=hash_password(body.password),
-        role=body.role.value,
-        is_active=True,
+    admin, temp_password = await provision_operator_admin(
+        db, operator_id=operator_id, email=body.email, phone=body.phone, role=body.role.value
     )
-    db.add(admin)
     await db.commit()
     await db.refresh(admin)
+    # Only after the commit: never text credentials for an account that rolled back.
+    sms_result = await send_temp_password_sms(admin, temp_password)
     return {
-        "id": str(admin.id),
-        "email": admin.email,
-        "role": admin.role,
+        **_provisioned_admin_payload(admin, temp_password, sms_result),
         "is_active": bool(admin.is_active),
         "created_at": admin.created_at,
         "last_login_at": admin.last_login_at,

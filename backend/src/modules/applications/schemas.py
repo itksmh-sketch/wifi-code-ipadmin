@@ -5,6 +5,8 @@ from typing import Optional
 from pydantic import BaseModel, field_validator
 import re
 
+from src.utils.phone import normalize_ghana_phone
+
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 # Business description bounds. The apply page mirrors MESSAGE_MIN_LENGTH.
@@ -55,13 +57,7 @@ class ApplicationSubmit(BaseModel):
     @field_validator("phone")
     @classmethod
     def ghana_phone(cls, v: str) -> str:
-        digits = re.sub(r"\D", "", v)
-        # Accept 233XXXXXXXXX or 0XXXXXXXXX (10 digits starting 02x/05x)
-        if re.match(r"^233[0-9]{9}$", digits):
-            return digits
-        if re.match(r"^0[2-9][0-9]{8}$", digits):
-            return "233" + digits[1:]
-        raise ValueError("Phone must be a valid Ghana mobile number (e.g. 0244123456)")
+        return normalize_ghana_phone(v)
 
 
 class EmailCheckRequest(BaseModel):

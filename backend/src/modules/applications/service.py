@@ -1,7 +1,5 @@
 ﻿from __future__ import annotations
 import re
-import secrets
-import string
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -16,7 +14,9 @@ from src.db.models import (
     OperatorBillingEvent,
     OperatorPaymentCredential,
 )
-from src.utils.auth import hash_password
+from src.modules.admin_accounts.notifications import send_temp_password_sms
+from src.modules.admin_accounts.provisioning import provision_operator_admin
+from src.modules.sms.types import SMSSendResult
 from src.modules.billing.service import get_default_monthly_fee
 from src.modules.notifications import dispatcher as notify
 from src.modules.applications.schemas import ApplicationSubmit
@@ -26,11 +26,6 @@ def _generate_slug(name: str) -> str:
     slug = name.lower().strip()
     slug = re.sub(r"[^a-z0-9]+", "-", slug).strip("-")
     return slug or "operator"
-
-
-def _generate_temp_password(length: int = 12) -> str:
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 async def _unique_slug(db: AsyncSession, base: str) -> str:
@@ -125,8 +120,8 @@ async def approve_application(
     db: AsyncSession,
     app: OperatorApplication,
     platform_owner_id: uuid.UUID,
-) -> tuple[ISPOperator, str]:
-    """Returns (operator, temp_password).
+) -> tuple[ISPOperator, str, SMSSendResult]:
+    """Returns (operator, temp_password, temp-password SMS result).
 
     The operator's monthly fee is stamped from the platform default at approval
     time — never supplied by the caller — and stays fixed at that value.
@@ -136,7 +131,6 @@ async def approve_application(
 
     monthly_fee_ghs = await get_default_monthly_fee(db)
     base_slug = await _unique_slug(db, _generate_slug(app.isp_name))
-    temp_password = _generate_temp_password()
 
     operator = ISPOperator(
         name=app.isp_name,
@@ -154,14 +148,9 @@ async def approve_application(
     db.add(operator)
     await db.flush()  # get operator.id
 
-    admin = AdminUser(
-        isp_operator_id=operator.id,
-        email=app.email,
-        password_hash=hash_password(temp_password),
-        role="superadmin",
-        is_active=True,
+    admin, temp_password = await provision_operator_admin(
+        db, operator_id=operator.id, email=app.email, phone=app.phone, role="superadmin"
     )
-    db.add(admin)
 
     # Update application
     app.status = "approved"
@@ -181,6 +170,9 @@ async def approve_application(
     await db.commit()
     await db.refresh(operator)
 
+    # Only after the commit: never text credentials for an account that rolled back.
+    sms_result = await send_temp_password_sms(admin, temp_password)
+
     try:
         await notify.notify_application_approved(
             email=app.email,
@@ -190,11 +182,12 @@ async def approve_application(
             admin_email=app.email,
             temp_password=temp_password,
             trial_days=settings.trial_days,
+            send_sms=False,
         )
     except Exception:
         pass
 
-    return operator, temp_password
+    return operator, temp_password, sms_result
 
 
 async def reject_application(

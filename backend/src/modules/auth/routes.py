@@ -6,16 +6,13 @@ from src.db.models import AdminUser, PlatformOwner
 from src.middleware.rate_limit import enforce_rate_limit
 from src.schemas import LoginRequest, TokenResponse, RefreshRequest, ErrorResponse
 from src.utils.auth import (
-    create_access_token,
-    create_platform_owner_access_token,
-    create_platform_owner_refresh_token,
-    create_refresh_token,
     verify_platform_owner_token,
     verify_token,
     verify_password,
 )
-from src.middleware.auth import update_last_login
-from sqlalchemy import select
+from src.middleware.auth import token_version_matches, update_last_login
+from src.modules.auth.tokens import admin_token_response, platform_owner_token_response
+from sqlalchemy import func, select
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -25,19 +22,17 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
     client_ip = request.client.host if request.client else "unknown"
     await enforce_rate_limit(client_ip, "admin:login", limit=10, window_seconds=60)
 
-    result = await db.execute(select(AdminUser).where(AdminUser.email == body.email, AdminUser.is_active == True))
+    email = (body.email or "").strip().lower()
+    result = await db.execute(
+        select(AdminUser).where(func.lower(AdminUser.email) == email, AdminUser.is_active == True)
+    )
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
     await update_last_login(user.id, db)
-
-    token_data = {"sub": str(user.id), "role": user.role, "email": user.email, "isp_operator_id": str(user.isp_operator_id)}
-    access_token = create_access_token(token_data)
-    refresh_token = create_refresh_token(token_data)
-
-    return TokenResponse(access_token=access_token, refresh_token=refresh_token)
+    return admin_token_response(user)
 
 
 @router.post("/refresh", response_model=TokenResponse, responses={401: {"model": ErrorResponse}})
@@ -51,12 +46,10 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+    if not token_version_matches(payload, user):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
-    token_data = {"sub": str(user.id), "role": user.role, "email": user.email, "isp_operator_id": str(user.isp_operator_id)}
-    return TokenResponse(
-        access_token=create_access_token(token_data),
-        refresh_token=create_refresh_token(token_data),
-    )
+    return admin_token_response(user)
 
 
 @router.post("/platform/login", response_model=TokenResponse, responses={401: {"model": ErrorResponse}})
@@ -72,11 +65,7 @@ async def platform_login(body: LoginRequest, request: Request, db: AsyncSession 
     owner.last_login_at = datetime.now(timezone.utc)
     await db.commit()
 
-    token_data = {"sub": str(owner.id), "role": "platform_owner", "email": owner.email}
-    return TokenResponse(
-        access_token=create_platform_owner_access_token(token_data),
-        refresh_token=create_platform_owner_refresh_token(token_data),
-    )
+    return platform_owner_token_response(owner)
 
 
 @router.post("/platform/refresh", response_model=TokenResponse, responses={401: {"model": ErrorResponse}})
@@ -90,9 +79,7 @@ async def platform_refresh(body: RefreshRequest, db: AsyncSession = Depends(get_
     owner = result.scalar_one_or_none()
     if not owner:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Platform owner not found or inactive")
+    if not token_version_matches(payload, owner):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
-    token_data = {"sub": str(owner.id), "role": "platform_owner", "email": owner.email}
-    return TokenResponse(
-        access_token=create_platform_owner_access_token(token_data),
-        refresh_token=create_platform_owner_refresh_token(token_data),
-    )
+    return platform_owner_token_response(owner)
