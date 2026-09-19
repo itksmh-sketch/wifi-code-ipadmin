@@ -27,6 +27,8 @@ a voucher, so the bytes already recorded survive.
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
 from sqlalchemy import text
 
 from src.db.base import async_session_factory
@@ -35,12 +37,16 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# These are bound through asyncpg, which maps the Postgres `interval` type to
+# timedelta — a string here raises DataError ("'str' object has no attribute
+# 'days'") even though the same SQL works fine with a literal in psql.
+#
 # No interim for this long => the session is not really running.
-STALE_AFTER = "30 minutes"
+STALE_AFTER = timedelta(minutes=30)
 # ...but only trust that if the router itself has checked in recently.
-ROUTER_HEALTHY_WITHIN = "10 minutes"
+ROUTER_HEALTHY_WITHIN = timedelta(minutes=10)
 # Longer than any plan can legitimately run (max duration_minutes is 1440).
-BACKSTOP_AFTER = "25 hours"
+BACKSTOP_AFTER = timedelta(hours=25)
 
 _STALE_SQL = text(
     """
