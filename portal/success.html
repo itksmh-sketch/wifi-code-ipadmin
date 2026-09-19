@@ -59,20 +59,64 @@
             return parts.join(" + ");
         }
 
-        var tries = 0, maxTries = 5;
+        // Wall-clock deadline, not a try count. A try count meant one slow verify
+        // could burn the whole budget: 5 tries x 3s looks like 15s of patience,
+        // but a single 15s provider timeout consumed it in ONE attempt and
+        // dropped the customer on "Contact support" while their payment was
+        // still being confirmed (and usually succeeded moments later).
+        var DEADLINE_MS = 90000;
+        var POLL_MS = 3000;
+        var deadline = Date.now() + DEADLINE_MS;
+        var waiting = false;
+
+        function timeLeft(){ return deadline - Date.now(); }
+
+        function retryOrGiveUp(delayMs){
+            var left = timeLeft();
+            if(left <= 0){ giveUp(); return; }
+            var wait = Math.min(delayMs || POLL_MS, left);
+            if(!waiting){
+                waiting = true;
+                qs("statusBox").innerHTML =
+                    '<span class="spinner"></span> Still confirming your payment. This can take a minute…';
+            }
+            setTimeout(load, wait);
+        }
+
+        function giveUp(){
+            qs("statusBox").innerHTML =
+                'We could not confirm your payment in time. If you were charged, ' +
+                'your voucher is still being issued — please contact support with ' +
+                'reference <strong>' + String(ref).replace(/[<>&]/g, "") + '</strong>.';
+        }
+
         function load(){
-            tries++;
             fetch("/portal/payment-status?ref="+encodeURIComponent(ref), { headers: { "Accept":"application/json" } })
-                .then(function(r){ return r.json().then(function(j){ return { ok:r.ok, status:r.status, body:j }; }); })
+                .then(function(r){
+                    var retryAfter = parseInt(r.headers.get("Retry-After") || "", 10);
+                    return r.json().catch(function(){ return {}; }).then(function(j){
+                        return { ok:r.ok, status:r.status, body:j, retryAfter:retryAfter };
+                    });
+                })
                 .then(function(res){
                     if(!res.ok){
-                        if(tries<maxTries){ setTimeout(load, 3000); return; }
-                        qs("statusBox").textContent="Contact support";
+                        // 503 + Retry-After = provider unreachable, keep waiting on
+                        // the server's terms. Anything else: back off and retry
+                        // until the deadline rather than quitting on one blip.
+                        var delay = (res.status === 503 && res.retryAfter > 0)
+                            ? res.retryAfter * 1000 : POLL_MS;
+                        retryOrGiveUp(delay);
+                        return;
+                    }
+                    if(res.body.status === "failed"){
+                        qs("statusBox").textContent =
+                            res.body.failure_reason === "timeout"
+                                ? "This payment timed out. You have not been charged."
+                                : (res.body.display_message || "This payment did not go through.");
                         return;
                     }
                     if(res.body.status!=="success" || !res.body.voucher_code){
-                        if(tries<maxTries){ setTimeout(load, 3000); return; }
-                        qs("statusBox").textContent="Contact support";
+                        retryOrGiveUp(POLL_MS);
                         return;
                     }
                     qs("statusBox").style.display="none";
@@ -92,8 +136,9 @@
                     }
                 })
                 .catch(function(){
-                    if(tries<maxTries){ setTimeout(load, 3000); return; }
-                    qs("statusBox").textContent="Contact support";
+                    // Transient network blip on the captive portal itself; the
+                    // deadline is what decides when to stop, not the blip.
+                    retryOrGiveUp(POLL_MS);
                 });
         }
 

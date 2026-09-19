@@ -9,7 +9,7 @@ from typing import Any, Optional
 import httpx
 
 from src.config import Settings
-from src.modules.payments.providers.base import PaymentProvider
+from src.modules.payments.providers.base import PaymentProvider, provider_unreachable_result
 from src.modules.payments.providers.utils import redact_dict
 from src.modules.payments.types import (
     PaymentInitiationResult,
@@ -147,6 +147,12 @@ class PaystackProvider(PaymentProvider):
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise ValueError(self._paystack_error_message(exc)) from exc
+        except httpx.TransportError as exc:
+            # Timeout / connection failure. TimeoutException is a TransportError,
+            # so this covers both. Not a verdict on the charge — see
+            # provider_unreachable_result.
+            logger.warning("Paystack charge verify unreachable reference=%s error=%s", provider_reference, exc)
+            return provider_unreachable_result(provider_reference, payment_channel="mobile_money")
         payload = response.json()
         logger.info("Paystack charge verify response: %s", redact_dict(payload if isinstance(payload, dict) else {}))
         return self._verification_from_paystack_payload(payload, fallback_reference=provider_reference)

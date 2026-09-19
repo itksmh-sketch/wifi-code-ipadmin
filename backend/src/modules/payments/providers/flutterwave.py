@@ -27,7 +27,7 @@ from typing import Any, Optional
 import httpx
 
 from src.config import Settings
-from src.modules.payments.providers.base import PaymentProvider
+from src.modules.payments.providers.base import PaymentProvider, provider_unreachable_result
 from src.modules.payments.providers.utils import redact_dict
 from src.modules.payments.types import (
     PaymentInitiationResult,
@@ -304,6 +304,12 @@ class FlutterwaveProvider(PaymentProvider):
                     display_message="Awaiting payment confirmation.",
                 )
             raise ValueError(message) from exc
+        except httpx.TransportError as exc:
+            # Timeout / connection failure. TimeoutException is a TransportError,
+            # so this covers both. Not a verdict on the charge — see
+            # provider_unreachable_result.
+            logger.warning("Flutterwave verify unreachable reference=%s error=%s", provider_reference, exc)
+            return provider_unreachable_result(provider_reference)
 
         payload = response.json()
         logger.info("Flutterwave verify response: %s", redact_dict(payload if isinstance(payload, dict) else {}))

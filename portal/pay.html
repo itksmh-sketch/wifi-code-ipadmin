@@ -98,7 +98,9 @@
             return parts.join(" + ");
         }
         function stopPolling(){
-            if(polling){ clearInterval(polling); polling = null; }
+            // polling holds either the 5s interval or a Retry-After back-off
+            // timeout; clear both so a back-off can't resurrect a stopped poll.
+            if(polling){ clearInterval(polling); clearTimeout(polling); polling = null; }
         }
         function setBusy(busy){
             qs("submitBtn").disabled = busy || !selectedPlan;
@@ -221,15 +223,47 @@
             qs("waitBox").style.display = "none";
             qs("tryAgainBtn").style.display = "block";
         }
+        // A non-2xx used to be discarded silently, so an unreachable provider left
+        // the customer on a spinner with no explanation and no end. Now a
+        // 503 + Retry-After is surfaced and honoured: back off to the interval the
+        // server asks for, tell the customer we are still waiting, and resume the
+        // normal 5s cadence once it answers again.
+        function backOffPolling(seconds){
+            stopPolling();
+            var wait = Math.max(1, Math.min(seconds || 15, 60)) * 1000;
+            polling = setTimeout(function(){
+                polling = null;
+                fetchStatus();      // async; a terminal state will stopPolling() itself
+                startPolling();     // resume the normal cadence
+            }, wait);
+        }
         function fetchStatus(){
             if(!internalReference) return;
             fetch("/portal/payment-status?ref=" + encodeURIComponent(internalReference), { headers: { "Accept":"application/json" } })
-                .then(function(r){ return r.json().then(function(j){ return { ok:r.ok, status:r.status, body:j }; }); })
+                .then(function(r){
+                    var ra = parseInt(r.headers.get("Retry-After") || "", 10);
+                    return r.json().catch(function(){ return {}; }).then(function(j){
+                        return { ok:r.ok, status:r.status, body:j, retryAfter:ra };
+                    });
+                })
                 .then(function(res){
-                    if(!res.ok){ return; }
+                    if(!res.ok){
+                        if(res.status === 503){
+                            showBanner((res.body && res.body.detail) ? res.body.detail
+                                : "Still confirming your payment — the payment provider is slow to respond. Hold on…");
+                            backOffPolling(res.retryAfter);
+                            return;
+                        }
+                        // Any other error: keep polling at the normal cadence, but
+                        // stop pretending nothing happened.
+                        showBanner("Still confirming your payment…");
+                        return;
+                    }
                     handleState(res.body);
                 })
-                .catch(function(){});
+                .catch(function(){
+                    showBanner("Still confirming your payment…");
+                });
         }
 
         fetch("/portal/plans?site_id="+encodeURIComponent(siteId)+"&gateway="+encodeURIComponent(gateway)+(rt?("&rt="+encodeURIComponent(rt)):""), { headers: { "Accept":"application/json" } })

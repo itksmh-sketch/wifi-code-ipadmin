@@ -3,10 +3,36 @@ from decimal import Decimal
 from typing import Mapping, Optional
 
 from src.modules.payments.types import (
+    PROVIDER_UNREACHABLE_STATE,
     PaymentInitiationResult,
+    PaymentNextAction,
+    PaymentStatus,
     PaymentVerificationResult,
     PaymentWebhookResult,
 )
+
+
+def provider_unreachable_result(
+    provider_reference: str,
+    *,
+    payment_channel: Optional[str] = None,
+) -> PaymentVerificationResult:
+    """The placeholder ``verify()`` returns when the provider could not be reached.
+
+    A timeout or connection failure says nothing about the charge — it may well
+    have succeeded. Reporting it as pending keeps the customer polling (webhooks
+    and the reconciliation job resolve it either way) instead of surfacing a 500
+    or, worse, a false failure.
+    """
+    return PaymentVerificationResult(
+        status=PaymentStatus.PENDING,
+        amount_ghs=Decimal("0.00"),
+        provider_reference=provider_reference,
+        next_action=PaymentNextAction.WAIT,
+        provider_state=PROVIDER_UNREACHABLE_STATE,
+        display_message="Still confirming your payment. This can take a minute.",
+        payment_channel=payment_channel,
+    )
 
 
 class PaymentProvider(ABC):

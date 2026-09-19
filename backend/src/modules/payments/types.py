@@ -18,6 +18,13 @@ class PaymentProviderName(str, Enum):
     PAYSTACK = "paystack"
 
 
+# provider_state marker for "we could not reach the provider this time".
+# It is NOT a payment outcome: the charge is still whatever it was. Callers
+# must treat it as "no new information" and leave the stored transaction
+# state alone rather than overwriting it with the placeholder result.
+PROVIDER_UNREACHABLE_STATE = "provider_unreachable"
+
+
 class PaymentStatus(str, Enum):
     PENDING = "pending"
     SUCCESS = "success"

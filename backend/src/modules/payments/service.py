@@ -11,7 +11,12 @@ from src.db.models import ISPOperator, PaymentTransaction, Plan, Voucher
 from src.modules.payments.providers.base import PaymentProvider
 from src.modules.payments.providers.registry import build_payment_provider
 from src.modules.payments.provider_resolver import resolve_active_payment_provider
-from src.modules.payments.types import PaymentMethod, PaymentNextAction, PaymentStatus
+from src.modules.payments.types import (
+    PROVIDER_UNREACHABLE_STATE,
+    PaymentMethod,
+    PaymentNextAction,
+    PaymentStatus,
+)
 from src.modules.webhooks.urls import build_webhook_url
 from src.modules.platform.platform_sms_rate import (
     PlatformSMSRateNotConfigured,
@@ -248,6 +253,14 @@ class PaymentService:
         result = await provider.verify(
             tx.provider_reference, expected_amount_ghs=Decimal(str(tx.amount_ghs))
         )
+        if result.provider_state == PROVIDER_UNREACHABLE_STATE:
+            # No new information. Stamp the check so the debounce above throttles
+            # the next poll instead of hammering a provider that is already
+            # timing out, and leave the stored state (including a live
+            # ENTER_OTP/ENTER_PIN next_action) exactly as it was.
+            tx.last_status_check_at = datetime.now(timezone.utc)
+            await db.commit()
+            return tx
         return await self.apply_provider_result(db, tx=tx, result=result, trigger_source="poll")
 
     async def apply_webhook_update(

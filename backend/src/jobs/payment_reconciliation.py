@@ -5,7 +5,7 @@ from sqlalchemy import select
 from src.db.base import async_session_factory
 from src.db.models import PaymentTransaction
 from src.modules.payments.dependencies import get_payment_service
-from src.modules.payments.types import PaymentStatus
+from src.modules.payments.types import PROVIDER_UNREACHABLE_STATE, PaymentStatus
 
 import structlog
 
@@ -17,7 +17,15 @@ async def run_payment_reconciliation(ctx=None) -> dict:
     now = datetime.now(timezone.utc)
     fifteen_minutes_ago = now - timedelta(minutes=15)
     two_hours_ago = now - timedelta(hours=2)
-    stats = {"processed": 0, "success": 0, "failed": 0, "timeout": 0, "still_pending": 0}
+    stats = {
+        "processed": 0,
+        "success": 0,
+        "failed": 0,
+        "timeout": 0,
+        "still_pending": 0,
+        "unreachable": 0,
+        "errors": 0,
+    }
 
     async with async_session_factory() as db:
         result = await db.execute(
@@ -42,8 +50,30 @@ async def run_payment_reconciliation(ctx=None) -> dict:
                     stats["still_pending"] += 1
                 continue
 
-            provider = await service.provider_for_transaction(db, tx)
-            verify_result = await provider.verify(tx.provider_reference, expected_amount_ghs=tx.amount_ghs)
+            try:
+                provider = await service.provider_for_transaction(db, tx)
+                verify_result = await provider.verify(tx.provider_reference, expected_amount_ghs=tx.amount_ghs)
+            except Exception as exc:
+                # One unhealthy provider (or one bad credential row) must not
+                # abort the batch and strand every remaining pending payment
+                # until the next run. Skip this transaction; it stays pending
+                # and is picked up again in 10 minutes.
+                logger.warning(
+                    "payment_reconciliation_verify_failed",
+                    module=__name__,
+                    internal_reference=tx.internal_reference,
+                    error=str(exc),
+                )
+                stats["errors"] += 1
+                continue
+
+            if verify_result.provider_state == PROVIDER_UNREACHABLE_STATE:
+                # Provider unreachable: no verdict, so don't let the two-hour
+                # timeout branch below mark it failed on the strength of a
+                # network error. Leave it pending for the next run.
+                tx.last_status_check_at = now
+                stats["unreachable"] += 1
+                continue
 
             if verify_result.status == PaymentStatus.SUCCESS:
                 await service.apply_provider_result(db, tx=tx, result=verify_result, trigger_source="poll")
