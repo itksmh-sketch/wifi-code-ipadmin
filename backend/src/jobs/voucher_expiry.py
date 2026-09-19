@@ -15,9 +15,16 @@ logger = structlog.get_logger(__name__)
 
 async def expire_vouchers(ctx=None):
     """
-    Background job: runs every 5 minutes.
+    Background job: runs every 60 seconds (worker.py registers it as
+    cron(expire_vouchers, second=0)).
     Transitions active vouchers to expired or exhausted when limits are reached.
     Also sends CoA/Disconnect to terminate live sessions.
+
+    Note on cap overshoot: this job can only act on data_used_mb, which is
+    refreshed by the RADIUS interim-update (Acct-Interim-Interval = 60s, set in
+    freeradius/sql.conf authorize_reply_query). So a voucher can exceed its cap
+    by up to one interim interval plus up to one cron period before it is
+    detected -- roughly 120s worst case, 60s typical.
     """
     now = datetime.now(timezone.utc)
     logger.info("voucher_expiry_started", module=__name__, now=str(now))
