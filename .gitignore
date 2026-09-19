@@ -40,3 +40,6 @@ Thumbs.db
 .env.bak*
 .env.*
 !.env.example
+
+# Pre-deploy DB dumps (contain production customer data — never commit)
+.deploy-backups/
