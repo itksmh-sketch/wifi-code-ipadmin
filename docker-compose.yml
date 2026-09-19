@@ -284,6 +284,19 @@ services:
         sed -i 's/host=postgres/host=127.0.0.1/' /etc/freeradius/mods-enabled/sql
         cp /overrides/default /etc/freeradius/sites-enabled/default
         cp /overrides/clients.conf /etc/freeradius/clients.conf
+        # Keep the DB password OUT of the connection string. rlm_sql logs
+        # radius_db verbatim at INFO ("Attempting to connect to database ..."),
+        # so embedding the password there wrote it in cleartext to
+        # /var/log/freeradius/radius.log on every start. FreeRADIUS 3.2 has no
+        # per-module log level, so stripping it from the conninfo is the fix.
+        # libpq picks it up from PGPASSFILE instead. Wildcard host/port so the
+        # same line works for the host-networked primary (127.0.0.1) and the
+        # bridge-networked secondary (postgres).
+        sed -i 's/ password=$$ENV{POSTGRES_PASSWORD}//' /etc/freeradius/mods-enabled/sql
+        printf '*:*:%s:%s:%s\n' "$$POSTGRES_DB" "$$POSTGRES_USER" "$$POSTGRES_PASSWORD" > /etc/freeradius/.pgpass
+        chmod 600 /etc/freeradius/.pgpass
+        chown freerad:freerad /etc/freeradius/.pgpass
+        export PGPASSFILE=/etc/freeradius/.pgpass
         chmod 640 /etc/freeradius/mods-enabled/sql /etc/freeradius/sites-enabled/default /etc/freeradius/clients.conf
         exec /docker-entrypoint.sh freeradius
     volumes:
@@ -325,6 +338,19 @@ services:
         cp /overrides/sql.conf /etc/freeradius/mods-enabled/sql
         cp /overrides/default /etc/freeradius/sites-enabled/default
         cp /overrides/clients.conf /etc/freeradius/clients.conf
+        # Keep the DB password OUT of the connection string. rlm_sql logs
+        # radius_db verbatim at INFO ("Attempting to connect to database ..."),
+        # so embedding the password there wrote it in cleartext to
+        # /var/log/freeradius/radius.log on every start. FreeRADIUS 3.2 has no
+        # per-module log level, so stripping it from the conninfo is the fix.
+        # libpq picks it up from PGPASSFILE instead. Wildcard host/port so the
+        # same line works for the host-networked primary (127.0.0.1) and the
+        # bridge-networked secondary (postgres).
+        sed -i 's/ password=$$ENV{POSTGRES_PASSWORD}//' /etc/freeradius/mods-enabled/sql
+        printf '*:*:%s:%s:%s\n' "$$POSTGRES_DB" "$$POSTGRES_USER" "$$POSTGRES_PASSWORD" > /etc/freeradius/.pgpass
+        chmod 600 /etc/freeradius/.pgpass
+        chown freerad:freerad /etc/freeradius/.pgpass
+        export PGPASSFILE=/etc/freeradius/.pgpass
         chmod 640 /etc/freeradius/mods-enabled/sql /etc/freeradius/sites-enabled/default /etc/freeradius/clients.conf
         exec /docker-entrypoint.sh freeradius
     ports:
