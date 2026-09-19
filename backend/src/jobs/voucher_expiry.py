@@ -5,12 +5,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import async_session_factory
 from src.db.models import Plan, Router, Session, Voucher
+from src.jobs.job_lock import job_lock
 from src.modules.vouchers.engine import transition_voucher_status
 from src.modules.mikrotik.access_revocation import revoke_voucher_access
 from src.radius.coa_events import create_pending_disconnect_event, send_disconnect_with_event
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+_LOCK_KEY = "lock:expire_vouchers"
+# Comfortably above any real runtime (max 3.30s across 22,494 recorded runs),
+# but bounded so a crashed worker self-heals instead of wedging the job.
+_LOCK_TTL_SECONDS = 120
 
 
 async def expire_vouchers(ctx=None):
@@ -26,6 +32,19 @@ async def expire_vouchers(ctx=None):
     by up to one interim interval plus up to one cron period before it is
     detected -- roughly 120s worst case, 60s typical.
     """
+    # Guard against overlapping runs. At second={0,15,30,45} a run that stalls
+    # could still be in flight when the next tick fires — most plausibly when a
+    # batch of vouchers each need a CoA (3s socket timeout) plus a RouterOS API
+    # call, all done inline and sequentially below. Two overlapping runs would
+    # both see the same voucher as 'active' and each fire a disconnect.
+    async with job_lock((ctx or {}).get("redis"), _LOCK_KEY, _LOCK_TTL_SECONDS) as acquired:
+        if not acquired:
+            logger.info("voucher_expiry_skipped_overlap", module=__name__)
+            return {"skipped": "previous run still in flight"}
+        await _expire_vouchers_locked()
+
+
+async def _expire_vouchers_locked():
     now = datetime.now(timezone.utc)
     logger.info("voucher_expiry_started", module=__name__, now=str(now))
 
