@@ -245,6 +245,5 @@ gunzip -c hotspot_YYYYMMDD_HHMMSS.sql.gz | docker-compose exec -T postgres \
     ├── radiusd.conf
     ├── sql.conf
     ├── clients.conf
-    ├── dictionary
     └── sites-enabled/
 ```
