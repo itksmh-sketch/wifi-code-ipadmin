@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { apiCall } from '../App';
 import PageHeader from '../components/PageHeader';
 
@@ -121,7 +122,10 @@ export default function Vouchers() {
         <div>
             <div className="flex-between">
                 <PageHeader title="Vouchers" />
-                <button className="btn btn-primary" onClick={() => setShowForm(true)}>Generate Batch</button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                    <Link to="/vouchers/print" className="btn">Print vouchers</Link>
+                    <button className="btn btn-primary" onClick={() => setShowForm(true)}>Generate Batch</button>
+                </div>
             </div>
 
             {/* Filters */}

@@ -9,6 +9,7 @@ import TownsSites from './pages/TownsSites';
 import Routers from './pages/Routers';
 import Plans from './pages/Plans';
 import Vouchers from './pages/Vouchers';
+import VoucherPrint from './pages/VoucherPrint';
 import Sessions from './pages/Sessions';
 import PaymentCredentials from './pages/PaymentCredentials';
 import SMSCredentials from './pages/SMSCredentials';
@@ -177,6 +178,7 @@ export default function App() {
                                             <Route path="/routers" element={<Routers />} />
                                             <Route path="/plans" element={<Plans />} />
                                             <Route path="/vouchers" element={<Vouchers />} />
+                                            <Route path="/vouchers/print" element={<VoucherPrint />} />
                                             <Route path="/sessions" element={<Sessions />} />
                                             <Route path="/payment-credentials" element={<PaymentCredentials />} />
                                             <Route path="/sms-credentials" element={<SMSCredentials />} />
