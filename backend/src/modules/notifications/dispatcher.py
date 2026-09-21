@@ -83,11 +83,32 @@ def _settings():
     return get_settings()
 
 
+async def _support_email() -> str:
+    """The support address applicants are told to write to.
+
+    Read from the platform_settings table, which a platform owner edits in the
+    portal's Settings page — config only ever held the placeholder. Own
+    short-lived session for the same reason _send_sms and
+    template_store._load_safely open one: the notify_* functions have no
+    session to borrow. Falls back to config on any failure, so a lookup error
+    degrades the address rather than the notification.
+    """
+    try:
+        from src.db.base import async_session_factory
+        from src.modules.platform.settings_service import get_setting
+
+        async with async_session_factory() as db:
+            return await get_setting(db, "platform_support_email")
+    except Exception as exc:
+        logger.error("notification_support_email_lookup_failed error=%s — using config", exc)
+        return _settings().platform_support_email
+
+
 async def notify_application_received(*, email: str, contact_name: str, isp_name: str, phone: str) -> None:
     values = {
         "contact_name": contact_name,
         "isp_name": isp_name,
-        "support_email": _settings().platform_support_email,
+        "support_email": await _support_email(),
         "platform_name": DEFAULT_PLATFORM_NAME,
     }
     subj, html, text = await store.render_email("application_received", values)
@@ -136,7 +157,7 @@ async def notify_application_rejected(
         "contact_name": contact_name,
         "isp_name": isp_name,
         "rejection_reason": rejection_reason,
-        "support_email": _settings().platform_support_email,
+        "support_email": await _support_email(),
         "platform_name": DEFAULT_PLATFORM_NAME,
     }
     subj, html, text = await store.render_email("application_rejected", values)

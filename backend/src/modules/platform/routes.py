@@ -1299,7 +1299,8 @@ async def get_platform_settings(
 ):
     """Return all platform-level settings as a flat key/value object.
 
-    Keys: wg_server_endpoint, platform_app_url, webhook_base_url. Values come
+    Keys: wg_server_endpoint, platform_app_url, webhook_base_url,
+    platform_support_email. Values come
     from the platform_settings table, falling back to the .env/config default.
     """
     from src.modules.platform.settings_service import get_all_settings
@@ -1321,8 +1322,22 @@ async def update_platform_settings(
             status_code=400,
             detail=f"Unknown setting key(s): {', '.join(sorted(unknown))}",
         )
-    for key, value in updates.items():
-        await set_setting(db, key, str(value if value is not None else ""))
+    cleaned = {key: str(value if value is not None else "") for key, value in updates.items()}
+    # Validated before anything is written, so one bad field can't leave the
+    # others half-saved. The support address goes verbatim into applicant
+    # messages, and an empty value would silently fall back to the config
+    # placeholder, so both are refused rather than stored. It is the only
+    # email-shaped key: the others are an endpoint and two URLs.
+    if "platform_support_email" in cleaned:
+        try:
+            cleaned["platform_support_email"] = normalize_email(cleaned["platform_support_email"])
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Support email must be a valid email address, like support@example.com.",
+            )
+    for key, value in cleaned.items():
+        await set_setting(db, key, value)
     await db.commit()
     return await get_all_settings(db)
 

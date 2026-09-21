@@ -17,6 +17,9 @@ PLATFORM_SETTING_KEYS = {
     "wg_server_endpoint": "wg_server_endpoint",
     "platform_app_url": "platform_app_url",
     "webhook_base_url": "webhook_base_url",
+    # Shown to applicants in the application-received/rejected messages.
+    # Seeded by migration 049 with the real address.
+    "platform_support_email": "platform_support_email",
 }
 
 

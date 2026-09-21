@@ -91,6 +91,9 @@
       <label>Webhook Base URL</label>
       <input id="webhook_base_url" type="text" placeholder="https://app.yourplatform.com" autocomplete="off">
 
+      <label>Support Email</label>
+      <input id="platform_support_email" type="email" placeholder="support@yourplatform.com" autocomplete="off">
+
       <div class="spacer"></div>
       <div style="display:flex;gap:10px">
         <button class="btn primary" type="submit" id="save-btn">Save changes</button>
@@ -175,7 +178,7 @@
 <div id="toast">Settings saved</div>
 
 <script>
-const KEYS = ['wg_server_endpoint', 'platform_app_url', 'webhook_base_url'];
+const KEYS = ['wg_server_endpoint', 'platform_app_url', 'webhook_base_url', 'platform_support_email'];
 
 const token = localStorage.getItem('platform_access_token');
 if (!token) { window.location.replace('/platform/login'); }
