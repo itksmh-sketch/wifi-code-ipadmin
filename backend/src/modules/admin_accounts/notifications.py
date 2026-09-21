@@ -20,6 +20,29 @@ logger = logging.getLogger("admin_accounts.notifications")
 OTP_TTL_MINUTES = 10
 
 
+async def _login_url() -> str:
+    """The admin sign-in link to put in an SMS.
+
+    Read from the platform_settings table, not straight from config: that row
+    is the source of truth a platform owner edits in the portal's Settings
+    page, and on this deployment it holds the public HTTPS domain while the
+    .env value is the bare server address. Every link an operator receives
+    should be the one they can bookmark. Falls back to config (which is also
+    get_setting's own default when the row is empty) if the lookup fails, so a
+    database hiccup degrades the link rather than the security alert carrying
+    it.
+    """
+    from src.modules.platform.settings_service import get_setting
+
+    try:
+        async with async_session_factory() as db:
+            base = await get_setting(db, "platform_app_url")
+    except Exception as exc:
+        logger.error("admin_sms_app_url_lookup_failed error=%s", exc)
+        base = get_settings().platform_app_url
+    return f"{base.rstrip('/')}/admin/login"
+
+
 async def _send(to: str, message: str, *, kind: str) -> SMSSendResult:
     if not to:
         return SMSSendResult(success=False, error="no_phone_on_file")
@@ -47,7 +70,7 @@ async def _send(to: str, message: str, *, kind: str) -> SMSSendResult:
 
 async def send_temp_password_sms(admin: AdminUser, temp_password: str, *, reason: str = "new") -> SMSSendResult:
     """reason: "new" (account just created) or "reset" (a platform owner reset it)."""
-    login_url = f"{get_settings().platform_app_url}/admin/login"
+    login_url = await _login_url()
     if reason == "reset":
         next_step = (
             "You'll be asked to choose a new password."
@@ -103,7 +126,7 @@ async def send_lockout_sms(admin: AdminUser, *, kind: str) -> SMSSendResult:
     """
     from src.modules.admin_accounts.lockout import LOCKOUT_HOURS, LOGIN_MAX_ATTEMPTS, PIN_MAX_ATTEMPTS
 
-    login_url = f"{get_settings().platform_app_url}/admin/login"
+    login_url = await _login_url()
     if kind == "pin":
         message = (
             f"IpAdmin security: your PIN was locked for {LOCKOUT_HOURS} hours after "
@@ -130,7 +153,7 @@ async def send_phone_changed_sms(old_phone: str, admin: AdminUser) -> SMSSendRes
     on their handset. Texting the number being replaced is the one message such
     an attacker cannot intercept, and it goes out before they can benefit.
     """
-    login_url = f"{get_settings().platform_app_url}/admin/login"
+    login_url = await _login_url()
     message = (
         f"IpAdmin security: the phone number on admin account {admin.email} was just changed to a "
         f"different number, so alerts and reset codes will no longer come here. "
