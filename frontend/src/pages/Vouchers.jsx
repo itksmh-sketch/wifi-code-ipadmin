@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { apiCall } from '../App';
 import PageHeader from '../components/PageHeader';
 
@@ -12,23 +12,45 @@ function sampleCode(length) {
     return 'XXXXXXXXXXXXXXXXXXXXXXXX'.slice(0, n).match(/.{1,4}/g).join('-');
 }
 
+// Mirrors the API's source filter. Manual is the default because it is the
+// operator's own stock; online purchases are already sold and reseller vouchers
+// belong to a reseller, but both stay reachable here to look up or disable.
+const SOURCES = [
+    ['manual', 'Manual'],
+    ['online', 'Online'],
+    ['reseller', 'Reseller'],
+    ['all', 'All sources'],
+];
+const SOURCE_BADGE = { manual: 'badge-blue', online: 'badge-green', reseller: 'badge-yellow' };
+
 export default function Vouchers() {
     const [vouchers, setVouchers] = useState([]);
     const [total, setTotal] = useState(0);
     const [plans, setPlans] = useState([]);
-    const [filters, setFilters] = useState({ status: '', plan_id: '', batch_id: '' });
+    const [filters, setFilters] = useState({ status: '', plan_id: '', batch_id: '', source: 'manual' });
     const [showForm, setShowForm] = useState(false);
     const [form, setForm] = useState({ plan_id: '', quantity: 10, device_policy: 'single', code_length: 16 });
     const [loading, setLoading] = useState(true);
     const [generatedVouchers, setGeneratedVouchers] = useState(null);
 
-    const fetchVouchers = () => {
+    // Only the newest request may update the table. Changing filters quickly
+    // can have an older, slower response land last and show the wrong list.
+    const latestRequest = useRef(0);
+
+    // Takes the filters explicitly rather than reading them from this render.
+    // The dropdowns used to call setFilters(...) then setTimeout(fetchVouchers):
+    // that fetchVouchers was the previous render's, so it sent the previous
+    // filters and the table always lagged one selection behind.
+    const fetchVouchers = (f = filters) => {
         const params = new URLSearchParams();
-        if (filters.status) params.set('status', filters.status);
-        if (filters.plan_id) params.set('plan_id', filters.plan_id);
-        if (filters.batch_id) params.set('batch_id', filters.batch_id);
+        if (f.status) params.set('status', f.status);
+        if (f.plan_id) params.set('plan_id', f.plan_id);
+        if (f.batch_id) params.set('batch_id', f.batch_id);
+        params.set('source', f.source);
+        const requestId = ++latestRequest.current;
         apiCall(`/vouchers?${params}`)
             .then(data => {
+                if (requestId !== latestRequest.current) return;
                 setVouchers(data?.vouchers || []);
                 setTotal(data?.total || 0);
             })
@@ -38,8 +60,14 @@ export default function Vouchers() {
 
     useEffect(() => {
         apiCall('/plans').then(p => setPlans(p || [])).catch(() => setPlans([]));
-        fetchVouchers();
     }, []);
+
+    // The one place a filter change turns into a fetch — including the first
+    // load — so the request always carries the filters just committed.
+    useEffect(() => { fetchVouchers(filters); }, [filters]);
+
+    const planNames = useMemo(() => Object.fromEntries(plans.map(p => [p.id, p.name])), [plans]);
+    const setFilter = (key, value) => setFilters(prev => ({ ...prev, [key]: value }));
 
     const generateVouchers = async () => {
         const body = {
@@ -98,7 +126,10 @@ export default function Vouchers() {
 
             {/* Filters */}
             <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-                <select value={filters.status} onChange={e => { setFilters({ ...filters, status: e.target.value }); setTimeout(fetchVouchers, 0); }} style={{ padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14 }}>
+                <select value={filters.source} onChange={e => setFilter('source', e.target.value)} aria-label="Voucher source" style={{ padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14 }}>
+                    {SOURCES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+                <select value={filters.status} onChange={e => setFilter('status', e.target.value)} aria-label="Voucher status" style={{ padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14 }}>
                     <option value="">All Statuses</option>
                     <option value="unused">Unused</option>
                     <option value="active">Active</option>
@@ -106,12 +137,12 @@ export default function Vouchers() {
                     <option value="expired">Expired</option>
                     <option value="disabled">Disabled</option>
                 </select>
-                <select value={filters.plan_id} onChange={e => { setFilters({ ...filters, plan_id: e.target.value }); setTimeout(fetchVouchers, 0); }} style={{ padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14 }}>
+                <select value={filters.plan_id} onChange={e => setFilter('plan_id', e.target.value)} aria-label="Plan" style={{ padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14 }}>
                     <option value="">All Plans</option>
                     {plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
                 {filters.batch_id && (
-                    <button className="btn btn-sm" style={{ background: '#e5e7eb' }} onClick={() => { setFilters({ ...filters, batch_id: '' }); setTimeout(fetchVouchers, 0); }}>Clear Batch Filter</button>
+                    <button className="btn btn-sm" style={{ background: '#e5e7eb' }} onClick={() => setFilter('batch_id', '')}>Clear Batch Filter</button>
                 )}
             </div>
 
@@ -177,13 +208,14 @@ export default function Vouchers() {
                 <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 8 }}>Total: {total} vouchers</p>
                 <div className="table-wrap">
                     <table>
-                        <thead><tr><th>Code</th><th>Username</th><th>Plan</th><th>Status</th><th>Data Used</th><th>Expires</th><th>Actions</th></tr></thead>
+                        <thead><tr><th>Code</th><th>Username</th><th>Plan</th><th>Source</th><th>Status</th><th>Data Used</th><th>Expires</th><th>Actions</th></tr></thead>
                         <tbody>
                             {vouchers.map(v => (
                                 <tr key={v.id}>
                                     <td style={{ fontFamily: 'monospace', fontSize: 13 }}>{v.code}</td>
                                     <td style={{ fontFamily: 'monospace', fontSize: 13 }}>{v.username}</td>
-                                    <td>{v.plan_id?.slice(0, 8)}...</td>
+                                    <td>{planNames[v.plan_id] || `${v.plan_id?.slice(0, 8)}…`}</td>
+                                    <td><span className={`badge ${SOURCE_BADGE[v.source] || 'badge-gray'}`}>{v.source}</span></td>
                                     <td>{statusBadge(v.status)}</td>
                                     <td>{v.data_used_mb} MB</td>
                                     <td>{v.expires_at ? new Date(v.expires_at).toLocaleDateString() : '—'}</td>
@@ -199,7 +231,7 @@ export default function Vouchers() {
                                     </td>
                                 </tr>
                             ))}
-                            {vouchers.length === 0 && <tr><td colSpan="7" style={{ color: '#9ca3af' }}>No vouchers found</td></tr>}
+                            {vouchers.length === 0 && <tr><td colSpan="8" style={{ color: '#9ca3af' }}>No vouchers found</td></tr>}
                         </tbody>
                     </table>
                 </div>
