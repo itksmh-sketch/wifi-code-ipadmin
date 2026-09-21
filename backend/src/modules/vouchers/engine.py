@@ -341,6 +341,7 @@ async def generate_vouchers(
             max_devices=1,
             expires_at=None,
             batch_id=batch_id,
+            source="manual",
         )
         db.add(voucher)
         vouchers.append(voucher)

@@ -243,6 +243,8 @@ async def reseller_purchase_vouchers(
                 max_devices=1,
                 expires_at=expires_at,
                 batch_id=batch_id,
+                # Paid for from the reseller's wallet: not operator stock.
+                source="reseller",
             )
             db.add(v)
             await db.flush()

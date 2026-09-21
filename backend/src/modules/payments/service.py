@@ -385,6 +385,8 @@ class PaymentService:
                 max_devices=1,
                 expires_at=None,
                 batch_id=f"PAY-{tx.internal_reference[:8]}",
+                # Already sold and texted to the buyer: must never be printed.
+                source="online",
             )
             db.add(voucher)
             await db.flush()

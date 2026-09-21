@@ -570,6 +570,14 @@ class Voucher(Base):
     expires_at = Column(DateTime(timezone=True), nullable=True)
     data_used_mb = Column(Integer, server_default="0")
     batch_id = Column(String(255), nullable=True)
+    # Where the voucher came from: "manual" (operator stock), "online" (created
+    # when a captive-portal payment succeeded — already sold) or "reseller"
+    # (allocated to and paid for by a reseller). Only manual stock is ever
+    # printable. Every creation path sets it explicitly; the server default
+    # exists only for code that predates the column (migration 050).
+    source = Column(String(16), nullable=False, server_default="manual")
+    # Set when an operator confirms a print run; a later run skips these.
+    printed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     plan = relationship("Plan", back_populates="vouchers")
