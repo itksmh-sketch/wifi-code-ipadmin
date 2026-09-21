@@ -489,8 +489,11 @@ class PaymentService:
                         )
         try:
             from src.modules.onboarding import mark_checklist
-            await mark_checklist(db, tx.isp_operator_id, "first_sale_made")
-            await db.commit()
+            # A diagnostic payment is a test run, not a sale — the same
+            # exclusion get_checklist applies when it derives this step.
+            if not tx.is_diagnostic:
+                await mark_checklist(db, tx.isp_operator_id, "first_sale_made")
+                await db.commit()
         except Exception:
             pass
         return tx
