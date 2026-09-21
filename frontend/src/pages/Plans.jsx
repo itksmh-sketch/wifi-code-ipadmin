@@ -13,6 +13,11 @@ export default function Plans() {
     // Surfaced inside the modal so a rejected create (e.g. duplicate settings)
     // is shown next to the form the operator has to fix, not in a popup.
     const [formError, setFormError] = useState('');
+    // The plan currently open in the Edit dialog, plus its draft values.
+    const [editing, setEditing] = useState(null);
+    const [editForm, setEditForm] = useState(null);
+    const [editError, setEditError] = useState('');
+    const [savingEdit, setSavingEdit] = useState(false);
 
     const fetchPlans = () => {
         apiCall('/plans')
@@ -45,6 +50,80 @@ export default function Plans() {
             fetchPlans();
         } catch (e) {
             setFormError(e.message);
+        }
+    };
+
+    // Only these four are editable; the entitlement fields are shown read-only
+    // in the dialog (see the note there) because already-issued vouchers are
+    // measured against them live.
+    const openEdit = (plan) => {
+        setEditError('');
+        setEditing(plan);
+        setEditForm({
+            name: plan.name,
+            price_ghs: String(plan.price_ghs),
+            download_speed_kbps: String(plan.download_speed_kbps),
+            upload_speed_kbps: String(plan.upload_speed_kbps),
+        });
+    };
+
+    const closeEdit = () => {
+        // Same discard behaviour as the Add Plan dialog: overlay click or Cancel
+        // drops the draft, no confirmation step.
+        setEditing(null);
+        setEditForm(null);
+        setEditError('');
+    };
+
+    // Mirrors PlanProfileUpdate on the server: name trimmed and non-blank,
+    // price >= 0, speeds > 0. The server still enforces all of it — this just
+    // catches it before a round trip.
+    const editValidationError = () => {
+        if (!editForm.name.trim()) return 'Name cannot be blank.';
+        if (editForm.name.trim().length > 255) return 'Name must be 255 characters or fewer.';
+        const price = parseFloat(editForm.price_ghs);
+        if (!Number.isFinite(price) || price < 0) return 'Price must be a number of 0 or more.';
+        for (const [field, label] of [['download_speed_kbps', 'Download speed'], ['upload_speed_kbps', 'Upload speed']]) {
+            const value = Number(editForm[field]);
+            if (!Number.isInteger(value) || value <= 0) return `${label} must be a whole number above 0.`;
+        }
+        return '';
+    };
+
+    // PATCH carries only what actually changed, so an untouched field is never
+    // sent and cannot trip the duplicate-plan check on its own.
+    const editChanges = () => {
+        if (!editing || !editForm) return {};
+        const changes = {};
+        if (editForm.name.trim() !== editing.name) changes.name = editForm.name.trim();
+        if (parseFloat(editForm.price_ghs) !== parseFloat(editing.price_ghs)) {
+            changes.price_ghs = parseFloat(editForm.price_ghs);
+        }
+        for (const field of ['download_speed_kbps', 'upload_speed_kbps']) {
+            if (Number(editForm[field]) !== Number(editing[field])) changes[field] = Number(editForm[field]);
+        }
+        return changes;
+    };
+
+    const saveEdit = async () => {
+        const invalid = editValidationError();
+        if (invalid) { setEditError(invalid); return; }
+        const changes = editChanges();
+        if (Object.keys(changes).length === 0) { closeEdit(); return; }
+
+        setSavingEdit(true);
+        setEditError('');
+        try {
+            await apiCall(`/plans/${editing.id}`, { method: 'PATCH', body: JSON.stringify(changes) });
+            closeEdit();
+            fetchPlans();
+        } catch (e) {
+            // 400 (validation / a field that cannot be changed) and 409 (this
+            // edit would duplicate another plan) both carry a specific message;
+            // show it against the form rather than a generic failure.
+            setEditError(e.message);
+        } finally {
+            setSavingEdit(false);
         }
     };
 
@@ -130,6 +209,83 @@ export default function Plans() {
                 </div>
             )}
 
+            {editing && editForm && (
+                <div className="modal-overlay" onClick={closeEdit}>
+                    <div className="modal" onClick={e => e.stopPropagation()}>
+                        <h2>Edit Plan</h2>
+                        {editError && (
+                            <div className="alert alert-error" role="alert" style={{ background: '#fee2e2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, marginBottom: 12 }}>
+                                {editError}
+                            </div>
+                        )}
+
+                        <div className="form-group">
+                            <label>Name</label>
+                            <input
+                                value={editForm.name}
+                                maxLength={255}
+                                onChange={e => { setEditForm({ ...editForm, name: e.target.value }); setEditError(''); }}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label>Price (GHS)</label>
+                            <input
+                                type="number" step="0.01" min="0"
+                                value={editForm.price_ghs}
+                                onChange={e => { setEditForm({ ...editForm, price_ghs: e.target.value }); setEditError(''); }}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label>Download Speed (kbps)</label>
+                            <input
+                                type="number" min="1"
+                                value={editForm.download_speed_kbps}
+                                onChange={e => { setEditForm({ ...editForm, download_speed_kbps: e.target.value }); setEditError(''); }}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label>Upload Speed (kbps)</label>
+                            <input
+                                type="number" min="1"
+                                value={editForm.upload_speed_kbps}
+                                onChange={e => { setEditForm({ ...editForm, upload_speed_kbps: e.target.value }); setEditError(''); }}
+                            />
+                        </div>
+
+                        {/* Shown, not hidden: the operator needs to see what this plan
+                            actually grants while renaming or repricing it. */}
+                        <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8, padding: '12px 14px', marginBottom: 16 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 8 }}>
+                                What this plan grants
+                            </div>
+                            <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 14px', margin: 0, fontSize: 13 }}>
+                                <dt style={{ color: '#6b7280' }}>Type</dt>
+                                <dd style={{ margin: 0 }}>{editing.type}</dd>
+                                <dt style={{ color: '#6b7280' }}>Duration</dt>
+                                <dd style={{ margin: 0 }}>{editing.duration_minutes ? `${editing.duration_minutes} min` : '—'}</dd>
+                                <dt style={{ color: '#6b7280' }}>Data cap</dt>
+                                <dd style={{ margin: 0 }}>{editing.data_limit_mb ? `${editing.data_limit_mb} MB` : '—'}</dd>
+                            </dl>
+                            <p style={{ color: '#6b7280', fontSize: 12, margin: '10px 0 0', lineHeight: 1.5 }}>
+                                Duration and data cap can&rsquo;t be changed after a plan is created — vouchers
+                                already sold are measured against them every time a customer logs in, so an edit
+                                would rewrite what those customers bought. Create a new plan instead, and
+                                deactivate this one.
+                            </p>
+                        </div>
+
+                        <div className="gap-2">
+                            <button className="btn btn-primary" onClick={saveEdit} disabled={savingEdit}>
+                                {savingEdit ? 'Saving…' : 'Save changes'}
+                            </button>
+                            <button className="btn" style={{ background: '#e5e7eb' }} onClick={closeEdit} disabled={savingEdit}>
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <div className="card" style={{ marginTop: 16 }}>
                 <div className="table-wrap">
                     <table>
@@ -145,6 +301,7 @@ export default function Plans() {
                                     <td>GH₵ {parseFloat(p.price_ghs).toFixed(2)}</td>
                                     <td><span className={`badge ${p.is_active ? 'badge-green' : 'badge-gray'}`}>{p.is_active ? 'Active' : 'Inactive'}</span></td>
                                     <td style={{ display: 'flex', gap: 6 }}>
+                                        <button className="btn btn-sm" style={{ background: '#e5e7eb' }} onClick={() => openEdit(p)}>Edit</button>
                                         <button className="btn btn-sm" style={{ background: '#e5e7eb' }} onClick={() => togglePlan(p)}>
                                             {p.is_active ? 'Deactivate' : 'Activate'}
                                         </button>

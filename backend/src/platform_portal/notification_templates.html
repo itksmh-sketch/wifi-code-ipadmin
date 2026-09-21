@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notification Templates — Platform Admin</title>
+  <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
+  <link rel="stylesheet" href="/platform/statics/app.css">
+  <style>
+    /* The page stays hidden until an authenticated load succeeds, so nothing
+       renders for a visitor without a valid platform-owner token. */
+    #shell{display:none}
+
+    .tpl-layout{display:grid;grid-template-columns:300px 1fr;gap:20px;align-items:start}
+    @media(max-width:900px){.tpl-layout{grid-template-columns:1fr}}
+
+    .evt{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:rgba(16,26,51,.55)}
+    .evt-name{font-size:13px;font-weight:600;margin-bottom:2px}
+    .evt-desc{font-size:11.5px;color:var(--muted);line-height:1.4;margin-bottom:8px}
+    .evt-ch{display:flex;gap:6px}
+    .ch-btn{flex:1;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:#0f172a;
+      color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;
+      justify-content:center;gap:6px}
+    .ch-btn:hover{background:#1e293b;color:var(--text)}
+    .ch-btn.on{background:linear-gradient(135deg,#4f46e5,#6366f1);border-color:transparent;color:#fff}
+    .dot{width:6px;height:6px;border-radius:50%;background:var(--warning);display:inline-block}
+    .ch-btn.on .dot{background:#fff}
+
+    .ph{display:inline-block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
+      padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:#0b1430;color:var(--accent2);
+      cursor:pointer;margin:0 6px 6px 0}
+    .ph:hover{border-color:rgba(99,102,241,.6)}
+    .ph.req{border-color:rgba(245,158,11,.5);color:#fcd34d}
+
+    .stat{background:#0b1430;border:1px solid var(--border);border-radius:9px;padding:8px 13px;min-width:92px}
+    .stat-k{font-size:11px;color:var(--muted);margin-bottom:2px}
+    .stat-v{font-size:17px;font-weight:800}
+    .stat.ok .stat-v{color:#4ade80}
+    .stat.warn .stat-v{color:#fca5a5}
+
+    .rendered{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:#0b1430;
+      border:1px solid var(--border);border-radius:9px;padding:12px;white-space:pre-wrap;word-break:break-word;
+      line-height:1.55}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    iframe.mail{width:100%;height:340px;border:1px solid var(--border);border-radius:9px;background:#fff}
+
+    #toast{position:fixed;top:20px;right:20px;z-index:1000;padding:12px 18px;border-radius:10px;
+      border:1px solid rgba(34,197,94,.35);background:rgba(34,197,94,.16);color:#bbf7d0;font-size:14px;
+      font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(-8px);
+      transition:opacity .2s,transform .2s;pointer-events:none}
+    #toast.show{opacity:1;transform:translateY(0)}
+    #toast.bad{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.16);color:#fca5a5}
+  </style>
+</head>
+<body>
+
+<div id="gate" style="text-align:center;padding:80px 0;color:var(--muted)">Loading…</div>
+
+<div id="shell" class="container">
+  <nav class="nav">
+    <span class="brand">Platform <span>Admin</span></span>
+    <div class="links">
+      <a href="/platform/operators" class="btn">← Operators</a>
+      <a href="/platform/settings" class="btn">Settings</a>
+      <a href="/platform/billing" class="btn">Billing</a>
+      <a href="/platform/health" class="btn">Service Health</a>
+      <button class="btn" id="logout-btn">Logout</button>
+    </div>
+  </nav>
+
+  <div class="section-title">Notification Templates</div>
+  <p class="section-sub">
+    The wording of every message the platform sends an operator. Edits take effect on the next send —
+    there is no deploy. A template you have not touched sends exactly what it always sent.
+  </p>
+
+  <div class="tpl-layout">
+    <!-- ── Event list ──────────────────────────────────────────────────── -->
+    <div>
+      <div id="event-list"></div>
+    </div>
+
+    <!-- ── Editor ──────────────────────────────────────────────────────── -->
+    <div class="card" id="editor" style="display:none">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title" id="ed-title">—</h2>
+          <p class="text-muted" id="ed-desc" style="font-size:12.5px;margin:4px 0 0"></p>
+        </div>
+        <span class="badge" id="ed-badge">—</span>
+      </div>
+
+      <div id="ed-msg" class="notice" style="display:none;margin-bottom:14px"></div>
+
+      <div id="ed-subject-wrap">
+        <label for="ed-subject">Subject</label>
+        <input id="ed-subject" type="text" maxlength="200" autocomplete="off">
+      </div>
+
+      <label for="ed-body-text" id="ed-body-label">Message</label>
+      <textarea id="ed-body-text" rows="6" class="mono" style="min-height:130px"></textarea>
+
+      <div id="ed-html-wrap">
+        <label for="ed-body-html">HTML body</label>
+        <p class="text-muted" style="font-size:11.5px;margin:-2px 0 5px">
+          The page chrome around this is added automatically. Values are escaped when they are
+          substituted, so an operator name containing &lt; or &amp; cannot break the markup.
+        </p>
+        <textarea id="ed-body-html" rows="8" class="mono" style="min-height:160px"></textarea>
+      </div>
+
+      <label style="margin-top:16px">Insert a placeholder</label>
+      <div id="ed-placeholders"></div>
+      <div id="ed-ph-help" class="text-muted" style="font-size:11.5px;line-height:1.6;margin-top:2px"></div>
+
+      <div class="spacer"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class="btn primary" id="ed-save">Save</button>
+        <button class="btn" id="ed-discard">Discard changes</button>
+        <button class="btn danger" id="ed-reset">Reset to default</button>
+        <span class="text-muted" id="ed-checking" style="font-size:12px;display:none">Checking…</span>
+      </div>
+
+      <div class="spacer"></div>
+      <div style="border-top:1px solid var(--border);padding-top:16px">
+        <h3 style="font-size:14px;font-weight:600;margin:0 0 3px">Preview</h3>
+        <p class="text-muted" style="font-size:11.5px;margin:0 0 12px">
+          Rendered with realistic sample values — the same ones the save-time length check uses.
+        </p>
+        <div id="ed-counts" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px"></div>
+        <div id="ed-preview"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="list-loading" style="text-align:center;padding:40px 0;color:var(--muted)">Loading templates…</div>
+</div>
+
+<div id="toast">Saved</div>
+
+<script>
+const DEBOUNCE_MS = 400;
+
+// ── auth ──────────────────────────────────────────────────────────────────
+if (!localStorage.getItem('platform_access_token')) window.location.replace('/platform/login');
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: {
+      'Authorization': 'Bearer ' + localStorage.getItem('platform_access_token'),
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  // 403 matters as much as 401 here: these endpoints reject a non-platform-owner
+  // token outright, and the page must not sit there looking usable.
+  if (res.status === 401 || res.status === 403) {
+    localStorage.removeItem('platform_access_token');
+    window.location.replace('/platform/login');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
+document.getElementById('logout-btn').addEventListener('click', () => {
+  localStorage.removeItem('platform_access_token');
+  localStorage.removeItem('platform_refresh_token');
+  window.location.href = '/platform/login';
+});
+
+let toastTimer = null;
+function showToast(text, bad) {
+  const t = document.getElementById('toast');
+  t.textContent = text;
+  t.className = bad ? 'bad show' : 'show';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ── state ─────────────────────────────────────────────────────────────────
+let TEMPLATES = [];   // every (event, channel) from the list endpoint
+let current = null;   // the one being edited
+let saved = null;     // its last server-known values, for dirty/discard
+let debounceTimer = null;
+
+const $ = id => document.getElementById(id);
+const keyOf = t => `${t.event}:${t.channel}`;
+const isEmail = () => current && current.channel === 'email';
+
+function draft() {
+  return {
+    subject: isEmail() ? $('ed-subject').value : null,
+    body_text: $('ed-body-text').value,
+    body_html: isEmail() ? $('ed-body-html').value : null,
+  };
+}
+
+function isDirty() {
+  const d = draft();
+  return d.body_text !== saved.body_text
+    || (isEmail() && (d.subject !== saved.subject || d.body_html !== saved.body_html));
+}
+
+// ── event list ────────────────────────────────────────────────────────────
+function renderList() {
+  const byEvent = new Map();
+  TEMPLATES.forEach(t => {
+    if (!byEvent.has(t.event)) byEvent.set(t.event, { label: t.label, description: t.description, channels: [] });
+    byEvent.get(t.event).channels.push(t);
+  });
+
+  $('event-list').innerHTML = [...byEvent.entries()].map(([event, info]) => `
+    <div class="evt">
+      <div class="evt-name">${esc(info.label)}</div>
+      <div class="evt-desc">${esc(info.description)}</div>
+      <div class="evt-ch">
+        ${info.channels
+          .sort((a, b) => a.channel.localeCompare(b.channel))
+          .map(t => `
+            <button class="ch-btn${current && keyOf(current) === keyOf(t) ? ' on' : ''}"
+                    data-key="${esc(keyOf(t))}">
+              ${t.channel === 'email' ? 'Email' : 'SMS'}${t.is_default ? '' : ' <span class="dot" title="Edited"></span>'}
+            </button>`).join('')}
+      </div>
+    </div>`).join('');
+
+  $('event-list').querySelectorAll('.ch-btn').forEach(b =>
+    b.addEventListener('click', () => select(b.dataset.key)));
+}
+
+// ── editor ────────────────────────────────────────────────────────────────
+function select(key) {
+  const t = TEMPLATES.find(x => keyOf(x) === key);
+  if (!t) return;
+  current = t;
+  saved = { subject: t.subject, body_text: t.body_text, body_html: t.body_html };
+  fillEditor(t);
+  renderList();
+}
+
+function fillEditor(t) {
+  $('editor').style.display = 'block';
+  $('ed-title').textContent = `${t.label} — ${t.channel === 'email' ? 'Email' : 'SMS'}`;
+  $('ed-desc').textContent = t.description;
+
+  const badge = $('ed-badge');
+  badge.textContent = t.is_default ? 'Default' : 'Edited';
+  badge.className = 'badge ' + (t.is_default ? '' : 'active');
+
+  $('ed-subject-wrap').style.display = t.channel === 'email' ? 'block' : 'none';
+  $('ed-html-wrap').style.display = t.channel === 'email' ? 'block' : 'none';
+  $('ed-body-label').textContent = t.channel === 'email' ? 'Plain-text body' : 'Message';
+
+  $('ed-subject').value = t.subject || '';
+  $('ed-body-text').value = t.body_text || '';
+  $('ed-body-html').value = t.body_html || '';
+
+  $('ed-placeholders').innerHTML = t.placeholders.map(p =>
+    `<button type="button" class="ph${p.required ? ' req' : ''}" data-ph="${esc(p.key)}"
+             title="${esc(p.description)}${p.required ? ' — required' : ''}">{${esc(p.key)}}</button>`).join('');
+  $('ed-placeholders').querySelectorAll('.ph').forEach(b =>
+    b.addEventListener('click', () => insertPlaceholder(b.dataset.ph)));
+
+  $('ed-ph-help').innerHTML = t.placeholders.map(p =>
+    `<div><span class="mono" style="color:var(--accent2)">{${esc(p.key)}}</span> — ${esc(p.description)}${
+      p.required ? ' <strong style="color:#fcd34d">(required — cannot be removed)</strong>' : ''}</div>`).join('');
+
+  $('ed-reset').disabled = t.is_default;
+  hideMsg();
+  measure(t.preview, null);
+  updateButtons();
+}
+
+// Track the last focused editable so a placeholder click lands where the
+// platform owner was typing, not always in the same box.
+let lastFocused = null;
+['ed-subject', 'ed-body-text', 'ed-body-html'].forEach(id => {
+  const el = $(id);
+  el.addEventListener('focus', () => { lastFocused = el; });
+  el.addEventListener('input', onEdit);
+});
+
+function insertPlaceholder(key) {
+  const el = lastFocused && lastFocused.offsetParent !== null ? lastFocused : $('ed-body-text');
+  const token = '{' + key + '}';
+  const start = el.selectionStart ?? el.value.length;
+  const end = el.selectionEnd ?? el.value.length;
+  el.value = el.value.slice(0, start) + token + el.value.slice(end);
+  el.focus();
+  el.setSelectionRange(start + token.length, start + token.length);
+  onEdit();
+}
+
+function showMsg(text, bad) {
+  const m = $('ed-msg');
+  m.textContent = text;
+  m.className = 'notice ' + (bad ? 'bad' : 'good');
+  m.style.display = 'block';
+}
+function hideMsg() { $('ed-msg').style.display = 'none'; }
+
+// The backend refuses a save that drops a required placeholder. Checking it
+// here too means the Save button goes dead the moment it is deleted, with the
+// reason on screen, instead of the operator finding out on submit.
+function missingRequired() {
+  const d = draft();
+  const parts = [d.body_text].concat(isEmail() ? [d.body_html] : []);
+  return current.placeholders
+    .filter(p => p.required)
+    .filter(p => parts.some(text => !String(text || '').includes('{' + p.key + '}')))
+    .map(p => p.key);
+}
+
+let lastValid = true;
+function updateButtons() {
+  const missing = missingRequired();
+  const dirty = isDirty();
+  $('ed-save').disabled = !dirty || !lastValid || missing.length > 0;
+  $('ed-discard').disabled = !dirty;
+  if (missing.length) {
+    const names = missing.map(k => '{' + k + '}').join(', ');
+    showMsg(`${names} must stay in the ${isEmail() ? 'plain-text body and the HTML body' : 'message'}. `
+      + 'It carries the one-time password the new admin signs in with, and it cannot be recovered afterwards.', true);
+  }
+}
+
+function onEdit() {
+  hideMsg();
+  updateButtons();
+  clearTimeout(debounceTimer);
+  $('ed-checking').style.display = 'inline';
+  debounceTimer = setTimeout(runPreview, DEBOUNCE_MS);
+}
+
+async function runPreview() {
+  if (!current) return;
+  try {
+    const res = await api(
+      `/api/v1/platform/notification-templates/${current.event}/${current.channel}/preview`,
+      { method: 'POST', body: JSON.stringify(draft()) });
+    const data = await res.json();
+    lastValid = data.valid;
+    if (!data.valid) {
+      if (!missingRequired().length) showMsg(data.error, true);
+      measure(null, data.error);
+    } else {
+      if (!missingRequired().length) hideMsg();
+      measure(data.preview, null);
+    }
+  } catch (e) {
+    lastValid = false;
+  } finally {
+    $('ed-checking').style.display = 'none';
+    updateButtons();
+  }
+}
+
+function stat(k, v, tone) {
+  return `<div class="stat ${tone || ''}"><div class="stat-k">${esc(k)}</div><div class="stat-v">${esc(v)}</div></div>`;
+}
+
+function measure(preview, error) {
+  const counts = $('ed-counts');
+  const out = $('ed-preview');
+  if (!preview) {
+    counts.innerHTML = '';
+    out.innerHTML = `<div class="notice bad">${esc(error || 'Nothing to preview.')}</div>`;
+    return;
+  }
+  if (preview.channel === 'sms') {
+    const over = preview.segment_count > (current.max_sms_segments || 3);
+    counts.innerHTML =
+      stat('Characters', preview.character_count) +
+      stat('SMS segments', preview.segment_count, over ? 'warn' : 'ok') +
+      stat('Encoding', preview.encoding === 'gsm7' ? 'GSM-7' : 'Unicode');
+    out.innerHTML = `<div class="rendered">${esc(preview.body_text)}</div>`
+      + `<p class="text-muted" style="font-size:11.5px;margin:10px 0 0">`
+      + `One segment is ${preview.encoding === 'gsm7' ? '160' : '70'} characters`
+      + `${preview.encoding === 'gsm7' ? '' : ' — this text uses characters outside the GSM alphabet'}. `
+      + `The limit is ${esc(current.max_sms_segments)} segments.</p>`;
+    return;
+  }
+  counts.innerHTML = stat('Subject', (preview.subject || '').length + ' chars')
+    + stat('Plain text', preview.character_count + ' chars');
+  // sandbox="" keeps the previewed HTML inert — no scripts, no navigation.
+  out.innerHTML =
+    `<div class="rendered" style="margin-bottom:12px"><strong>Subject:</strong> ${esc(preview.subject)}</div>`
+    + `<iframe class="mail" sandbox="" srcdoc="${esc(preview.body_html)}" title="Email preview"></iframe>`
+    + `<p class="text-muted" style="font-size:11.5px;margin:10px 0 4px">Plain-text alternative</p>`
+    + `<div class="rendered">${esc(preview.body_text)}</div>`;
+}
+
+// ── save / discard / reset ────────────────────────────────────────────────
+function replaceTemplate(updated) {
+  const i = TEMPLATES.findIndex(t => keyOf(t) === keyOf(updated));
+  if (i >= 0) TEMPLATES[i] = updated;
+  current = updated;
+  saved = { subject: updated.subject, body_text: updated.body_text, body_html: updated.body_html };
+  fillEditor(updated);
+  renderList();
+}
+
+$('ed-save').addEventListener('click', async () => {
+  const btn = $('ed-save');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const res = await api(`/api/v1/platform/notification-templates/${current.event}/${current.channel}`,
+      { method: 'PUT', body: JSON.stringify(draft()) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showMsg(data.detail || 'Could not save this template.', true);
+      showToast('Not saved', true);
+    } else {
+      replaceTemplate(data);
+      showToast('Template saved');
+    }
+  } catch (e) {
+    showMsg('Network error. Please try again.', true);
+  } finally {
+    btn.textContent = 'Save';
+    updateButtons();
+  }
+});
+
+$('ed-discard').addEventListener('click', () => {
+  $('ed-subject').value = saved.subject || '';
+  $('ed-body-text').value = saved.body_text || '';
+  $('ed-body-html').value = saved.body_html || '';
+  lastValid = true;
+  hideMsg();
+  measure(current.preview, null);
+  updateButtons();
+});
+
+$('ed-reset').addEventListener('click', async () => {
+  if (!confirm('Restore the shipped default wording for this template?')) return;
+  const btn = $('ed-reset');
+  btn.disabled = true; btn.textContent = 'Resetting…';
+  try {
+    const res = await api(`/api/v1/platform/notification-templates/${current.event}/${current.channel}/reset`,
+      { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showMsg(data.detail || 'Could not reset this template.', true); }
+    else { lastValid = true; replaceTemplate(data); showToast('Reset to default'); }
+  } catch (e) {
+    showMsg('Network error. Please try again.', true);
+  } finally {
+    btn.textContent = 'Reset to default';
+  }
+});
+
+// ── boot ──────────────────────────────────────────────────────────────────
+(async function load() {
+  try {
+    const res = await api('/api/v1/platform/notification-templates');
+    if (!res.ok) throw new Error('load failed');
+    TEMPLATES = (await res.json()).templates;
+    $('gate').style.display = 'none';
+    $('shell').style.display = 'block';
+    $('list-loading').style.display = 'none';
+    renderList();
+    if (TEMPLATES.length) select(keyOf(TEMPLATES[0]));
+  } catch (e) {
+    // An auth failure has already redirected; anything else leaves the page
+    // unrendered rather than showing empty furniture.
+    $('gate').textContent = 'Could not load notification templates.';
+  }
+})();
+</script>
+</body>
+</html>

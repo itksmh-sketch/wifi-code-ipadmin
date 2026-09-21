@@ -38,6 +38,11 @@ async def platform_settings_page():
     return FileResponse(_DIR / "settings.html")
 
 
+@router.get("/platform/notification-templates", include_in_schema=False)
+async def platform_notification_templates_page():
+    return FileResponse(_DIR / "notification_templates.html")
+
+
 @router.get("/platform/billing", include_in_schema=False)
 async def platform_billing_page():
     return FileResponse(_DIR / "billing.html")

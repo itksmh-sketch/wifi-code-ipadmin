@@ -527,3 +527,112 @@ async def test_voucher_sms_template_rejects_unknown_fields_and_needs_auth(env):
     assert (await client.put("/sms-template/voucher", headers=client.admin_headers,
                              json={"template": "Code {code}", "operator_id": "x"})).status_code == 422
     assert (await client.get("/sms-template/voucher")).status_code == 403
+
+
+# ── fields the operator SMS editor reads ──────────────────────────────────
+# VoucherSmsTemplate.jsx is a hand-written fetch caller: a renamed field renders
+# as "undefined" rather than failing, so each one it reads is asserted here.
+
+async def test_voucher_template_payload_carries_every_field_the_editor_reads(env):
+    client, _ = env
+    body = (await client.get("/sms-template/voucher", headers=client.admin_headers)).json()
+    # applyPayload() reads these three.
+    for field in ("effective_template", "is_default", "preview"):
+        assert field in body, f"missing {field}"
+    # The placeholder chips render key and use description as the tooltip.
+    assert body["placeholders"]
+    for placeholder in body["placeholders"]:
+        assert set(placeholder) >= {"key", "description"}
+    # The Stat tiles read all four of these.
+    for field in ("text", "encoding", "segment_count", "character_count"):
+        assert field in body["preview"], f"preview missing {field}"
+    assert body["preview"]["encoding"] in ("gsm7", "ucs2")
+    # Shown verbatim under the counters.
+    assert body["code_length_caveat"]
+
+
+async def test_voucher_template_preview_returns_200_with_its_reason_when_invalid(env):
+    """The editor shows preview.error inline; a non-200 would surface as a
+    generic failure instead of naming the bad placeholder."""
+    client, _ = env
+    res = await client.post(
+        "/sms-template/voucher/preview", headers=client.admin_headers, json={"template": "No code here."}
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["valid"] is False
+    assert "{code}" in body["error"]
+    assert set(body["preview"]) >= {"text", "encoding", "segment_count", "character_count"}
+
+
+async def test_a_refused_voucher_template_save_puts_its_reason_in_detail(env):
+    """The save handler reads err.message, which ApiError builds from detail."""
+    client, _ = env
+    res = await client.put(
+        "/sms-template/voucher", headers=client.admin_headers, json={"template": "Hi {nope}, your code."}
+    )
+    assert res.status_code == 400
+    assert "{nope}" in res.json()["detail"]
+
+
+# ── fields the plan Edit dialog reads ─────────────────────────────────────
+# Plans.jsx opens the dialog from the row object it already has, so GET /plans
+# must carry the read-only entitlement fields too — not just the editable ones.
+
+async def test_plan_list_carries_every_field_the_edit_dialog_shows(env):
+    client, _ = env
+    await make_plan(client)
+    rows = (await client.get("/plans", headers=client.admin_headers)).json()
+    assert rows
+    for row in rows:
+        # Editable inputs are seeded from these.
+        for field in ("id", "name", "price_ghs", "download_speed_kbps", "upload_speed_kbps"):
+            assert field in row, f"missing {field}"
+        # Shown read-only under "What this plan grants".
+        for field in ("type", "duration_minutes", "data_limit_mb"):
+            assert field in row, f"missing {field}"
+
+
+async def test_patching_a_single_changed_field_leaves_the_others_alone(env):
+    """editChanges() sends only what the operator actually touched."""
+    client, _ = env
+    plan = await make_plan(client, price_ghs=5, download_speed_kbps=1024, upload_speed_kbps=512)
+
+    res = await client.patch(f"/plans/{plan['id']}", headers=client.admin_headers, json={"name": "Renamed Only"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["name"] == "Renamed Only"
+    assert float(body["price_ghs"]) == float(plan["price_ghs"])
+    assert body["download_speed_kbps"] == plan["download_speed_kbps"]
+    assert body["upload_speed_kbps"] == plan["upload_speed_kbps"]
+
+    res = await client.patch(f"/plans/{plan['id']}", headers=client.admin_headers, json={"price_ghs": 6.25})
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] == "Renamed Only"
+    assert float(res.json()["price_ghs"]) == 6.25
+
+
+async def test_the_dialogs_refusals_all_carry_a_readable_detail(env):
+    """Both branches show e.message inline, which ApiError builds from detail —
+    a refusal with no detail would surface as a generic failure."""
+    client, _ = env
+    first = await make_plan(client, price_ghs=5)
+    second = await make_plan(client, price_ghs=9)
+
+    conflict = await client.patch(f"/plans/{second['id']}", headers=client.admin_headers, json={"price_ghs": 5})
+    assert conflict.status_code == 409
+    assert conflict.json().get("detail")
+
+    invalid = await client.patch(f"/plans/{second['id']}", headers=client.admin_headers, json={"name": "   "})
+    assert invalid.status_code == 400
+    assert invalid.json().get("detail")
+
+
+async def test_an_unchanged_save_would_be_refused_so_the_dialog_must_not_send_it(env):
+    """saveEdit() closes without a request when nothing changed. This pins the
+    reason: an empty PATCH is a 400, not a no-op."""
+    client, _ = env
+    plan = await make_plan(client)
+    res = await client.patch(f"/plans/{plan['id']}", headers=client.admin_headers, json={})
+    assert res.status_code == 400
+    assert "Nothing to update" in res.json()["detail"]
