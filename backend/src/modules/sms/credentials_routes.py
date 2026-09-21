@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
 from src.db.models import OperatorSMSCredential, ProviderCatalogEntry
-from src.middleware.auth import TenantContext, get_admin_tenant_context
+from src.middleware.auth import TenantContext, get_admin_tenant_context, require_recent_pin
 from src.modules.credentials.router import make_credentials_router
 from src.modules.credentials.service import build_view, deactivate_others, dump_credentials
 from src.modules.sms.providers.registry import build_sms_provider
@@ -39,7 +39,15 @@ router = make_credentials_router(
 PLATFORM_GATEWAY_PROVIDER_KEY = "arkesel_platform"
 
 
-@router.post("/activate-platform", response_model=CredentialsView)
+# Gated like the factory's own activate: this is an activation write verb
+# that lives outside the factory only because it takes no credentials. It
+# switches the operator onto the platform gateway, which bills them per
+# segment, so leaving it open would be a hole straight through the gate.
+@router.post(
+    "/activate-platform",
+    response_model=CredentialsView,
+    dependencies=[Depends(require_recent_pin)],
+)
 async def activate_platform_gateway(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(get_admin_tenant_context),

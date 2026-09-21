@@ -68,10 +68,72 @@ async def send_temp_password_sms(admin: AdminUser, temp_password: str, *, reason
     return await _send(admin.phone or "", message, kind=f"temp_password_{reason}")
 
 
+# What the code in the SMS is for, keyed by AdminOtpCode.purpose. A purpose
+# with no entry falls back to the password-reset wording, which is what every
+# non-onboarding code used to say.
+_OTP_ACTIONS = {
+    "onboarding": "verify your phone",
+    "reset": "reset your password",
+    "pin_reset": "reset your PIN",
+    "phone_change": "confirm your new phone number",
+}
+
+
 async def send_otp_sms(phone: str, code: str, *, purpose: str) -> SMSSendResult:
-    action = "verify your phone" if purpose == "onboarding" else "reset your password"
+    action = _OTP_ACTIONS.get(purpose, "reset your password")
     message = (
         f"IpAdmin code: {code}. Use it to {action}. "
         f"It expires in {OTP_TTL_MINUTES} minutes. Never share this code."
     )
     return await _send(phone, message, kind=f"otp_{purpose}")
+
+
+async def send_lockout_sms(admin: AdminUser, *, kind: str) -> SMSSendResult:
+    """Tell an admin their account or PIN just locked.
+
+    A fixed string, not a platform_notification_templates row. That catalog
+    holds operator-lifecycle business mail (applications, trials, invoices,
+    suspension) addressed to the operator, and is platform-owner editable; the
+    security-critical per-admin sends — OTP and temp password — were kept out
+    of it deliberately, and this belongs with those. An editable security alert
+    is one bad edit away from dropping the "if this wasn't you" line for every
+    operator at once.
+
+    kind: "login" (5 failed sign-ins) or "pin" (10 wrong PIN entries).
+    """
+    from src.modules.admin_accounts.lockout import LOCKOUT_HOURS, LOGIN_MAX_ATTEMPTS, PIN_MAX_ATTEMPTS
+
+    login_url = f"{get_settings().platform_app_url}/admin/login"
+    if kind == "pin":
+        message = (
+            f"IpAdmin security: your PIN was locked for {LOCKOUT_HOURS} hours after "
+            f"{PIN_MAX_ATTEMPTS} incorrect entries, and you were signed out everywhere. "
+            f"If this wasn't you, change your password now at {login_url}."
+        )
+    else:
+        message = (
+            f"IpAdmin security: your account was locked for {LOCKOUT_HOURS} hours after "
+            f"{LOGIN_MAX_ATTEMPTS} failed sign-in attempts. "
+            f"If this wasn't you, reset your password at {login_url} once the lock clears."
+        )
+    return await _send(admin.phone or "", message, kind=f"lockout_{kind}")
+
+
+async def send_phone_changed_sms(old_phone: str, admin: AdminUser) -> SMSSendResult:
+    """Tell the OLD number that the account's phone was just moved.
+
+    This is not a courtesy notice, it is the control that makes a phone change
+    safe to expose to a signed-in session at all. The verified phone is the
+    recovery channel for both forgot-password and forgot-PIN, so anyone who
+    reaches a live session and silently repoints it owns the account outright:
+    change the number, then "forget" the password, and every factor now lands
+    on their handset. Texting the number being replaced is the one message such
+    an attacker cannot intercept, and it goes out before they can benefit.
+    """
+    login_url = f"{get_settings().platform_app_url}/admin/login"
+    message = (
+        f"IpAdmin security: the phone number on admin account {admin.email} was just changed to a "
+        f"different number, so alerts and reset codes will no longer come here. "
+        f"If this wasn't you, sign in at {login_url} and change your password immediately."
+    )
+    return await _send(old_phone, message, kind="phone_changed_old_number")

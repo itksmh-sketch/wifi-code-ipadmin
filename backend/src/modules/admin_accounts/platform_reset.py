@@ -25,7 +25,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import AdminOtpCode, AdminPasswordResetEvent, AdminUser
-from src.modules.admin_accounts import notifications
+from src.modules.admin_accounts import lockout, notifications
 from src.modules.admin_accounts.provisioning import generate_temp_password
 from src.utils.auth import hash_password
 from src.utils.phone import mask_phone, normalize_ghana_phone
@@ -88,6 +88,13 @@ async def reset_admin_password(
     admin.password_hash = hash_password(temp_password)
     # Kills every access/refresh token and outstanding reset grant right now.
     admin.token_version = int(admin.token_version or 0) + 1
+    # A platform-owner reset is the support path for an admin who has locked
+    # themselves out, so it ends both lockouts — otherwise the temp password
+    # we are about to text them would be refused for up to another 3 hours.
+    lockout.clear_all(admin)
+    # Elevation does not survive: whoever signs in next re-earns it with the
+    # PIN, which this reset does not touch or reveal.
+    admin.pin_verified_until = None
     now = datetime.now(timezone.utc)
     # Codes issued before the reset (possibly to an old number) are void.
     await db.execute(

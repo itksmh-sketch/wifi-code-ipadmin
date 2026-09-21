@@ -17,7 +17,7 @@ from src.db.models import (
     SMSUsageRecord,
     Voucher,
 )
-from src.middleware.auth import TenantContext, get_admin_tenant_context
+from src.middleware.auth import TenantContext, get_admin_tenant_context, require_recent_pin
 from src.modules.billing import service
 from src.modules.billing.schemas import BillingStatusResponse, InvoiceResponse, PayInvoiceResponse
 
@@ -84,7 +84,13 @@ async def get_invoice(
     return invoice
 
 
-@router.post("/invoices/{invoice_id}/pay", response_model=PayInvoiceResponse)
+# The one genuinely money-moving endpoint an operator admin can reach: it
+# opens a live payment session against the operator's own funds.
+@router.post(
+    "/invoices/{invoice_id}/pay",
+    response_model=PayInvoiceResponse,
+    dependencies=[Depends(require_recent_pin)],
+)
 async def pay_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

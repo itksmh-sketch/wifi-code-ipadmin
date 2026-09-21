@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiCall } from '../App';
 import PageHeader from './PageHeader';
+import PinPrompt, { usePinGate } from './PinPrompt';
 
 // Shared bring-your-own-credentials page, driven entirely by the provider
 // catalog. Used for both payment (`/payment-credentials`) and SMS
@@ -9,7 +10,7 @@ import PageHeader from './PageHeader';
 // card is whatever that provider's catalog credential_schema says — no
 // hardcoded form.
 
-function ProviderCard({ provider, category, apiPrefix, configured, activeProvider, activeNoun, onChanged, setBanner }) {
+function ProviderCard({ provider, category, apiPrefix, configured, activeProvider, activeNoun, onChanged, setBanner, gate }) {
     const schema = provider.credential_schema || {};
     const fields = schema.fields || [];
     const managedByPlatform = schema.configured_by === 'platform_admin';
@@ -35,7 +36,10 @@ function ProviderCard({ provider, category, apiPrefix, configured, activeProvide
         setBusy(label);
         setBanner(null);
         try {
-            await fn();
+            // Save/activate/delete are PIN-gated; gate.run parks the call on a
+            // 403, shows the prompt, and replays it once the PIN clears, so a
+            // half-filled credentials form survives the interruption.
+            await gate.run(fn);
             onChanged();
         } catch (err) {
             setBanner({ type: 'error', text: err.message });
@@ -200,6 +204,8 @@ export default function ProviderCredentials({ category, apiPrefix, title, blurb,
     const [loading, setLoading] = useState(true);
     const [banner, setBanner] = useState(null);
     const [loadError, setLoadError] = useState('');
+    // One prompt for the whole page, shared by every provider card.
+    const gate = usePinGate();
 
     const load = useCallback(() => {
         return Promise.all([
@@ -257,8 +263,13 @@ export default function ProviderCredentials({ category, apiPrefix, title, blurb,
                         activeProvider={creds.active_provider}
                         onChanged={load}
                         setBanner={setBanner}
+                        gate={gate}
                     />
                 ))
+            )}
+
+            {gate.reason && (
+                <PinPrompt reason={gate.reason} onCancel={gate.cancel} onUnlocked={gate.unlocked} />
             )}
         </div>
     );

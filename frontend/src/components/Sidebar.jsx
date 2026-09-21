@@ -29,7 +29,7 @@ const links = [
     { to: '/sms-credentials', label: 'SMS', icon: 'message' },
     { to: '/branding', label: 'Branding', icon: 'building' },
     { to: '/billing', label: 'Billing', icon: 'mail' },
-    { to: '/change-password', label: 'Change password', icon: 'lock' },
+    { to: '/security', label: 'Security', icon: 'lock' },
 ];
 
 export default function Sidebar() {

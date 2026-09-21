@@ -759,6 +759,23 @@ class AdminUser(Base):
     security_question = Column(String(64), nullable=True)
     security_answer_hash = Column(Text, nullable=True)
     security_answer_attempt_count = Column(Integer, nullable=False, server_default="0", default=0)
+    # ── PIN: a second factor gating the Security and Payments areas ───────
+    # NULL until the admin sets one, so the gate prompts for setup rather than
+    # locking existing admins out of Payments. Same bcrypt context as passwords.
+    pin_hash = Column(Text, nullable=True)
+    pin_set_at = Column(DateTime(timezone=True), nullable=True)
+    # Elevation window: a fixed 15 minutes from a successful verify, not
+    # sliding. Stored here rather than as a JWT claim so it can be cut short
+    # without signing the admin out — see migration 047 for the full reasoning.
+    pin_verified_until = Column(DateTime(timezone=True), nullable=True)
+    # ── Lockouts: two mechanisms, deliberately not sharing state ──────────
+    # Different thresholds (PIN 10, password login 5) and they must reset
+    # independently, so one pair of columns each. Thresholds and the 3h
+    # duration are constants in modules.admin_accounts.lockout, not columns.
+    pin_attempt_count = Column(Integer, nullable=False, server_default="0", default=0)
+    pin_locked_until = Column(DateTime(timezone=True), nullable=True)
+    login_attempt_count = Column(Integer, nullable=False, server_default="0", default=0)
+    login_locked_until = Column(DateTime(timezone=True), nullable=True)
 
 
 class AdminOtpCode(Base):
@@ -768,7 +785,15 @@ class AdminOtpCode(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
     admin_user_id = Column(UUID(as_uuid=True), ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False)
-    purpose = Column(ENUM("onboarding", "reset", name="admin_otp_purpose", create_type=False), nullable=False)
+    # Must list every label the database type carries: SQLAlchemy validates
+    # against THIS tuple, not against Postgres, so a label added by migration
+    # and not added here fails on bind with "not among the defined enum
+    # values" before the query is ever sent. 'phone_change' arrived in 047,
+    # 'pin_reset' in 048.
+    purpose = Column(
+        ENUM("onboarding", "reset", "phone_change", "pin_reset", name="admin_otp_purpose", create_type=False),
+        nullable=False,
+    )
     # The number the code was sent to — a successful onboarding verification
     # stores exactly this number on the admin.
     phone = Column(String(64), nullable=False)
@@ -790,6 +815,36 @@ class AdminPasswordResetEvent(Base):
     platform_owner_id = Column(UUID(as_uuid=True), ForeignKey("platform_owners.id"), nullable=False)
     mode = Column(String(32), nullable=False)  # "temp_password" | "onboarding"
     phone_changed = Column(Boolean, nullable=False, server_default="false", default=False)
+    sms_sent = Column(Boolean, nullable=False, server_default="false", default=False)
+    sms_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AdminSecurityEvent(Base):
+    """Audit trail for an admin's own security actions, and the rolling-window
+    store behind "at most 3 phone changes per 30 days".
+
+    A table rather than a Redis key because middleware.rate_limit fails open by
+    design: a 30-day policy that evaporates when Redis restarts is not a policy.
+    Shaped after AdminPasswordResetEvent — same FK pair, same sms_sent/sms_error
+    pair — because it does the same two jobs for self-service actions.
+    """
+
+    __tablename__ = "admin_security_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    admin_user_id = Column(UUID(as_uuid=True), ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False)
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id"), nullable=False)
+    # "phone_changed" | "phone_reverified" | "pin_set" | "pin_changed" |
+    # "pin_lockout" | "login_lockout" | "security_question_changed". A plain
+    # string with no CHECK, like AdminPasswordResetEvent.mode: the list grows,
+    # and a CHECK would mean a migration every time it does.
+    # "phone_changed" is load-bearing beyond audit — it is what the rolling
+    # 30-day phone-change quota counts, which is why re-verifying the SAME
+    # number records "phone_reverified" and does not consume a slot.
+    event_type = Column(String(40), nullable=False)
+    # Masked, non-secret context only — never a PIN, code, answer or hash.
+    detail = Column(JSONB, nullable=True)
     sms_sent = Column(Boolean, nullable=False, server_default="false", default=False)
     sms_error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

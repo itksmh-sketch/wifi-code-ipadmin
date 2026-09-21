@@ -3,6 +3,7 @@ import { apiCall } from '../App';
 import TransactionsTab from '../components/TransactionsTab';
 import SmsUsageTab from '../components/SmsUsageTab';
 import PageHeader from '../components/PageHeader';
+import PinPrompt, { usePinGate } from '../components/PinPrompt';
 
 const TABS = [
     ['invoices', 'Invoices'],
@@ -17,6 +18,7 @@ export default function Billing() {
     const [payLoading, setPayLoading] = useState(false);
     const [error, setError] = useState('');
     const [tab, setTab] = useState('invoices');
+    const gate = usePinGate();
 
     useEffect(() => {
         apiCall('/billing/status').then(d => d && setStatus(d)).catch(() => {});
@@ -28,7 +30,12 @@ export default function Billing() {
         setPayLoading(true);
         setError('');
         try {
-            const res = await apiCall(`/billing/invoices/${invoiceId}/pay`, { method: 'POST' });
+            // PIN-gated: gate.run parks the call on a 403 and replays it once
+            // the PIN clears, so paying still lands on the same invoice. A
+            // parked call returns undefined — don't treat that as a failure.
+            const res = await gate.run(() =>
+                apiCall(`/billing/invoices/${invoiceId}/pay`, { method: 'POST' }));
+            if (res === undefined) return;
             if (res?.redirect_url) {
                 window.location.href = res.redirect_url;
             } else {
@@ -160,6 +167,9 @@ export default function Billing() {
                     </tbody>
                 </table>
             ))}
+            {gate.reason && (
+                <PinPrompt reason={gate.reason} onCancel={gate.cancel} onUnlocked={gate.unlocked} />
+            )}
         </div>
     );
 }

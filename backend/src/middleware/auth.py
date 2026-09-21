@@ -24,6 +24,10 @@ class TenantContext:
 
 
 ONBOARDING_REQUIRED_HEADER = "X-Onboarding-Required"
+# Set on the 403 from require_recent_pin. Value is the reason, so the caller
+# knows which prompt to raise: "setup" (no PIN on the account yet), "verify"
+# (elevation absent or expired) or "locked" (too many wrong entries).
+PIN_REQUIRED_HEADER = "X-Pin-Required"
 
 
 def token_version_matches(payload: dict, user: "AdminUser | PlatformOwner") -> bool:
@@ -87,6 +91,57 @@ async def get_current_user(user: AdminUser = Depends(get_authenticated_admin)) -
             detail="Your password was reset. Choose a new password to continue.",
             headers={ONBOARDING_REQUIRED_HEADER: "1"},
         )
+    return user
+
+
+def pin_elevation_error(user: AdminUser) -> HTTPException | None:
+    """The 403 a gated route should raise, or None when the admin is elevated.
+
+    Split out from require_recent_pin because one caller cannot express itself
+    as a dependency: POST /auth/me/pin gates a PIN *change* but must stay open
+    for a first-time *setup*, and a dependency runs before the handler knows
+    which it is. Both paths share this one definition of "elevated".
+    """
+    now = datetime.now(timezone.utc)
+    if not user.pin_hash:
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Set a security PIN to use this area.",
+            headers={PIN_REQUIRED_HEADER: "setup"},
+        )
+    if user.pin_locked_until is not None and user.pin_locked_until > now:
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Too many incorrect PIN entries. Try again later.",
+            headers={PIN_REQUIRED_HEADER: "locked"},
+        )
+    if user.pin_verified_until is None or user.pin_verified_until <= now:
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Enter your PIN to continue.",
+            headers={PIN_REQUIRED_HEADER: "verify"},
+        )
+    return None
+
+
+async def require_recent_pin(user: AdminUser = Depends(get_current_user)) -> AdminUser:
+    """An admin who entered their PIN within the elevation window.
+
+    Layered on top of get_current_user, so everything that guard enforces still
+    applies. Costs no extra query even when a route already depends on
+    get_admin_tenant_context: that resolves through the same get_current_user,
+    which FastAPI caches per request, and the elevation state is three columns
+    on the row it already loaded.
+
+    The three failure modes are distinguished by the X-Pin-Required header
+    rather than by status code, so the frontend can tell "you have no PIN yet"
+    from "enter it" from "you are locked out" and show the right thing. Unlike
+    X-Onboarding-Required, this is not a redirect signal — the page stays put
+    and raises a PIN prompt over itself.
+    """
+    error = pin_elevation_error(user)
+    if error is not None:
+        raise error
     return user
 
 

@@ -11,7 +11,15 @@ reset (must_change_password): they skip the phone/OTP steps and the security
 question is optional, since they already set one during onboarding.
 
 Signed in:
+    GET  /auth/me/security              everything the Security page renders
     POST /auth/me/password              change your own password
+    POST /auth/me/pin                   set or replace the PIN
+    POST /auth/me/pin/verify            open the gated areas for the window
+    POST /auth/me/pin/forgot            SMS a code to the verified phone
+    POST /auth/me/pin/reset             code + password -> new PIN, lock cleared
+    POST /auth/me/phone                 SMS a code to a proposed new number
+    POST /auth/me/phone/verify          code -> number replaced, old one warned
+    POST /auth/me/security-question     replace the question and answer
 
 Forgot password (anonymous, enumeration-safe):
     POST /auth/reset/request            SMS an OTP to the verified phone on file
@@ -28,21 +36,29 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.base import get_db
-from src.db.models import AdminOtpCode, AdminUser
+from src.db.base import async_session_factory, get_db
+from src.db.models import AdminOtpCode, AdminSecurityEvent, AdminUser
 from src.schemas import TokenResponse
-from src.middleware.auth import get_authenticated_admin, get_current_user
+from src.middleware.auth import (
+    PIN_REQUIRED_HEADER,
+    get_authenticated_admin,
+    get_current_user,
+    pin_elevation_error,
+    require_recent_pin,
+)
 from src.middleware.rate_limit import enforce_rate_limit
-from src.modules.admin_accounts import otp as otp_service
+from src.modules.admin_accounts import lockout, otp as otp_service
 from src.modules.admin_accounts.notifications import OTP_TTL_MINUTES, send_otp_sms
 from src.modules.admin_accounts.passwords import password_policy_error
+from src.modules.admin_accounts.pins import PIN_ELEVATION_MINUTES, pin_policy_error
 from src.modules.auth.tokens import admin_token_response
 from src.modules.admin_accounts.security_questions import (
     ANSWER_MIN_LENGTH,
@@ -107,6 +123,13 @@ def _apply_new_password(admin: AdminUser, new_password: str) -> None:
     # Invalidates every access/refresh token (and reset grant) issued so far.
     admin.token_version = int(admin.token_version or 0) + 1
     admin.security_answer_attempt_count = 0
+    # Setting a password proves ownership, so it also ends both lockouts —
+    # holding the rightful owner out for the rest of a 3h window is pure
+    # downside, and this is the documented way to un-stick a locked account.
+    lockout.clear_all(admin)
+    # A new password does not re-open the gated areas: elevation is a separate
+    # proof and has to be re-earned by entering the PIN.
+    admin.pin_verified_until = None
     # Any successful password choice satisfies a platform-owner reset.
     admin.must_change_password = False
 
@@ -472,3 +495,511 @@ async def reset_set_password(body: ResetSetPasswordRequest, request: Request, db
     await db.commit()
     logger.info("admin_password_reset admin_id=%s via=%s", admin.id, grant.get("via"))
     return {"status": "password_reset"}
+
+
+# ── PIN (signed in) ───────────────────────────────────────────────────────
+#
+# A second factor in front of the Security and Payments areas. It is not a
+# second password: the password proves who you are at sign-in, the PIN proves
+# someone is still at the keyboard before a change that moves money or moves
+# the account itself. Hence a short elevation window rather than a session-long
+# one, and a much higher failure budget than login gets — a mistyped PIN on
+# your own laptop is ordinary, whereas five failed passwords is not.
+
+PIN_LOCKED_MESSAGE = "Too many incorrect PIN entries. Try again later, or reset your PIN."
+PIN_NOT_SET_MESSAGE = "You haven't set a PIN yet."
+
+
+class SetPinRequest(BaseModel):
+    current_password: str = Field(max_length=256)
+    new_pin: str = Field(max_length=32)
+    confirm_pin: str = Field(max_length=32)
+    # Required only when replacing an existing PIN.
+    current_pin: str | None = Field(default=None, max_length=32)
+
+
+class VerifyPinRequest(BaseModel):
+    pin: str = Field(max_length=32)
+
+
+class ResetPinRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=12)
+    current_password: str = Field(max_length=256)
+    new_pin: str = Field(max_length=32)
+    confirm_pin: str = Field(max_length=32)
+
+
+def _record_event(db: AsyncSession, admin: AdminUser, event_type: str, **detail) -> AdminSecurityEvent:
+    """Add an audit row. Caller commits. Detail must stay free of secrets."""
+    kept = {k: v for k, v in detail.items() if v is not None}
+    row = AdminSecurityEvent(
+        admin_user_id=admin.id,
+        isp_operator_id=admin.isp_operator_id,
+        event_type=event_type,
+        detail=kept or None,
+    )
+    db.add(row)
+    return row
+
+
+def _elevate(admin: AdminUser) -> datetime:
+    """Open the gated areas for the fixed elevation window."""
+    until = datetime.now(timezone.utc) + timedelta(minutes=PIN_ELEVATION_MINUTES)
+    admin.pin_verified_until = until
+    return until
+
+
+def _pin_locked_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=PIN_LOCKED_MESSAGE,
+        headers={PIN_REQUIRED_HEADER: "locked"},
+    )
+
+
+def _pin_locked_response(background_tasks: BackgroundTasks) -> JSONResponse:
+    """The same 403 as _pin_locked_error, but RETURNED so its background task
+    survives. FastAPI attaches background tasks to the response a handler
+    returns; when a handler raises, the exception handler builds a fresh
+    response and the tasks are dropped on the floor — which silently disabled
+    the lockout SMS. Byte-identical to the raised version from outside."""
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={"detail": PIN_LOCKED_MESSAGE},
+        headers={PIN_REQUIRED_HEADER: "locked"},
+        background=background_tasks,
+    )
+
+
+async def _count_pin_failure(
+    db: AsyncSession,
+    admin: AdminUser,
+    background_tasks: BackgroundTasks,
+    client_ip: str,
+) -> bool:
+    """Record a wrong PIN. True if that tripped the lock (sessions now dead)."""
+    event_id = await lockout.register_failure(db, admin, lockout.PIN, client_ip=client_ip)
+    if event_id is None:
+        return False
+    background_tasks.add_task(lockout.send_lockout_notification, admin.id, lockout.PIN, event_id)
+    return True
+
+
+def _attempts_remaining(admin: AdminUser) -> int:
+    return max(0, lockout.PIN_MAX_ATTEMPTS - int(admin.pin_attempt_count or 0))
+
+
+@router.post("/me/pin")
+async def set_my_pin(
+    body: SetPinRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    admin: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set a first PIN, or replace an existing one.
+
+    Always requires the current password. Requiring it even for a first PIN is
+    the point: otherwise anyone who walks up to an unlocked browser could set a
+    PIN of their own and lock the real owner out of their own Payments page.
+    """
+    client_ip = _client_ip(request)
+    await enforce_rate_limit(client_ip, "admin:pin-set", limit=10, window_seconds=900)
+    await enforce_rate_limit(f"acct:{admin.id}", "admin:pin-set", limit=5, window_seconds=900)
+
+    if not verify_password(body.current_password, admin.password_hash):
+        raise _bad_request("Your current password is incorrect.")
+
+    replacing = bool(admin.pin_hash)
+    if replacing:
+        # Gated only on this branch. A first-time setup cannot require
+        # elevation — there is no PIN to earn it with — so the guard cannot be
+        # a route dependency; it has to run here, where "setup or change" is
+        # finally known. Recovery when the PIN is forgotten goes through
+        # /pin/forgot + /pin/reset, which are deliberately ungated.
+        elevation_error = pin_elevation_error(admin)
+        if elevation_error is not None:
+            raise elevation_error
+        if lockout.is_locked(admin, lockout.PIN):
+            raise _pin_locked_error()
+        if not body.current_pin or not verify_password(body.current_pin, admin.pin_hash):
+            if await _count_pin_failure(db, admin, background_tasks, client_ip):
+                return _pin_locked_response(background_tasks)
+            raise _bad_request(f"Your current PIN is incorrect. {_attempts_remaining(admin)} attempts remaining.")
+
+    if body.new_pin != body.confirm_pin:
+        raise _bad_request("The two PINs don't match.")
+    error = pin_policy_error(body.new_pin)
+    if error:
+        raise _bad_request(error)
+    if replacing and verify_password(body.new_pin, admin.pin_hash):
+        raise _bad_request("Choose a PIN different from your current one.")
+
+    admin.pin_hash = hash_password(body.new_pin)
+    admin.pin_set_at = datetime.now(timezone.utc)
+    lockout.clear(admin, lockout.PIN)
+    until = _elevate(admin)
+    _record_event(db, admin, "pin_changed" if replacing else "pin_set", client_ip=client_ip)
+    await db.commit()
+    logger.info("admin_pin_%s admin_id=%s", "changed" if replacing else "set", admin.id)
+    return {"status": "saved", "verified_until": until.isoformat()}
+
+
+@router.post("/me/pin/verify")
+async def verify_my_pin(
+    body: VerifyPinRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    admin: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Enter the PIN to open the gated areas for the elevation window."""
+    client_ip = _client_ip(request)
+    await enforce_rate_limit(client_ip, "admin:pin-verify", limit=60, window_seconds=900)
+    # The DB counter is what actually stops guessing (the Redis limiter fails
+    # open); this is only here to keep the bcrypt work off a hot loop.
+    await enforce_rate_limit(f"acct:{admin.id}", "admin:pin-verify", limit=30, window_seconds=900)
+
+    if not admin.pin_hash:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=PIN_NOT_SET_MESSAGE,
+            headers={PIN_REQUIRED_HEADER: "setup"},
+        )
+    if lockout.is_locked(admin, lockout.PIN):
+        raise _pin_locked_error()
+
+    if not verify_password(body.pin, admin.pin_hash):
+        if await _count_pin_failure(db, admin, background_tasks, client_ip):
+            # token_version moved, so this session is already dead; the next
+            # request gets a 401 and the UI bounces to login.
+            return _pin_locked_response(background_tasks)
+        raise _bad_request(f"Incorrect PIN. {_attempts_remaining(admin)} attempts remaining.")
+
+    lockout.clear(admin, lockout.PIN)
+    until = _elevate(admin)
+    await db.commit()
+    return {"status": "verified", "verified_until": until.isoformat()}
+
+
+@router.post("/me/pin/forgot")
+async def forgot_my_pin(
+    request: Request,
+    admin: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """SMS a code to the verified phone so a forgotten PIN can be replaced.
+
+    Without this, one forgotten PIN would brick the Payments area until a
+    platform owner intervened. Deliberately reachable while the PIN is locked —
+    it is the way out of a lockout, and it proves possession of the phone
+    rather than knowledge of the thing that is locked.
+    """
+    await enforce_rate_limit(_client_ip(request), "admin:pin-forgot", limit=10, window_seconds=900)
+    await enforce_rate_limit(f"acct:{admin.id}", "admin:pin-forgot", limit=3, window_seconds=900)
+
+    if not (admin.phone_verified and admin.phone):
+        raise _bad_request(
+            "Your phone isn't verified, so we can't send a reset code. Ask platform support to reset your account."
+        )
+
+    row, code = await otp_service.issue_code(db, admin_user_id=admin.id, purpose="pin_reset", phone=admin.phone)
+    await db.commit()
+
+    result = await send_otp_sms(admin.phone, code, purpose="pin_reset")
+    if not result.success:
+        # Never leave a live code the admin never received.
+        row.consumed_at = datetime.now(timezone.utc)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="We couldn't send the SMS right now. Please try again in a moment.",
+        )
+    return {"status": "sent", "phone": mask_phone(admin.phone), "expires_in_seconds": OTP_TTL_MINUTES * 60}
+
+
+@router.post("/me/pin/reset")
+async def reset_my_pin(
+    body: ResetPinRequest,
+    request: Request,
+    admin: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace the PIN using the SMS code plus the current password.
+
+    Two factors, neither of which is the PIN, so this works while locked out —
+    and clears the lock, since holding possession of both the password and the
+    phone is a stronger claim than the PIN it replaces.
+    """
+    await enforce_rate_limit(_client_ip(request), "admin:pin-reset", limit=10, window_seconds=900)
+    await enforce_rate_limit(f"acct:{admin.id}", "admin:pin-reset", limit=10, window_seconds=900)
+
+    if not verify_password(body.current_password, admin.password_hash):
+        raise _bad_request("Your current password is incorrect.")
+
+    result = await otp_service.verify_code(db, admin_user_id=admin.id, purpose="pin_reset", code=body.code)
+    if not result.ok:
+        raise _bad_request(otp_service.failure_message(result))
+
+    if body.new_pin != body.confirm_pin:
+        raise _bad_request("The two PINs don't match.")
+    error = pin_policy_error(body.new_pin)
+    if error:
+        raise _bad_request(error)
+
+    admin.pin_hash = hash_password(body.new_pin)
+    admin.pin_set_at = datetime.now(timezone.utc)
+    lockout.clear(admin, lockout.PIN)
+    until = _elevate(admin)
+    _record_event(db, admin, "pin_changed", client_ip=_client_ip(request), via="otp_reset")
+    await db.commit()
+    logger.info("admin_pin_reset admin_id=%s", admin.id)
+    return {"status": "saved", "verified_until": until.isoformat()}
+
+
+# ── Phone re-verification and security question (signed in) ───────────────
+#
+# The verified phone is the recovery channel for forgot-password AND forgot-PIN,
+# so it is the highest-value field on the account: whoever controls it can
+# eventually control everything else. Three things follow, and all three are
+# load-bearing rather than decorative:
+#   * the new number must prove itself by OTP before it replaces the old one,
+#     so a typo cannot strand the account on a number nobody answers;
+#   * the number being replaced is told, on its way out, that it was replaced;
+#   * changes are capped at three per rolling thirty days, so an attacker who
+#     reaches a live session cannot simply cycle numbers until one sticks.
+
+PHONE_CHANGE_LIMIT = 3
+PHONE_CHANGE_WINDOW_DAYS = 30
+
+
+class PhoneChangeRequest(BaseModel):
+    phone: str = Field(max_length=32)
+
+
+class ChangeSecurityQuestionRequest(BaseModel):
+    current_password: str = Field(max_length=256)
+    security_question: str
+    security_answer: str = Field(max_length=256)
+
+
+async def _phone_change_quota(db: AsyncSession, admin: AdminUser) -> tuple[int, datetime | None]:
+    """(changes inside the window, when the window next frees a slot).
+
+    Counts only "phone_changed" rows — a re-verification of the number already
+    on file writes "phone_reverified" instead and is deliberately free, since
+    confirming you still hold your own number is not a change and shouldn't be
+    rationed. Reading the rows rather than COUNT(*) is what makes the second
+    return value possible: the window is rolling, so the next slot opens
+    thirty days after the OLDEST change still inside it, not at a fixed reset.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=PHONE_CHANGE_WINDOW_DAYS)
+    rows = (
+        await db.execute(
+            select(AdminSecurityEvent.created_at)
+            .where(
+                AdminSecurityEvent.admin_user_id == admin.id,
+                AdminSecurityEvent.event_type == "phone_changed",
+                AdminSecurityEvent.created_at > since,
+            )
+            .order_by(AdminSecurityEvent.created_at.asc())
+        )
+    ).scalars().all()
+    frees_at = rows[0] + timedelta(days=PHONE_CHANGE_WINDOW_DAYS) if rows else None
+    return len(rows), frees_at
+
+
+def _quota_exhausted_error(frees_at: datetime | None) -> HTTPException:
+    when = f" You can change it again after {frees_at:%d %b %Y}." if frees_at else ""
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=(
+            f"You've changed your phone number {PHONE_CHANGE_LIMIT} times in the last "
+            f"{PHONE_CHANGE_WINDOW_DAYS} days.{when}"
+        ),
+    )
+
+
+async def _notify_old_number(old_phone: str, admin_id) -> None:
+    """Background task: warn the number that just lost the account."""
+    from src.modules.admin_accounts.notifications import send_phone_changed_sms
+
+    try:
+        async with async_session_factory() as db:
+            admin = (await db.execute(select(AdminUser).where(AdminUser.id == admin_id))).scalar_one_or_none()
+            if admin is not None:
+                await send_phone_changed_sms(old_phone, admin)
+    except Exception as exc:  # never surfaces as an error on the request
+        logger.error("admin_phone_change_notice_failed admin_id=%s error=%s", admin_id, exc)
+
+
+@router.get("/me/security")
+async def my_security_status(
+    admin: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Everything the Security page needs to render itself in one call."""
+    used, frees_at = await _phone_change_quota(db, admin)
+    pin_locked = lockout.locked_until(admin, lockout.PIN)
+    now = datetime.now(timezone.utc)
+    elevated = admin.pin_verified_until is not None and admin.pin_verified_until > now
+    return {
+        "email": admin.email,
+        "phone": mask_phone(admin.phone),
+        "phone_verified": bool(admin.phone_verified),
+        "phone_changes_used": used,
+        "phone_changes_limit": PHONE_CHANGE_LIMIT,
+        "phone_change_window_days": PHONE_CHANGE_WINDOW_DAYS,
+        "phone_change_window_resets_at": frees_at.isoformat() if frees_at else None,
+        "security_question": admin.security_question,
+        "security_questions": _question_list(),
+        "has_pin": bool(admin.pin_hash),
+        "pin_set_at": admin.pin_set_at.isoformat() if admin.pin_set_at else None,
+        "pin_locked_until": pin_locked.isoformat() if pin_locked else None,
+        "pin_attempts_remaining": _attempts_remaining(admin),
+        "pin_verified_until": admin.pin_verified_until.isoformat() if elevated else None,
+    }
+
+
+@router.post("/me/phone", dependencies=[Depends(require_recent_pin)])
+async def request_phone_change(
+    body: PhoneChangeRequest,
+    request: Request,
+    admin: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a code to a number to prove it before it becomes the number on file.
+
+    The code goes to the PROPOSED number, not the current one: the thing being
+    established is that this new handset exists and is reachable. The current
+    number's say in the matter is the notice it receives afterwards.
+    """
+    await enforce_rate_limit(_client_ip(request), "admin:phone-change-send", limit=10, window_seconds=900)
+    await enforce_rate_limit(f"acct:{admin.id}", "admin:phone-change-send", limit=5, window_seconds=900)
+
+    try:
+        phone = normalize_ghana_phone(body.phone)
+    except ValueError:
+        raise _bad_request(GHANA_PHONE_ERROR)
+
+    changing = phone != (admin.phone or "")
+    if changing:
+        # Checked here as well as at verify so an exhausted quota costs neither
+        # an SMS nor the admin's time typing in a code that cannot be redeemed.
+        used, frees_at = await _phone_change_quota(db, admin)
+        if used >= PHONE_CHANGE_LIMIT:
+            raise _quota_exhausted_error(frees_at)
+
+    row, code = await otp_service.issue_code(db, admin_user_id=admin.id, purpose="phone_change", phone=phone)
+    await db.commit()
+
+    result = await send_otp_sms(phone, code, purpose="phone_change")
+    if not result.success:
+        row.consumed_at = datetime.now(timezone.utc)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="We couldn't send the SMS right now. Check the number and try again in a moment.",
+        )
+    return {
+        "status": "sent",
+        "phone": mask_phone(phone),
+        "changing": changing,
+        "expires_in_seconds": OTP_TTL_MINUTES * 60,
+    }
+
+
+@router.post("/me/phone/verify", dependencies=[Depends(require_recent_pin)])
+async def verify_phone_change(
+    body: OtpVerifyRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    admin: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await enforce_rate_limit(_client_ip(request), "admin:phone-change-verify", limit=30, window_seconds=900)
+    await enforce_rate_limit(f"acct:{admin.id}", "admin:phone-change-verify", limit=10, window_seconds=900)
+
+    result = await otp_service.verify_code(db, admin_user_id=admin.id, purpose="phone_change", code=body.code)
+    if not result.ok:
+        raise _bad_request(otp_service.failure_message(result))
+
+    new_phone = result.row.phone
+    old_phone = admin.phone or ""
+    changed = new_phone != old_phone
+
+    if changed:
+        # Re-checked against the live window: minutes passed while the code was
+        # in flight, and a code issued under quota must not be redeemable once
+        # a concurrent change has used the last slot.
+        used, frees_at = await _phone_change_quota(db, admin)
+        if used >= PHONE_CHANGE_LIMIT:
+            # Commit so the code stays consumed — verify_code only flushed it,
+            # and a rollback here would hand back a replayable code.
+            await db.commit()
+            raise _quota_exhausted_error(frees_at)
+
+    admin.phone = new_phone
+    admin.phone_verified = True
+    if changed:
+        _record_event(
+            db,
+            admin,
+            "phone_changed",
+            client_ip=_client_ip(request),
+            old_phone=mask_phone(old_phone) or None,
+            new_phone=mask_phone(new_phone),
+        )
+    else:
+        # Free: re-confirming the number already on file is not a change.
+        _record_event(db, admin, "phone_reverified", client_ip=_client_ip(request))
+    await db.commit()
+    logger.info("admin_phone_%s admin_id=%s", "changed" if changed else "reverified", admin.id)
+
+    if changed and old_phone:
+        background_tasks.add_task(_notify_old_number, old_phone, admin.id)
+
+    used, _ = await _phone_change_quota(db, admin)
+    return {
+        "status": "verified",
+        "phone": mask_phone(new_phone),
+        "changed": changed,
+        "phone_changes_used": used,
+        "phone_changes_limit": PHONE_CHANGE_LIMIT,
+    }
+
+
+@router.post("/me/security-question", dependencies=[Depends(require_recent_pin)])
+async def change_my_security_question(
+    body: ChangeSecurityQuestionRequest,
+    request: Request,
+    admin: AdminUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace the security question and answer.
+
+    Gated on the current password rather than on the old answer: the answer is
+    a recovery factor, and requiring it here would mean an admin who has
+    forgotten it can never replace it — the exact situation in which replacing
+    it is what they need to do.
+    """
+    await enforce_rate_limit(_client_ip(request), "admin:security-question", limit=10, window_seconds=900)
+    await enforce_rate_limit(f"acct:{admin.id}", "admin:security-question", limit=5, window_seconds=900)
+
+    if not verify_password(body.current_password, admin.password_hash):
+        raise _bad_request("Your current password is incorrect.")
+    if body.security_question not in SECURITY_QUESTIONS:
+        raise _bad_request("Choose one of the listed security questions.")
+    answer = normalize_answer(body.security_answer)
+    if len(answer) < ANSWER_MIN_LENGTH:
+        raise _bad_request("Enter an answer to your security question.")
+
+    admin.security_question = body.security_question
+    admin.security_answer_hash = hash_password(answer)
+    # A brand-new answer starts with a clean slate of attempts; the strikes
+    # belonged to the answer being replaced.
+    admin.security_answer_attempt_count = 0
+    _record_event(db, admin, "security_question_changed", client_ip=_client_ip(request))
+    await db.commit()
+    logger.info("admin_security_question_changed admin_id=%s", admin.id)
+    return {"status": "saved", "security_question": admin.security_question}

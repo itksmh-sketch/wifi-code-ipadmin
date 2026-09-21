@@ -14,7 +14,7 @@ import PaymentCredentials from './pages/PaymentCredentials';
 import SMSCredentials from './pages/SMSCredentials';
 import Branding from './pages/Branding';
 import Billing from './pages/Billing';
-import ChangePassword from './pages/ChangePassword';
+import Security from './pages/Security';
 import Sidebar from './components/Sidebar';
 
 const API_BASE = '/api/v1';
@@ -50,6 +50,10 @@ export class ApiError extends Error {
         this.name = 'ApiError';
         this.status = status;
         this.body = body;
+        // Set to 'setup' | 'verify' | 'locked' when the backend refused a
+        // PIN-gated area. Absent on every other error, so `if (err.pinRequired)`
+        // is the check — see the X-Pin-Required handling in request().
+        this.pinRequired = null;
     }
 }
 
@@ -73,6 +77,14 @@ async function request(endpoint, options, { tokenKey, loginPath }) {
         window.location.href = '/admin/onboarding';
         throw new ApiError(403, null);
     }
+    // A PIN-gated area refused the call. Deliberately NOT a redirect, unlike
+    // the onboarding case above: the admin is in the middle of something on a
+    // page they are allowed to be on, and navigating away would throw that work
+    // out to re-authenticate. The page keeps its state, raises a PIN prompt
+    // over itself, and retries the call once the PIN clears. The reason rides
+    // on the error so the prompt knows whether to ask for a first PIN
+    // ('setup'), an existing one ('verify'), or to show the lockout ('locked').
+    const pinRequired = res.status === 403 ? res.headers.get('X-Pin-Required') : null;
     if (res.status === 401) {
         // Session expired/invalid — drop the token and bounce to login. We still
         // throw so callers don't proceed with a null/garbage value mid-redirect.
@@ -90,7 +102,11 @@ async function request(endpoint, options, { tokenKey, loginPath }) {
     if (text) {
         try { body = JSON.parse(text); } catch { body = text; }
     }
-    if (!res.ok) throw new ApiError(res.status, body);
+    if (!res.ok) {
+        const error = new ApiError(res.status, body);
+        error.pinRequired = pinRequired;
+        throw error;
+    }
     return body;
 }
 
@@ -166,7 +182,10 @@ export default function App() {
                                             <Route path="/sms-credentials" element={<SMSCredentials />} />
                                             <Route path="/branding" element={<Branding />} />
                                             <Route path="/billing" element={<Billing />} />
-                                            <Route path="/change-password" element={<ChangePassword />} />
+                                            <Route path="/security" element={<Security />} />
+                                            {/* The password form lived here before it became
+                                                a tab; bookmarks and older links still work. */}
+                                            <Route path="/change-password" element={<Navigate to="/security?tab=password" replace />} />
                                             <Route path="*" element={<Navigate to="/" />} />
                                         </Routes>
                                     </div>

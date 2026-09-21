@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
-from src.middleware.auth import TenantContext, get_admin_tenant_context
+from src.middleware.auth import TenantContext, get_admin_tenant_context, require_recent_pin
 from src.modules.credentials.service import (
     build_view,
     deactivate_others,
@@ -67,7 +67,11 @@ def make_credentials_router(
     ):
         return await _view(db, tenant.isp_operator_id)
 
-    @router.put("/{provider}", response_model=CredentialsView)
+    @router.put(
+        "/{provider}",
+        response_model=CredentialsView,
+        dependencies=[Depends(require_recent_pin)],
+    )
     async def upsert_credentials(
         provider: str,
         body: CredentialUpsert,
@@ -124,7 +128,11 @@ def make_credentials_router(
             await db.commit()
         return await _view(db, tenant.isp_operator_id)
 
-    @router.post("/{provider}/activate", response_model=CredentialsView)
+    @router.post(
+        "/{provider}/activate",
+        response_model=CredentialsView,
+        dependencies=[Depends(require_recent_pin)],
+    )
     async def activate_provider(
         provider: str,
         db: AsyncSession = Depends(get_db),
@@ -172,7 +180,11 @@ def make_credentials_router(
         view.test_detail = detail if isinstance(detail, str) and detail.strip() else None
         return view
 
-    @router.delete("/{provider}", response_model=CredentialsView)
+    @router.delete(
+        "/{provider}",
+        response_model=CredentialsView,
+        dependencies=[Depends(require_recent_pin)],
+    )
     async def delete_credentials(
         provider: str,
         db: AsyncSession = Depends(get_db),
