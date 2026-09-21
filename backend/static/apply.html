@@ -183,6 +183,9 @@
       </section>
 
       <p class="auth-fine-print auth-reveal" style="--i:3">We only use these details to review your application and contact you about it.</p>
+      <!-- Filled from /api/v1/public/support-contact; stays hidden if that fails,
+           so nobody is shown a placeholder or a dead mailto link. -->
+      <p class="auth-fine-print" id="support-line" hidden>Need help? Email <a id="support-link" href="#"></a></p>
     </div>
   </main>
 </div>
@@ -483,6 +486,22 @@
   });
 
   renderCounter();
+})();
+</script>
+<script>
+// Support contact line. Separate from the form script so a failure here can
+// never affect the form; on any error the line simply stays hidden.
+(async () => {
+  try {
+    const res = await fetch('/api/v1/public/support-contact');
+    if (!res.ok) return;
+    const { support_email: email } = await res.json();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '')) return;
+    const link = document.getElementById('support-link');
+    link.textContent = email;
+    link.href = 'mailto:' + email;
+    document.getElementById('support-line').hidden = false;
+  } catch (e) { /* stays hidden */ }
 })();
 </script>
 </body>

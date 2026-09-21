@@ -204,6 +204,9 @@ body.auth-body { margin: 0; background: var(--platform-canvas); }
 .auth-title { font-size: 26px; line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; }
 .auth-subtitle { margin-top: 6px; font-size: 15px; color: var(--platform-muted); }
 .auth-fine-print { text-align: center; font-size: 12.5px; color: var(--platform-subtle); }
+/* The support-contact line under the login and apply cards. */
+.auth-fine-print a { color: var(--platform-blue); font-weight: 600; text-decoration: none; }
+.auth-fine-print a:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 /* Cross-link callout */
 .auth-callout {

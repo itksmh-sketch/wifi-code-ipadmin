@@ -29,6 +29,23 @@ EMAIL_CHECK_RATE_LIMIT = 20
 EMAIL_CHECK_RATE_WINDOW_SECONDS = 60
 
 
+@public_router.get("/support-contact")
+async def support_contact(request: Request, db: AsyncSession = Depends(get_db)):
+    """The platform support address, for the signed-out pages (operator login
+    and the apply form) to show people who need help.
+
+    Public on purpose: it is the same address applicants are sent in SMS, and
+    it has to be reachable before anyone can sign in. Read from the platform
+    setting, so an edit in the portal's Settings page shows up here with no
+    deploy. Rate-limited per IP like the other public endpoints.
+    """
+    from src.modules.platform.settings_service import get_setting
+
+    client_ip = request.client.host if request.client else "unknown"
+    await enforce_rate_limit(client_ip, "public:support-contact", limit=60, window_seconds=60)
+    return {"support_email": await get_setting(db, "platform_support_email")}
+
+
 @public_router.post("/apply/check-email", response_model=EmailCheckResponse)
 async def check_application_email(
     body: EmailCheckRequest,

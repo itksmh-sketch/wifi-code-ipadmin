@@ -52,6 +52,21 @@ export default function Login() {
     const [loading, setLoading] = useState(false);
     const [searchParams] = useSearchParams();
     const notice = NOTICES[searchParams.get('notice')] || null;
+    // Platform support address from the public endpoint; the line below stays
+    // hidden until (and unless) a valid address arrives.
+    const [supportEmail, setSupportEmail] = useState('');
+
+    useEffect(() => {
+        let cancelled = false;
+        fetch('/api/v1/public/support-contact')
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => {
+                const address = data && data.support_email;
+                if (!cancelled && EMAIL_RE.test(address || '')) setSupportEmail(address);
+            })
+            .catch(() => {});
+        return () => { cancelled = true; };
+    }, []);
 
     // index.html sets the default document title to "IpAdmin" for the whole
     // dashboard; this page-specific title applies only while Login is mounted.
@@ -249,6 +264,12 @@ export default function Login() {
                         </span>
                         <span className="auth-callout-go"><span>Apply</span><Icon name="arrow-right" /></span>
                     </a>
+
+                    {supportEmail && (
+                        <p className="auth-fine-print">
+                            Need help? Email <a href={`mailto:${supportEmail}`}>{supportEmail}</a>
+                        </p>
+                    )}
                 </div>
             </main>
         </div>
