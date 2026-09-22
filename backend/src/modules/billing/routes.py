@@ -49,6 +49,9 @@ async def billing_status(
         trial_days_remaining=days_remaining,
         has_outstanding_invoice=outstanding is not None,
         outstanding_amount_ghs=outstanding.amount_ghs if outstanding else None,
+        account_status=operator.status,
+        is_suspended=operator.status == "suspended",
+        suspension_reason=operator.suspension_reason,
     )
 
 

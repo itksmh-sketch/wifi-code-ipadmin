@@ -86,7 +86,7 @@ async def update_plan(
     plan_id: uuid.UUID,
     payload: dict = Body(...),
     db: AsyncSession = Depends(get_db),
-    tenant: TenantContext = Depends(get_admin_tenant_context),
+    tenant: TenantContext = Depends(require_active_operator),
 ):
     """Kept for existing callers; identical to PATCH, including the allowlist.
 
@@ -129,7 +129,7 @@ async def patch_plan(
     plan_id: uuid.UUID,
     payload: dict = Body(...),
     db: AsyncSession = Depends(get_db),
-    tenant: TenantContext = Depends(get_admin_tenant_context),
+    tenant: TenantContext = Depends(require_active_operator),
 ):
     """Edit a plan's name, price and speeds.
 
@@ -284,7 +284,7 @@ async def deactivate_plan(plan_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 
 
 @router.post("/{plan_id}/activate", response_model=PlanResponse, responses={404: {"model": ErrorResponse}})
-async def activate_plan(plan_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+async def activate_plan(plan_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     return await _set_plan_active(db, plan_id, tenant, active=True)
 
 

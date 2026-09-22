@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
 from src.db.models import CommissionRule, Plan, Reseller, ResellerWallet, ResellerVoucherAllocation, Voucher
-from src.middleware.auth import TenantContext, get_admin_tenant_context, require_role
+from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_role, require_role
 from src.modules.resellers.wallet_service import WalletService
 from src.utils.reseller_auth import hash_reseller_password
 
@@ -44,7 +44,7 @@ async def admin_list_resellers(db: AsyncSession = Depends(get_db), tenant: Tenan
 
 
 @router.post("/resellers")
-async def admin_create_reseller(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_role("superadmin", "admin"))):
+async def admin_create_reseller(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_role("superadmin", "admin"))):
     # Expected keys: name,email,phone,password,role,town_id,site_id
     email = (payload.get("email") or "").strip().lower()
     if not email or not payload.get("password") or not payload.get("name"):
@@ -151,7 +151,7 @@ async def admin_update_reseller(reseller_id: uuid.UUID, payload: dict, db: Async
 
 
 @router.put("/resellers/{reseller_id}/topup")
-async def admin_reseller_topup(reseller_id: uuid.UUID, payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_role("superadmin", "admin"))):
+async def admin_reseller_topup(reseller_id: uuid.UUID, payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_role("superadmin", "admin"))):
     amount = payload.get("amount_ghs")
     if amount is None:
         raise HTTPException(status_code=400, detail="amount_ghs is required")

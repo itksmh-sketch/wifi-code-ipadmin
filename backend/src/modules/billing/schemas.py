@@ -12,6 +12,15 @@ class BillingStatusResponse(BaseModel):
     trial_days_remaining: Optional[int]
     has_outstanding_invoice: bool
     outstanding_amount_ghs: Optional[Decimal]
+    # The *access* axis, separate from billing_status on purpose: an operator can
+    # be billing_status='active' while status='suspended' (a manual suspension),
+    # and billing_status='past_due' while still fully able to trade. Only
+    # `status` decides whether the write guards bite, so only `status` can drive
+    # the dashboard banner. suspension_reason distinguishes "pay your invoice"
+    # from a manual suspension a payment will not lift.
+    account_status: str
+    is_suspended: bool
+    suspension_reason: Optional[str]
 
     model_config = {"from_attributes": True}
 

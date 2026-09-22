@@ -17,6 +17,7 @@ import Branding from './pages/Branding';
 import Billing from './pages/Billing';
 import Security from './pages/Security';
 import Sidebar from './components/Sidebar';
+import SuspensionBanner from './components/SuspensionBanner';
 
 const API_BASE = '/api/v1';
 
@@ -171,6 +172,9 @@ export default function App() {
                                 <div style={{ display: 'flex', minHeight: '100vh' }}>
                                     <Sidebar />
                                     <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
+                                        {/* Above the router, so it persists across every
+                                            admin page rather than remounting per route. */}
+                                        <SuspensionBanner />
                                         <Routes>
                                             <Route path="/" element={<Dashboard />} />
                                             <Route path="/analytics" element={<Analytics />} />

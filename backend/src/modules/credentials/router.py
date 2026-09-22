@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
-from src.middleware.auth import TenantContext, get_admin_tenant_context, require_recent_pin
+from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator, require_recent_pin
 from src.modules.credentials.service import (
     build_view,
     deactivate_others,
@@ -76,7 +76,10 @@ def make_credentials_router(
         provider: str,
         body: CredentialUpsert,
         db: AsyncSession = Depends(get_db),
-        tenant: TenantContext = Depends(get_admin_tenant_context),
+        # Suspension-gated: storing and activating a provider is re-arming the
+        # till. `test` and `delete` below stay open — a diagnostic changes
+        # nothing and removing a provider only reduces capability.
+        tenant: TenantContext = Depends(require_active_operator),
     ):
         entry = await resolve_catalog_entry(db, category, provider)
         cleaned = validate_values(entry, body.values)
@@ -136,7 +139,7 @@ def make_credentials_router(
     async def activate_provider(
         provider: str,
         db: AsyncSession = Depends(get_db),
-        tenant: TenantContext = Depends(get_admin_tenant_context),
+        tenant: TenantContext = Depends(require_active_operator),
     ):
         row = await _row(db, tenant.isp_operator_id, provider)
         if row is None:

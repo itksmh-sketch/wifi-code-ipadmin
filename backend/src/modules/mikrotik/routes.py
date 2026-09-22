@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
 from src.db.models import CoAEvent, ConfigTemplate, Router, RouterCredential, RouterMetric, RouterProvisionLog, Session, Site, Town, Voucher
-from src.middleware.auth import TenantContext, get_admin_tenant_context, get_current_user
+from src.middleware.auth import TenantContext, get_admin_tenant_context, get_current_user, require_active_operator
 from src.modules.mikrotik.api_service import MikroTikAPIService, MikroTikOperationError, RouterCredentialsMissingError
 from src.modules.mikrotik.diagnostics import MikroTikDiagnosticsService
 from src.modules.mikrotik.provisioner import MikroTikProvisioner
@@ -98,7 +98,7 @@ async def admin_sites(db: AsyncSession = Depends(get_db), tenant: TenantContext 
 
 
 @router.post("/routers/onboard")
-async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     # API credentials are now optional — an operator can register a router before
     # it is reachable (e.g. behind NAT) and set up a WireGuard tunnel afterwards.
     # Only the basic identity fields are required.
@@ -306,7 +306,7 @@ async def update_router_credentials(router_id: uuid.UUID, body: RouterCredential
 
 
 @router.post("/routers/{router_id}/provision", response_model=ProvisionStartResponse)
-async def provision_router(router_id: uuid.UUID, body: ProvisionRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+async def provision_router(router_id: uuid.UUID, body: ProvisionRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = (
         await db.execute(select(Router).where(Router.id == router_id, Router.isp_operator_id == tenant.isp_operator_id))
     ).scalar_one_or_none()
@@ -512,7 +512,7 @@ async def reboot_router(router_id: uuid.UUID, body: ConfirmActionRequest, db: As
 
 
 @router.post("/routers/{router_id}/apply-template", response_model=ProvisionStartResponse)
-async def apply_template(router_id: uuid.UUID, body: ApplyTemplateRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+async def apply_template(router_id: uuid.UUID, body: ApplyTemplateRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
     await provisioner.ensure_router_credentials(str(router_id))
     template = (

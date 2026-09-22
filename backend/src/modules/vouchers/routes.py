@@ -231,7 +231,7 @@ async def disable_voucher(
 async def reactivate_voucher(
     voucher_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    tenant: TenantContext = Depends(get_admin_tenant_context),
+    tenant: TenantContext = Depends(require_active_operator),
 ):
     try:
         voucher = await restore_voucher_status(db, voucher_id, tenant.isp_operator_id)

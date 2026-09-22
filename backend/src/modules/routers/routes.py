@@ -65,7 +65,7 @@ async def create_router(site_id: uuid.UUID, body: RouterCreate, db: AsyncSession
 
 
 @router.put("/routers/{router_id}", response_model=RouterResponse, responses={404: {"model": ErrorResponse}})
-async def update_router(router_id: uuid.UUID, body: RouterUpdate, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+async def update_router(router_id: uuid.UUID, body: RouterUpdate, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     result = await db.execute(select(Router).where(Router.id == router_id, Router.isp_operator_id == tenant.isp_operator_id))
     r = result.scalar_one_or_none()
     if not r:

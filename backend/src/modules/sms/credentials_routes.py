@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
 from src.db.models import OperatorSMSCredential, ProviderCatalogEntry
-from src.middleware.auth import TenantContext, get_admin_tenant_context, require_recent_pin
+from src.middleware.auth import TenantContext, require_active_operator, require_recent_pin
 from src.modules.credentials.router import make_credentials_router
 from src.modules.credentials.service import build_view, deactivate_others, dump_credentials
 from src.modules.sms.providers.registry import build_sms_provider
@@ -50,7 +50,11 @@ PLATFORM_GATEWAY_PROVIDER_KEY = "arkesel_platform"
 )
 async def activate_platform_gateway(
     db: AsyncSession = Depends(get_db),
-    tenant: TenantContext = Depends(get_admin_tenant_context),
+    # Suspension-gated alongside the factory's own upsert/activate. This one
+    # matters most: it switches the operator onto the platform gateway, which
+    # bills them per segment. Letting an operator who is already not paying
+    # opt into *more* platform billing is backwards.
+    tenant: TenantContext = Depends(require_active_operator),
 ):
     """Opt into the platform-provided Arkesel gateway.
 

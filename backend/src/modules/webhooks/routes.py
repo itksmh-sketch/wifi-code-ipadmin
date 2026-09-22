@@ -24,9 +24,20 @@ async def _process_webhook(
     than a catch-all ``/{provider}/{operator_slug}`` — a catch-all would also
     match ``/api/v1/webhooks/platform-billing/paystack`` and shadow that handler.
 
-    The Paystack path through here is byte-for-byte what the dedicated Paystack
-    route did before: same rate-limit key, same operator/credential lookups
-    (including ``is_active``), same signature handling, same enqueue.
+    The Paystack path through here keeps what the dedicated Paystack route did
+    before: same rate-limit key, same credential lookup (including
+    ``is_active``), same signature handling, same enqueue.
+
+    The operator lookup deliberately does NOT filter on ``status``. A webhook
+    only ever arrives for a transaction the operator's own portal already
+    accepted and handed to the provider — the money has moved. Refusing to
+    complete it because the operator was suspended in the meantime punishes the
+    customer who paid, not the operator: the provider retries into a 404, gives
+    up, and the buyer never gets their voucher. Suspension is enforced where a
+    purchase *starts* (``/portal/initiate-payment``, reseller purchase), not
+    where an already-paid one finishes. The operator must still exist, and its
+    payment credentials must still be active, or we cannot verify the signature
+    at all.
     """
     client_ip = request.client.host if request.client else "unknown"
     await enforce_rate_limit(client_ip, f"webhook:{provider_key}", limit=60, window_seconds=60)
@@ -34,7 +45,7 @@ async def _process_webhook(
     raw_body = await request.body()
     operator = (
         await db.execute(
-            select(ISPOperator).where(ISPOperator.slug == operator_slug, ISPOperator.status == "approved")
+            select(ISPOperator).where(ISPOperator.slug == operator_slug)
         )
     ).scalar_one_or_none()
     if not operator:

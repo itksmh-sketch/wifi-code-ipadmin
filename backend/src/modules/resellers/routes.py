@@ -7,7 +7,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
-from src.db.models import Plan, Reseller, ResellerWallet, ResellerVoucherAllocation, Site, Voucher
+from src.db.models import ISPOperator, Plan, Reseller, ResellerWallet, ResellerVoucherAllocation, Site, Voucher
 from src.middleware.reseller_auth import get_current_reseller, update_reseller_last_login
 from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.resellers.wallet_service import InsufficientFundsError, WalletService
@@ -189,6 +189,19 @@ async def reseller_purchase_vouchers(
 ):
     if body.quantity < 1 or body.quantity > 1000:
         raise HTTPException(status_code=400, detail="Quantity must be between 1 and 1000")
+
+    # Suspension is a billing-enforcement lever, so it has to reach every path
+    # that mints new stock — not just the captive portal. Without this a
+    # suspended operator's resellers keep drawing down their wallets and keep
+    # selling, and the operator's business runs on untouched. Same status and
+    # wording as /portal/initiate-payment so the two revenue paths fail
+    # identically. Checked before the wallet is touched: a blocked purchase must
+    # not debit anyone.
+    operator = (
+        await db.execute(select(ISPOperator).where(ISPOperator.id == reseller.isp_operator_id))
+    ).scalar_one_or_none()
+    if operator and operator.status == "suspended":
+        raise HTTPException(status_code=503, detail="This hotspot is temporarily unavailable for new purchases")
 
     tx_ctx = db.begin() if not db.in_transaction() else None
     if tx_ctx:

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.db.base import get_db
 from src.db.models import Router, RouterProvisionLog, RouterSetupStatus
-from src.middleware.auth import TenantContext, get_admin_tenant_context
+from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
 from src.modules.mikrotik.api_service import MikroTikOperationError, RouterCredentialsMissingError
 from src.modules.mikrotik import setup_service as svc
 from src.modules.mikrotik import setup_status as store
@@ -155,7 +155,7 @@ async def detect_network(router_id: uuid.UUID, db: AsyncSession = Depends(get_db
 
 
 @router.post("/routers/{router_id}/setup/network/apply", response_model=ApplyResultResponse)
-async def apply_network(router_id: uuid.UUID, body: NetworkApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+async def apply_network(router_id: uuid.UUID, body: NetworkApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
         raise HTTPException(status_code=409, detail=OFFLINE_MESSAGE)
@@ -204,7 +204,7 @@ async def detect_hotspot(router_id: uuid.UUID, db: AsyncSession = Depends(get_db
 
 
 @router.post("/routers/{router_id}/setup/hotspot/apply", response_model=ApplyResultResponse)
-async def apply_hotspot(router_id: uuid.UUID, body: HotspotApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+async def apply_hotspot(router_id: uuid.UUID, body: HotspotApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
         raise HTTPException(status_code=409, detail=OFFLINE_MESSAGE)
@@ -250,7 +250,7 @@ async def detect_radius(router_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 
 
 @router.post("/routers/{router_id}/setup/radius/apply", response_model=ApplyResultResponse)
-async def apply_radius(router_id: uuid.UUID, body: RadiusApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+async def apply_radius(router_id: uuid.UUID, body: RadiusApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
         raise HTTPException(status_code=409, detail=OFFLINE_MESSAGE)
@@ -307,7 +307,7 @@ async def detect_nat(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), t
 
 
 @router.post("/routers/{router_id}/setup/nat/apply", response_model=ApplyResultResponse)
-async def apply_nat(router_id: uuid.UUID, body: NatApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+async def apply_nat(router_id: uuid.UUID, body: NatApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
         raise HTTPException(status_code=409, detail=OFFLINE_MESSAGE)
