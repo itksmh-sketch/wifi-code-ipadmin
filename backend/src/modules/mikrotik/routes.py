@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
 from src.db.models import CoAEvent, ConfigTemplate, Router, RouterCredential, RouterMetric, RouterProvisionLog, Session, Site, Town, Voucher
 from src.middleware.auth import TenantContext, get_admin_tenant_context, get_current_user, require_active_operator
-from src.modules.mikrotik.api_service import MikroTikAPIService, MikroTikOperationError, RouterCredentialsMissingError
+from src.jobs.collect_router_metrics import collect_one_router
+from src.modules.mikrotik.api_service import MikroTikAPIService, MikroTikOperationError, RouterCredentialsMissingError, _normalize_error
+from src.modules.mikrotik import health as health_service
 from src.modules.mikrotik.diagnostics import MikroTikDiagnosticsService
 from src.modules.mikrotik.provisioner import MikroTikProvisioner
 from src.modules.mikrotik.removal import RouterAlreadyRemovedError, remove_router
@@ -453,6 +455,61 @@ async def router_metrics(router_id: uuid.UUID, hours: int = Query(default=24, ge
     )
     rows = result.scalars().all()
     return [_serialize_metric(row) for row in rows]
+
+
+async def _latest_two_health(db: AsyncSession, router_id: uuid.UUID):
+    """The newest snapshot and the one before it.
+
+    Two rows, not one: link-flap detection compares RouterOS's own link-downs
+    counter between consecutive samples, because a drop that self-recovers
+    leaves `running` true and is invisible to any point-in-time check.
+    Deliberately skips rows with no health payload, so the comparison is against
+    the last poll that actually collected health rather than an empty row.
+    """
+    rows = (
+        await db.execute(
+            select(RouterMetric)
+            .where(RouterMetric.router_id == router_id, RouterMetric.health.isnot(None))
+            .order_by(RouterMetric.collected_at.desc())
+            .limit(2)
+        )
+    ).scalars().all()
+    current = rows[0] if rows else None
+    previous = rows[1].health if len(rows) > 1 else None
+    return current, previous
+
+
+@router.get("/routers/{router_id}/health")
+async def router_health(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+    """Last polled health state. Reads storage only — never touches the router.
+
+    Cached rather than live because every router here is behind NAT on a
+    WireGuard tunnel, and a brief tunnel drop would otherwise render an empty
+    page that reads as "this router is broken" when it is not. The router a
+    poll cannot reach is also exactly the one whose last known state matters
+    most. "Check now" below is the explicit live path.
+    """
+    await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
+    current, previous = await _latest_two_health(db, router_id)
+    return health_service.build_response(str(router_id), current, previous)
+
+
+@router.post("/routers/{router_id}/health/check")
+async def router_health_check(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
+    """Poll the router now and store the result, then return it.
+
+    Same explicit, user-triggered shape as the diagnostics button — never on
+    page load. Not suspension-gated: a diagnostic changes nothing and a
+    suspended operator still needs to see why their network is misbehaving.
+    """
+    await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
+    _, previous = await _latest_two_health(db, router_id)
+    try:
+        await collect_one_router(service, str(router_id))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach the router: {_normalize_error(exc)}") from exc
+    current, _ = await _latest_two_health(db, router_id)
+    return health_service.build_response(str(router_id), current, previous)
 
 
 @router.get("/routers/{router_id}/provision-logs")

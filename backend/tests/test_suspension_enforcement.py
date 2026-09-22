@@ -116,6 +116,8 @@ EXEMPTION_CHAIN = [
     ("POST",   f"{API}/auth/reset/request"),
     ("POST",   f"{API}/auth/reset/set-password"),
     # Diagnostics and previews change nothing.
+    ("GET",    f"{API}/admin/routers/{{router_id}}/health"),
+    ("POST",   f"{API}/admin/routers/{{router_id}}/health/check"),
     ("GET",    f"{API}/admin/routers/{{router_id}}/diagnostics"),
     ("POST",   f"{API}/admin/routers/test-connection"),
     ("POST",   f"{API}/payment-credentials/{{provider}}/test"),

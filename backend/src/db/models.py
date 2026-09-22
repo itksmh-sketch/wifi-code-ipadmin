@@ -722,6 +722,13 @@ class RouterMetric(Base):
     total_rx_bytes = Column(BigInteger, nullable=True)
     board_name = Column(String(255), nullable=True)
     ros_version = Column(String(255), nullable=True)
+    # Point-in-time state snapshot (disk, sensors, DHCP pool, per-interface link
+    # flaps, firmware) — the "fine or not" half that no chart makes clearer. See
+    # migration 052 for the shape and why it is a JSONB column here rather than
+    # its own table. NULL on rows written before the collector change, and on
+    # any poll where the health leg failed; the UI renders that as "not
+    # collected yet" rather than as a fault.
+    health = Column(JSONB, nullable=True)
 
     router = relationship("Router", back_populates="metrics")
 

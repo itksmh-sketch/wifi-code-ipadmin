@@ -35,11 +35,17 @@ async def collect_router_metrics(ctx=None) -> dict:
     return {"routers_seen": len(router_ids), "collected": collected, "failed": failed}
 
 
-async def collect_one_router(service: MikroTikAPIService, router_id: str) -> None:
-    system_info, active_users = await asyncio.gather(
-        service.get_system_info(router_id),
-        service.get_active_hotspot_users(router_id),
-    )
+async def collect_one_router(service: MikroTikAPIService, router_id: str) -> RouterMetric:
+    """One poll of one router: numeric series + health state, one connection.
+
+    This was two concurrent calls, and so two RouterOS API logins per router per
+    poll. The router logs every login and logout, and on a live router those
+    lines were 88% of its memory-only log ring — our own polling crowding out
+    real events. collect_metrics_snapshot() does the whole poll on a single
+    connection instead, so the health reads added here cost no extra login and
+    the poll's log footprint is halved rather than grown.
+    """
+    system_info, active_users, health = await service.collect_metrics_snapshot(router_id)
     now = datetime.now(timezone.utc)
     async with async_session_factory() as db:
         metric = RouterMetric(
@@ -53,11 +59,13 @@ async def collect_one_router(service: MikroTikAPIService, router_id: str) -> Non
             total_rx_bytes=sum(int(user.bytes_in or 0) for user in active_users),
             board_name=system_info.board_name,
             ros_version=system_info.ros_version,
+            health=health,
         )
         db.add(metric)
         cutoff = now - timedelta(hours=24)
         await db.execute(delete(RouterMetric).where(RouterMetric.router_id == router_id, RouterMetric.collected_at < cutoff))
         await db.commit()
+        return metric
 
 
 def _memory_used_percent(free_memory: int | None, total_memory: int | None) -> int | None:

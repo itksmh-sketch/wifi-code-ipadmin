@@ -259,6 +259,23 @@ class MikroTikAPIService:
         result, _ = await self._run_router_operation(router_id, self._sync_get_active_users)
         return result
 
+    async def collect_metrics_snapshot(self, router_id: str) -> tuple[SystemInfo, list[ActiveUserInfo], dict[str, Any]]:
+        """Everything the 5-minute metrics poll needs, over ONE connection.
+
+        This used to be two concurrent calls (get_system_info +
+        get_active_hotspot_users), which meant two API logins per router per
+        poll. RouterOS logs every one of those, and on a live router 313 of the
+        356 lines in the log ring buffer were our own `user admin logged in
+        ... via api` — 88% of the buffer, produced by us, pushing real events
+        out of a memory-only ring. Folding the poll into a single connection
+        halves that, and the health reads below ride along on it rather than
+        adding a third.
+
+        Returns (system_info, active_users, health_snapshot).
+        """
+        result, _ = await self._run_router_operation(router_id, self._sync_collect_metrics_snapshot)
+        return result
+
     async def get_radius_config(self, router_id: str) -> list[RadiusConfig]:
         result, _ = await self._run_router_operation(router_id, self._sync_get_radius_config)
         return result
@@ -571,7 +588,125 @@ class MikroTikAPIService:
             uptime=payload.get("uptime"),
             uptime_seconds=_parse_uptime_seconds(payload.get("uptime")),
             architecture_name=payload.get("architecture-name"),
+            free_hdd_space=_to_int(payload.get("free-hdd-space")),
+            total_hdd_space=_to_int(payload.get("total-hdd-space")),
         )
+
+    def _sync_collect_metrics_snapshot(
+        self, runner: SyncCommandRunner, _: dict[str, Any]
+    ) -> tuple[SystemInfo, list[ActiveUserInfo], dict[str, Any]]:
+        """Six prints on one connection. Every optional path is isolated: one
+        board not supporting something must never cost us the rest."""
+        system_info = self._sync_get_system_info(runner, {})
+        active_users = self._sync_get_active_users(runner, {})
+        health = self._sync_build_health(runner, system_info)
+        return system_info, active_users, health
+
+    def _sync_build_health(self, runner: SyncCommandRunner, system_info: SystemInfo) -> dict[str, Any]:
+        """Assemble the health snapshot. See migration 052 for the shape.
+
+        Each RouterOS path gets its own try/except and degrades to
+        ``supported: false`` rather than raising — both of these are NORMAL on
+        this fleet, not edge cases:
+
+          * ``/system/routerboard`` hard-errors with "no such command prefix"
+            on CHR/x86, which is what the live routers here are;
+          * ``/system/health`` returns ``{"state": "disabled"}`` with no
+            temperature or voltage keys on a board without sensors.
+
+        Storing raw state, not verdicts: thresholds are applied at read time so
+        they can be retuned without re-collecting, and link-flap detection needs
+        the previous snapshot to compare against.
+        """
+        health: dict[str, Any] = {"schema": HEALTH_SCHEMA_VERSION, "errors": []}
+
+        used = None
+        if system_info.free_hdd_space is not None and system_info.total_hdd_space:
+            used = int(((system_info.total_hdd_space - system_info.free_hdd_space) / system_info.total_hdd_space) * 100)
+        health["disk"] = {
+            "free_bytes": system_info.free_hdd_space,
+            "total_bytes": system_info.total_hdd_space,
+            "used_percent": used,
+        }
+
+        try:
+            rows = runner.execute("/system/health", "print")
+            temperature = voltage = None
+            for row in rows:
+                # RouterOS 7 returns either flat keys or name/value pairs
+                # depending on the board; handle both.
+                name = (row.get("name") or "").lower()
+                if name == "temperature":
+                    temperature = _to_float(row.get("value"))
+                elif name == "voltage":
+                    voltage = _to_float(row.get("value"))
+                if temperature is None:
+                    temperature = _to_float(row.get("temperature"))
+                if voltage is None:
+                    voltage = _to_float(row.get("voltage"))
+            supported = temperature is not None or voltage is not None
+            health["sensors"] = {
+                "supported": supported,
+                "reason": None if supported else "board reports no sensors",
+                "temperature_c": temperature,
+                "voltage_v": voltage,
+            }
+        except Exception as exc:
+            health["sensors"] = {
+                "supported": False,
+                "reason": _normalize_error(exc),
+                "temperature_c": None,
+                "voltage_v": None,
+            }
+
+        try:
+            pools = []
+            for row in runner.execute("/ip/pool", "print"):
+                total = _to_int(row.get("total"))
+                used_n = _to_int(row.get("used"))
+                pools.append({
+                    "name": row.get("name"),
+                    "total": total,
+                    "used": used_n,
+                    "available": _to_int(row.get("available")),
+                    "used_percent": int((used_n / total) * 100) if total and used_n is not None else None,
+                })
+            health["pool"] = pools
+        except Exception as exc:
+            health["pool"] = []
+            health["errors"].append(f"pool: {_normalize_error(exc)}")
+
+        try:
+            interfaces = []
+            for row in runner.execute("/interface", "print"):
+                interfaces.append({
+                    "name": row.get("name", ""),
+                    "running": _to_bool(row.get("running")),
+                    "disabled": _to_bool(row.get("disabled")),
+                    # RouterOS keeps the flap counter and the last transition
+                    # itself, so link instability needs no cross-poll state of
+                    # our own — just this counter compared to the last sample.
+                    "link_downs": _to_int(row.get("link-downs")) or 0,
+                    "last_link_down": row.get("last-link-down-time"),
+                })
+            health["interfaces"] = interfaces
+        except Exception as exc:
+            health["interfaces"] = []
+            health["errors"].append(f"interfaces: {_normalize_error(exc)}")
+
+        try:
+            rows = runner.execute("/system/routerboard", "print")
+            payload = rows[0] if rows else {}
+            health["firmware"] = {
+                "supported": bool(payload),
+                "current": payload.get("current-firmware"),
+                "available": payload.get("upgrade-firmware"),
+            }
+        except Exception:
+            # Expected on CHR/x86 — "no such command prefix". Not an error.
+            health["firmware"] = {"supported": False, "current": None, "available": None}
+
+        return health
 
     def _sync_get_identity(self, runner: SyncCommandRunner, _: dict[str, Any]) -> str:
         rows = runner.execute("/system/identity", "print")
@@ -950,6 +1085,11 @@ class MikroTikAPIService:
         )
 
 
+# Bumped when the health snapshot's shape changes, so a stored row from an
+# older collector is detectable rather than silently mis-rendered.
+HEALTH_SCHEMA_VERSION = 1
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -1023,6 +1163,17 @@ def _to_int(value: Any) -> int | None:
         return None
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        # RouterOS reports sensors as bare numbers or with a unit suffix
+        # ("46", "24.1C", "12.1V") depending on board and version.
+        return float(str(value).rstrip("CVcv%").strip())
     except (TypeError, ValueError):
         return None
 

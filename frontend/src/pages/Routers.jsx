@@ -1225,6 +1225,154 @@ function RouterSetupTab({ routerId }) {
     );
 }
 
+const HEALTH_TONES = {
+    warning: { fg: '#92400e', bg: '#fffbeb', border: '#fde68a', icon: '⚠' },
+    ok: { fg: '#067647', bg: '#ecfdf3', border: '#a6f4c5', icon: '✓' },
+    na: { fg: '#5c677d', bg: '#f8fafc', border: '#e2e8f0', icon: '–' },
+};
+
+function HealthRow({ tone, label, value }) {
+    const t = HEALTH_TONES[tone] || HEALTH_TONES.na;
+    return (
+        <div style={{ display: 'flex', gap: 12, alignItems: 'baseline', padding: '9px 0', borderBottom: '1px solid #eef2f7' }}>
+            <span style={{ color: t.fg, width: 16, flexShrink: 0 }}>{t.icon}</span>
+            <span style={{ width: 130, flexShrink: 0, fontWeight: 600, color: '#14213d' }}>{label}</span>
+            <span style={{ color: tone === 'na' ? '#9ca3af' : '#3f4a5a' }}>{value}</span>
+        </div>
+    );
+}
+
+function fmtUptime(seconds) {
+    if (!seconds && seconds !== 0) return null;
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return d > 0 ? `up ${d}d ${h}h` : h > 0 ? `up ${h}h ${m}m` : `up ${m}m`;
+}
+
+/**
+ * Current router health, from the last stored 5-minute poll.
+ *
+ * Cached rather than live-on-load: every router is behind NAT on a WireGuard
+ * tunnel, so a live fetch renders an empty page on a brief tunnel blip and
+ * reads as "this router is broken" when it is not. "Check now" is the explicit
+ * live path — the same pattern the diagnostics button already uses.
+ *
+ * Warnings sort to the top; healthy checks collapse to one line each; things
+ * the board genuinely cannot report render as "not reported", visibly distinct
+ * from a failure.
+ */
+function HealthTab({ health, checking, error, onCheck }) {
+    if (!health) return <div className="card" style={{ padding: 18 }}><p style={{ color: '#5c677d', margin: 0 }}>Loading health…</p></div>;
+
+    const asOf = health.as_of
+        ? new Date(health.as_of).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : null;
+    const disk = health.disk || {};
+    const sensors = health.sensors || {};
+    const firmware = health.firmware || {};
+    const interfaces = health.interfaces || [];
+    const down = interfaces.filter(i => !i.running && !i.disabled);
+    const up = interfaces.filter(i => i.running && !i.disabled);
+    const warned = new Set((health.warnings || []).map(w => w.key));
+
+    return (
+        <div className="card" style={{ padding: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+                <strong style={{ fontSize: 16, color: '#14213d' }}>Health</strong>
+                <span style={{ color: '#9ca3af', fontSize: 13, flex: 1 }}>
+                    {asOf ? `as of ${asOf}` : 'never collected'}
+                </span>
+                <button className="btn" onClick={onCheck} disabled={checking}>
+                    {checking ? 'Checking…' : 'Check now'}
+                </button>
+            </div>
+
+            {error && (
+                <div style={{ marginBottom: 14, padding: '10px 14px', borderRadius: 10, background: '#fef3f2', border: '1px solid #fda29b', color: '#7a271a' }}>
+                    {error} Showing the last stored reading.
+                </div>
+            )}
+
+            {health.overall === 'unknown' && (
+                <p style={{ color: '#9ca3af', margin: '0 0 14px' }}>
+                    No health data collected yet. It is gathered automatically every 5 minutes
+                    while the router is online, or press “Check now”.
+                </p>
+            )}
+
+            {(health.warnings || []).map((w, i) => (
+                <div key={i} style={{ display: 'flex', gap: 12, padding: '12px 14px', marginBottom: 10, borderRadius: 10, background: '#fffbeb', border: '1px solid #fde68a' }}>
+                    <span style={{ color: '#92400e' }}>⚠</span>
+                    <div>
+                        <div style={{ fontWeight: 700, color: '#92400e' }}>{w.title}</div>
+                        <div style={{ color: '#7c5e10', fontSize: 14, marginTop: 2 }}>{w.detail}</div>
+                    </div>
+                </div>
+            ))}
+
+            {health.as_of && (
+                <div style={{ marginTop: 6 }}>
+                    <HealthRow
+                        tone={disk.used_percent == null ? 'na' : warned.has('disk') ? 'warning' : 'ok'}
+                        label="Disk"
+                        value={disk.used_percent == null
+                            ? 'Not reported'
+                            : `${disk.used_percent}% used (${fmtBytes(disk.free_bytes)} free of ${fmtBytes(disk.total_bytes)})`}
+                    />
+                    {(health.pool || []).length === 0 && <HealthRow tone="na" label="DHCP pool" value="No pool configured" />}
+                    {(health.pool || []).map(pool => (
+                        <HealthRow
+                            key={pool.name}
+                            tone={warned.has('pool') ? 'warning' : 'ok'}
+                            label="DHCP pool"
+                            value={`${pool.name} — ${pool.used} of ${pool.total} in use`}
+                        />
+                    ))}
+                    <HealthRow
+                        tone={down.length ? 'warning' : interfaces.length ? 'ok' : 'na'}
+                        label="Interfaces"
+                        value={interfaces.length
+                            ? `${up.length} up, ${down.length} down${down.length ? ` — ${down.map(i => i.name).join(', ')}` : ''}`
+                            : 'Not reported'}
+                    />
+                    <HealthRow
+                        tone={sensors.supported ? 'ok' : 'na'}
+                        label="Temperature"
+                        value={sensors.supported
+                            ? [sensors.temperature_c != null && `${sensors.temperature_c}°C`,
+                               sensors.voltage_v != null && `${sensors.voltage_v}V`].filter(Boolean).join(' · ')
+                            : 'Not reported by this board'}
+                    />
+                    <HealthRow
+                        tone={firmware.supported && firmware.available && firmware.available !== firmware.current ? 'warning' : firmware.supported ? 'ok' : 'na'}
+                        label="Firmware"
+                        value={!firmware.supported
+                            ? 'Not applicable — this board has no RouterBOARD firmware'
+                            : firmware.available && firmware.available !== firmware.current
+                                ? `${firmware.current} — ${firmware.available} available`
+                                : `${firmware.current} (current)`}
+                    />
+                </div>
+            )}
+
+            {(health.errors || []).length > 0 && (
+                <p style={{ color: '#9ca3af', fontSize: 13, marginTop: 12 }}>
+                    Some readings were unavailable: {health.errors.join('; ')}
+                </p>
+            )}
+
+            {health.as_of && (
+                <p style={{ color: '#9ca3af', fontSize: 13, marginTop: 14, marginBottom: 0 }}>
+                    {[health.ros_version && `RouterOS ${health.ros_version}`,
+                      health.board_name,
+                      fmtUptime(health.uptime_seconds)].filter(Boolean).join(' · ')}
+                </p>
+            )}
+        </div>
+    );
+}
+
 function RouterDetail({ routerId, onBack }) {
     const [router, setRouter] = useState(null);
     const [tab, setTab] = useState('overview');
@@ -1233,6 +1381,9 @@ function RouterDetail({ routerId, onBack }) {
     const [logs, setLogs] = useState([]);
     const [diagnostics, setDiagnostics] = useState(null);
     const [diagLoading, setDiagLoading] = useState(false);
+    const [health, setHealth] = useState(null);
+    const [healthChecking, setHealthChecking] = useState(false);
+    const [healthError, setHealthError] = useState(null);
     // { text, tone: 'success' | 'warning' } | null. tone controls the banner's
     // color — a router-unreachable removal must not look identical to a
     // clean success, so this can't be a plain string the way it used to be.
@@ -1289,16 +1440,23 @@ function RouterDetail({ routerId, onBack }) {
         if (data) setLogs(data);
     }, [routerId]);
 
+    // Reads the last stored poll — never contacts the router. Live checks are
+    // explicit, via the button, exactly like diagnostics.
+    const loadHealth = useCallback(async () => {
+        const data = await apiCall(`/admin/routers/${routerId}/health`);
+        if (data) setHealth(data);
+    }, [routerId]);
+
     const loadSetupSummary = useCallback(async () => {
         const data = await apiCall(`/admin/routers/${routerId}/setup/status`);
         if (data && !data.detail) setSetupSummary(data);
     }, [routerId]);
 
     useEffect(() => {
-        Promise.all([loadOverview(), loadMetrics(), loadSessions(), loadLogs(), loadSetupSummary()]).catch(() => {});
+        Promise.all([loadOverview(), loadMetrics(), loadSessions(), loadLogs(), loadSetupSummary(), loadHealth()]).catch(() => {});
         refreshRef.current = setInterval(() => loadSessions().catch(() => {}), 30000);
         return () => clearInterval(refreshRef.current);
-    }, [loadOverview, loadMetrics, loadSessions, loadLogs, loadSetupSummary]);
+    }, [loadOverview, loadMetrics, loadSessions, loadLogs, loadSetupSummary, loadHealth]);
 
     useEffect(() => {
         if (tab === 'metrics' && metrics.length > 0) {
@@ -1403,6 +1561,20 @@ function RouterDetail({ routerId, onBack }) {
         await loadSessions();
     }
 
+    async function checkHealthNow() {
+        setHealthChecking(true);
+        setHealthError(null);
+        try {
+            setHealth(await apiCall(`/admin/routers/${routerId}/health/check`, { method: 'POST' }));
+        } catch (e) {
+            // Keep the last stored snapshot on screen — a router that is
+            // unreachable right now does not make what we last saw untrue.
+            setHealthError(e.message || 'Could not reach the router.');
+        } finally {
+            setHealthChecking(false);
+        }
+    }
+
     async function runDiagnostics() {
         setDiagLoading(true);
         setDiagnostics(null);
@@ -1419,7 +1591,7 @@ function RouterDetail({ routerId, onBack }) {
     if (!router) return <p>Loading router…</p>;
 
     const info = router.system_info || {};
-    const TABS = ['overview', 'setup', 'metrics', 'sessions', 'logs', 'vpn'];
+    const TABS = ['overview', 'setup', 'health', 'metrics', 'sessions', 'logs', 'vpn'];
 
     return (
         <div>
@@ -1530,6 +1702,15 @@ function RouterDetail({ routerId, onBack }) {
             )}
 
             {/* Metrics */}
+            {tab === 'health' && (
+                <HealthTab
+                    health={health}
+                    checking={healthChecking}
+                    error={healthError}
+                    onCheck={() => checkHealthNow()}
+                />
+            )}
+
             {tab === 'metrics' && (
                 <div className="card" style={{ padding: 18 }}>
                     <p style={{ color: '#5c677d', marginTop: 0 }}>Last 24 hours — CPU load, active sessions, and traffic.</p>

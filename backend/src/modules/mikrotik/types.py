@@ -74,6 +74,12 @@ class SystemInfo(BaseModel):
     uptime: str | None = None
     uptime_seconds: int | None = None
     architecture_name: str | None = None
+    # Present in the same /system/resource row as everything above — it was
+    # being fetched and discarded. Disk exhaustion (hotspot HTML, logs pinned to
+    # disk, packages) is a common real-world MikroTik failure, so it costs one
+    # extra field and no extra round-trip to surface it.
+    free_hdd_space: int | None = None
+    total_hdd_space: int | None = None
 
 
 class InterfaceInfo(BaseModel):
