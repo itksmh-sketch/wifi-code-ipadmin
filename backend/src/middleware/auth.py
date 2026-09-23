@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from src.db.models import AdminUser, PlatformOwner
 from src.db.base import get_db
 from src.middleware.rate_limit import enforce_rate_limit
-from src.utils.auth import decode_jwt_any_issuer, verify_platform_owner_token, verify_token
+from src.utils.auth import verify_platform_owner_token, verify_token
 
 security = HTTPBearer()
 
@@ -143,39 +143,6 @@ async def require_recent_pin(user: AdminUser = Depends(get_current_user)) -> Adm
     if error is not None:
         raise error
     return user
-
-
-async def get_tenant_context(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-) -> TenantContext:
-    payload = decode_jwt_any_issuer(credentials.credentials)
-    if payload is None or payload.get("type") != "access":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
-
-    issuer = payload.get("iss")
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
-    if issuer == "platform_owner":
-        return TenantContext(
-            is_platform_owner=True,
-            isp_operator_id=None,
-            user_id=uuid.UUID(str(user_id)),
-            role="platform_owner",
-            email=str(payload.get("email") or ""),
-        )
-    if issuer in ("admin", "reseller"):
-        operator_id = payload.get("isp_operator_id")
-        if not operator_id:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
-        return TenantContext(
-            is_platform_owner=False,
-            isp_operator_id=uuid.UUID(str(operator_id)),
-            user_id=uuid.UUID(str(user_id)),
-            role=str(payload.get("role") or issuer),
-            email=str(payload.get("email") or ""),
-        )
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token issuer")
 
 
 async def get_admin_tenant_context(

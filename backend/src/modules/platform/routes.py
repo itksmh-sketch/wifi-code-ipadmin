@@ -1,7 +1,8 @@
 ﻿from datetime import datetime, timedelta, timezone
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, nulls_last, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,6 +47,7 @@ from src.modules.mikrotik import setup_status as setup_store
 # drill-down can never disagree with what an operator's own dashboard shows.
 from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 from src.middleware.rate_limit import enforce_rate_limit
+from src.modules.platform import owner_lockout
 from src.modules.admin_accounts import platform_reset
 from src.modules.admin_accounts.notifications import send_temp_password_sms
 from src.modules.admin_accounts.provisioning import admin_email_taken, provision_operator_admin
@@ -84,14 +86,63 @@ def _month_start() -> datetime:
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
+# Every failure mode of owner login (wrong password, unknown email, inactive,
+# locked) answers with exactly this, as admin login does: a distinct "locked"
+# reply would say which address is the real owner account and that it is
+# under attack. The owner learns about a lock by SMS to their verified phone.
+INVALID_CREDENTIALS = "Invalid email or password"
+
+# Checked against on the no-such-account and locked paths so they cost about
+# the same as a real bcrypt check (same cost factor as every stored hash) and
+# don't leak, by being faster, what the shared message hides.
+_DUMMY_HASH = hash_password("dummy-password-for-timing-equalisation")
+
+
 @router.post("/auth/login", response_model=TokenResponse)
-async def platform_auth_login(body: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
+async def platform_auth_login(
+    body: LoginRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     client_ip = request.client.host if request.client else "unknown"
     await enforce_rate_limit(client_ip, "platform:login", limit=10, window_seconds=60)
-    result = await db.execute(select(PlatformOwner).where(PlatformOwner.email == body.email, PlatformOwner.is_active == True))
-    owner = result.scalar_one_or_none()
-    if not owner or not verify_password(body.password, owner.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+
+    email = (body.email or "").strip().lower()
+    owner = (
+        await db.execute(
+            select(PlatformOwner)
+            .where(func.lower(PlatformOwner.email) == email, PlatformOwner.is_active == True)  # noqa: E712
+            # Row-locked so two concurrent wrong guesses count as two.
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+    if owner is None:
+        verify_password(body.password, _DUMMY_HASH)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS)
+
+    if owner_lockout.is_locked(owner, owner_lockout.LOGIN):
+        # Rejected before the counter moves, which also keeps the SMS to one
+        # per lock (no increment, no second threshold crossing).
+        verify_password(body.password, _DUMMY_HASH)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS)
+
+    if not verify_password(body.password, owner.password_hash):
+        event_id = await owner_lockout.register_failure(db, owner, owner_lockout.LOGIN, client_ip=client_ip)
+        if event_id is not None:
+            background_tasks.add_task(owner_lockout.send_lockout_notification, owner.id, owner_lockout.LOGIN, event_id)
+            # Returned, not raised: FastAPI drops background tasks when the
+            # handler raises. Body is identical to the raise below.
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": INVALID_CREDENTIALS},
+                background=background_tasks,
+            )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS)
+
+    # A correct password ends the run of failures, lapsed lock and all.
+    owner_lockout.clear(owner, owner_lockout.LOGIN)
     owner.last_login_at = datetime.now(timezone.utc)
     await db.commit()
     return platform_owner_token_response(owner)
@@ -251,6 +302,9 @@ async def change_platform_me_password(
     new_password = _validated_password(owner, body, verify_password)
     owner.password_hash = hash_password(new_password)
     owner.token_version = int(owner.token_version or 0) + 1
+    # Whoever can set the password is the owner: a login lock left running
+    # would only hold them out of their own account.
+    owner_lockout.clear(owner, owner_lockout.LOGIN)
     await db.commit()
     await db.refresh(owner)
     logger.warning("platform_owner_password_changed owner_id=%s", owner.id)

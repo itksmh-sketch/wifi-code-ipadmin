@@ -58,14 +58,6 @@ def verify_platform_owner_token(token: str) -> Optional[dict]:
         return None
 
 
-def decode_jwt_any_issuer(token: str) -> Optional[dict]:
-    for verifier in (verify_platform_owner_token, verify_token):
-        payload = verifier(token)
-        if payload is not None:
-            return payload
-    return None
-
-
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 

@@ -11,7 +11,7 @@ import logging
 
 from src.config import get_settings
 from src.db.base import async_session_factory
-from src.db.models import AdminUser
+from src.db.models import AdminUser, PlatformOwner
 from src.modules.platform.settings_service import get_platform_name
 from src.modules.sms.types import SMSSendResult
 from src.utils.phone import mask_phone
@@ -21,8 +21,9 @@ logger = logging.getLogger("admin_accounts.notifications")
 OTP_TTL_MINUTES = 10
 
 
-async def _login_url() -> str:
-    """The admin sign-in link to put in an SMS.
+async def _login_url(path: str = "/admin/login") -> str:
+    """The sign-in link to put in an SMS (the admin one unless ``path`` says
+    otherwise).
 
     Read from the platform_settings table, not straight from config: that row
     is the source of truth a platform owner edits in the portal's Settings
@@ -41,7 +42,7 @@ async def _login_url() -> str:
     except Exception as exc:
         logger.error("admin_sms_app_url_lookup_failed error=%s", exc)
         base = get_settings().platform_app_url
-    return f"{base.rstrip('/')}/admin/login"
+    return f"{base.rstrip('/')}{path}"
 
 
 async def _send(to: str, message: str, *, kind: str) -> SMSSendResult:
@@ -144,6 +145,21 @@ async def send_lockout_sms(admin: AdminUser, *, kind: str) -> SMSSendResult:
             f"If this wasn't you, reset your password at {login_url} once the lock clears."
         )
     return await _send(admin.phone or "", message, kind=f"lockout_{kind}")
+
+
+async def send_platform_owner_lockout_sms(owner: PlatformOwner, *, kind: str) -> SMSSendResult:
+    """Tell the platform owner their sign-in just locked. Fixed wording, like
+    send_lockout_sms and for the same reason. kind: "login"."""
+    from src.modules.platform.owner_lockout import LOGIN_LOCKOUT_HOURS, LOGIN_MAX_ATTEMPTS
+
+    login_url = await _login_url("/platform/login")
+    name = await get_platform_name()
+    message = (
+        f"{name} security: platform owner sign-in was locked for {LOGIN_LOCKOUT_HOURS} hour after "
+        f"{LOGIN_MAX_ATTEMPTS} failed attempts. If this wasn't you, change your password at "
+        f"{login_url} once the lock clears."
+    )
+    return await _send(owner.phone or "", message, kind=f"platform_owner_lockout_{kind}")
 
 
 async def send_phone_changed_sms(old_phone: str, admin: AdminUser) -> SMSSendResult:
