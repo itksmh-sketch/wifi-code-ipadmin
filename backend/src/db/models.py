@@ -19,6 +19,71 @@ class PlatformOwner(Base):
     # Embedded in every platform-owner JWT ("tv"); bump it to invalidate all of
     # this owner's outstanding access and refresh tokens (mirrors AdminUser).
     token_version = Column(Integer, nullable=False, server_default="0", default=0)
+    # Only a verified phone receives codes (setup, recovery, lockout alerts).
+    phone = Column(String(64), nullable=True)
+    phone_verified = Column(Boolean, nullable=False, server_default="false", default=False)
+    # Key into SECURITY_QUESTIONS; answer is bcrypt over normalize_answer().
+    security_question = Column(String(64), nullable=True)
+    security_answer_hash = Column(Text, nullable=True)
+    security_answer_attempt_count = Column(Integer, nullable=False, server_default="0", default=0)
+    # Character challenge: {"v": 1, "salt": hex, "digests": [hex, ...]}, one
+    # keyed HMAC per position, never the code itself. See migration 053.
+    challenge_hashes = Column(JSONB, nullable=True)
+    challenge_set_at = Column(DateTime(timezone=True), nullable=True)
+    # Positions currently being asked (fixed until passed) and the jti of the
+    # one login-challenge token allowed to answer them (rotated per password
+    # success, so each challenge token is single-use).
+    challenge_pending_positions = Column(JSONB, nullable=True)
+    challenge_pending_jti = Column(UUID(as_uuid=True), nullable=True)
+    # Two independent lockouts; a lock is a timestamp and lapses on its own.
+    challenge_attempt_count = Column(Integer, nullable=False, server_default="0", default=0)
+    challenge_locked_until = Column(DateTime(timezone=True), nullable=True)
+    login_attempt_count = Column(Integer, nullable=False, server_default="0", default=0)
+    login_locked_until = Column(DateTime(timezone=True), nullable=True)
+    # TRUE until phone, security question and character code are all set up.
+    # While TRUE, login is password-only and every route except setup is gated.
+    must_complete_security_setup = Column(Boolean, nullable=False, server_default="true", default=True)
+
+
+class PlatformOwnerOtpCode(Base):
+    """One-time codes for the platform owner. Same shape and rules as
+    AdminOtpCode; a separate table because that one's FK is to admin_users."""
+
+    __tablename__ = "platform_owner_otp_codes"
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('setup', 'reset', 'challenge_reset', 'phone_change')",
+            name="ck_platform_owner_otp_codes_purpose",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    platform_owner_id = Column(UUID(as_uuid=True), ForeignKey("platform_owners.id", ondelete="CASCADE"), nullable=False)
+    # A CHECK-constrained string, not an ENUM: see migration 053.
+    purpose = Column(String(32), nullable=False)
+    phone = Column(String(64), nullable=False)
+    code_hash = Column(Text, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    attempt_count = Column(Integer, nullable=False, server_default="0", default=0)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PlatformOwnerSecurityEvent(Base):
+    """Audit trail for the platform owner's account security (lockouts, setup,
+    resets, break-glass). AdminSecurityEvent can't hold these: it requires an
+    admin_user_id and an isp_operator_id."""
+
+    __tablename__ = "platform_owner_security_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    platform_owner_id = Column(UUID(as_uuid=True), ForeignKey("platform_owners.id", ondelete="CASCADE"), nullable=False)
+    event_type = Column(String(40), nullable=False)
+    # Masked, non-secret context only — never a code, answer, digest or hash.
+    detail = Column(JSONB, nullable=True)
+    sms_sent = Column(Boolean, nullable=False, server_default="false", default=False)
+    sms_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class ISPOperator(Base):
