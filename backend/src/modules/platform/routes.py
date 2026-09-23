@@ -1300,7 +1300,7 @@ async def get_platform_settings(
     """Return all platform-level settings as a flat key/value object.
 
     Keys: wg_server_endpoint, platform_app_url, webhook_base_url,
-    platform_support_email. Values come
+    platform_support_email, platform_trial_days. Values come
     from the platform_settings table, falling back to the .env/config default.
     """
     from src.modules.platform.settings_service import get_all_settings
@@ -1315,6 +1315,7 @@ async def update_platform_settings(
 ):
     """Update one or more platform settings. Only known safe keys are allowed."""
     from src.modules.platform.settings_service import PLATFORM_SETTING_KEYS, get_all_settings, set_setting
+    from src.modules.applications.service import TRIAL_DAYS_MAX
 
     unknown = set(updates) - set(PLATFORM_SETTING_KEYS)
     if unknown:
@@ -1336,6 +1337,16 @@ async def update_platform_settings(
                 status_code=400,
                 detail="Support email must be a valid email address, like support@example.com.",
             )
+    # Stamped onto each new operator's trial_ends_at at approval; a blank would
+    # silently fall back to TRIAL_DAYS, so it is refused like the support email.
+    if "platform_trial_days" in cleaned:
+        raw = cleaned["platform_trial_days"].strip()
+        if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= TRIAL_DAYS_MAX:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Trial length must be a whole number of days between 1 and {TRIAL_DAYS_MAX}.",
+            )
+        cleaned["platform_trial_days"] = str(int(raw))
     for key, value in cleaned.items():
         await set_setting(db, key, value)
     await db.commit()

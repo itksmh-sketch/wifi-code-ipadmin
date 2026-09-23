@@ -1,4 +1,5 @@
 ﻿from __future__ import annotations
+import logging
 import re
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -20,6 +21,45 @@ from src.modules.sms.types import SMSSendResult
 from src.modules.billing.service import get_default_monthly_fee
 from src.modules.notifications import dispatcher as notify
 from src.modules.applications.schemas import ApplicationSubmit
+
+logger = logging.getLogger("applications.service")
+
+TRIAL_SETTING_KEY = "platform_trial_days"
+TRIAL_DAYS_MAX = 365
+_TRIAL_DAYS_FALLBACK = 14
+
+
+def _coerce_trial_days(value) -> int | None:
+    try:
+        days = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return days if 1 <= days <= TRIAL_DAYS_MAX else None
+
+
+async def get_trial_days() -> int:
+    """The free-trial length a newly approved operator is stamped with.
+
+    Resolution order — platform_settings row (edited on the portal's Settings
+    page), then TRIAL_DAYS from config/.env, then 14. The value is read once at
+    approval and frozen into trial_ends_at; nothing re-derives a trial from it.
+
+    Own short-lived session, like dispatcher._support_email: a failed lookup
+    falls back to config instead of aborting the caller's approval transaction.
+    """
+    try:
+        from src.db.base import async_session_factory
+        from src.modules.platform.settings_service import get_setting
+
+        async with async_session_factory() as db:
+            stored = await get_setting(db, TRIAL_SETTING_KEY)
+        resolved = _coerce_trial_days(stored)
+        if resolved is not None:
+            return resolved
+        logger.error("trial_days_setting_invalid value=%r — using config", stored)
+    except Exception as exc:
+        logger.error("trial_days_lookup_failed error=%s — using config", exc)
+    return _coerce_trial_days(get_settings().trial_days) or _TRIAL_DAYS_FALLBACK
 
 
 def _generate_slug(name: str) -> str:
@@ -123,12 +163,12 @@ async def approve_application(
 ) -> tuple[ISPOperator, str, SMSSendResult]:
     """Returns (operator, temp_password, temp-password SMS result).
 
-    The operator's monthly fee is stamped from the platform default at approval
-    time — never supplied by the caller — and stays fixed at that value.
+    The operator's monthly fee and trial length are stamped from the platform
+    defaults at approval time — never supplied by the caller — and stay fixed.
     """
-    settings = get_settings()
     now = datetime.now(timezone.utc)
 
+    trial_days = await get_trial_days()
     monthly_fee_ghs = await get_default_monthly_fee(db)
     base_slug = await _unique_slug(db, _generate_slug(app.isp_name))
 
@@ -142,7 +182,7 @@ async def approve_application(
         approved_by_platform_owner_id=platform_owner_id,
         monthly_fee_ghs=monthly_fee_ghs,
         billing_status="trial",
-        trial_ends_at=now + timedelta(days=settings.trial_days),
+        trial_ends_at=now + timedelta(days=trial_days),
         onboarding_checklist={},
     )
     db.add(operator)
@@ -163,7 +203,7 @@ async def approve_application(
         isp_operator_id=operator.id,
         event_type="trial_started",
         description=f"Trial started for {operator.name}. Ends {operator.trial_ends_at.date()}.",
-        event_metadata={"trial_days": settings.trial_days, "monthly_fee_ghs": str(monthly_fee_ghs)},
+        event_metadata={"trial_days": trial_days, "monthly_fee_ghs": str(monthly_fee_ghs)},
     )
     db.add(event)
 
@@ -181,7 +221,7 @@ async def approve_application(
             isp_name=app.isp_name,
             admin_email=app.email,
             temp_password=temp_password,
-            trial_days=settings.trial_days,
+            trial_days=trial_days,
             send_sms=False,
         )
     except Exception:

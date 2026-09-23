@@ -20,6 +20,9 @@ PLATFORM_SETTING_KEYS = {
     # Shown to applicants in the application-received/rejected messages.
     # Seeded by migration 049 with the real address.
     "platform_support_email": "platform_support_email",
+    # Free-trial length stamped onto an operator at approval. Unset falls back
+    # to TRIAL_DAYS; read through applications.service.get_trial_days.
+    "platform_trial_days": "trial_days",
 }
 
 

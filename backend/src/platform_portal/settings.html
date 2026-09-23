@@ -94,6 +94,10 @@
       <label>Support Email</label>
       <input id="platform_support_email" type="email" placeholder="support@yourplatform.com" autocomplete="off">
 
+      <label>Free Trial Length (days)</label>
+      <input id="platform_trial_days" type="number" step="1" min="1" max="365" placeholder="14" autocomplete="off">
+      <p class="text-muted" style="margin:4px 0 12px;font-size:12.5px">Applies to operators approved from now on. Each operator's trial end date is fixed when they are approved, so changing this never moves an existing trial.</p>
+
       <div class="spacer"></div>
       <div style="display:flex;gap:10px">
         <button class="btn primary" type="submit" id="save-btn">Save changes</button>
@@ -178,7 +182,7 @@
 <div id="toast">Settings saved</div>
 
 <script>
-const KEYS = ['wg_server_endpoint', 'platform_app_url', 'webhook_base_url', 'platform_support_email'];
+const KEYS = ['wg_server_endpoint', 'platform_app_url', 'webhook_base_url', 'platform_support_email', 'platform_trial_days'];
 
 const token = localStorage.getItem('platform_access_token');
 if (!token) { window.location.replace('/platform/login'); }

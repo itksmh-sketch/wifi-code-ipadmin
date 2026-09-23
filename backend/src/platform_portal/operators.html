@@ -8,6 +8,13 @@
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
   <link rel="stylesheet" href="/platform/statics/app.css">
+  <style>
+    .kv{display:grid;grid-template-columns:130px 1fr;gap:8px 14px;font-size:13px;margin:0 0 16px}
+    .kv dt{color:var(--muted)}
+    .kv dd{margin:0;overflow-wrap:anywhere}
+    .app-message{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13.5px;line-height:1.5;background:#0b1430;color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0 0 16px;max-height:240px;overflow-y:auto}
+    .app-label{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+  </style>
 </head>
 <body>
 <div class="container">
@@ -107,6 +114,22 @@
       <button class="btn primary" id="approve-submit">Approve operator</button>
     </div>
   </div>
+  <!-- Application detail -->
+  <div id="modal-detail" class="card" style="display:none;max-width:560px;width:100%;padding:24px;max-height:90vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px">
+      <div>
+        <div class="card-title" id="detail-title"></div>
+        <div class="text-muted" id="detail-sub"></div>
+      </div>
+      <span id="detail-status"></span>
+    </div>
+    <div class="app-label">Contact</div>
+    <dl class="kv" id="detail-contact"></dl>
+    <div class="app-label">About the business</div>
+    <p class="app-message" id="detail-message"></p>
+    <div id="detail-review"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap" id="detail-actions"></div>
+  </div>
   <!-- Reject -->
   <div id="modal-reject" class="card" style="display:none;max-width:420px;width:100%;padding:24px">
     <div class="card-title" style="margin-bottom:6px">Reject application</div>
@@ -123,7 +146,7 @@
     <div class="card-title" style="margin-bottom:6px">Operator approved</div>
     <p class="text-muted" style="margin:0 0 14px">Share this password securely with the operator. It will not be shown again.</p>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-      <input id="temp-password" readonly style="flex:1;padding:9px 12px;font-size:14px;font-family:monospace;background:#f8fafc">
+      <input id="temp-password" readonly style="flex:1;padding:9px 12px;font-size:14px;font-family:monospace">
       <button class="btn" id="copy-password">Copy</button>
     </div>
     <p class="text-muted" id="password-meta" style="margin:0 0 16px;font-size:13px"></p>
@@ -280,7 +303,7 @@ function renderApps() {
   tbody.innerHTML = allApps.map(a => `
     <tr>
       <td>
-        <div style="font-weight:600">${escHtml(a.isp_name)}</div>
+        <div style="font-weight:600"><a href="#" onclick="openDetail('${a.id}');return false">${escHtml(a.isp_name)}</a></div>
         <div class="text-muted">${escHtml(a.contact_name)}</div>
       </td>
       <td>${escHtml(a.email)}</td>
@@ -291,10 +314,11 @@ function renderApps() {
       <td>${fmtDate(a.created_at)}</td>
       <td>
         <div class="actions">
+          <button class="btn sm" onclick="openDetail('${a.id}')">View</button>
           ${a.status === 'pending'
             ? `<button class="btn sm primary" onclick="openApprove('${a.id}')">Approve</button>
                <button class="btn sm danger" onclick="openReject('${a.id}')">Reject</button>`
-            : (a.status === 'rejected' && a.rejection_reason ? `<span class="text-muted" title="${escHtml(a.rejection_reason)}">Rejected</span>` : '')}
+            : ''}
         </div>
       </td>
     </tr>
@@ -306,13 +330,64 @@ let currentAppId = null;
 
 function showOverlay(which) {
   document.getElementById('modal-overlay').style.display = 'flex';
-  ['modal-approve', 'modal-reject', 'modal-password'].forEach(id => {
+  ['modal-detail', 'modal-approve', 'modal-reject', 'modal-password'].forEach(id => {
     document.getElementById(id).style.display = id === which ? 'block' : 'none';
   });
 }
 function closeModals() {
   document.getElementById('modal-overlay').style.display = 'none';
   currentAppId = null;
+}
+
+function fmtDateTime(s) {
+  if (!s) return '—';
+  return new Date(s).toLocaleString('en-GB', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit'});
+}
+
+// Everything shown here is already in allApps — the list endpoint returns the
+// full record. The linked operator's name comes from allOperators, so no extra
+// request; an operator missing from that list still gets its link.
+function openDetail(id) {
+  const a = allApps.find(x => x.id === id);
+  if (!a) return;
+  currentAppId = id;
+  document.getElementById('detail-title').textContent = a.isp_name;
+  document.getElementById('detail-sub').textContent = `Submitted ${fmtDateTime(a.created_at)}`;
+  document.getElementById('detail-status').innerHTML = badge(a.status);
+
+  const tel = String(a.phone || '').replace(/[^+0-9]/g, '');
+  document.getElementById('detail-contact').innerHTML = `
+    <dt>Contact name</dt><dd>${escHtml(a.contact_name)}</dd>
+    <dt>Email</dt><dd><a href="mailto:${escHtml(a.email)}">${escHtml(a.email)}</a></dd>
+    <dt>Phone</dt><dd><a href="tel:${escHtml(tel)}">${escHtml(a.phone)}</a></dd>
+    <dt>Region</dt><dd>${escHtml(a.region)}</dd>
+    <dt>Expected sites</dt><dd>${a.expected_sites ?? '—'}</dd>`;
+
+  const msg = document.getElementById('detail-message');
+  msg.textContent = a.message || 'No description given.';
+  msg.classList.toggle('text-muted', !a.message);
+
+  let review = '';
+  if (a.status !== 'pending') {
+    const rows = [`<dt>${a.status === 'approved' ? 'Approved' : 'Rejected'}</dt><dd>${fmtDateTime(a.reviewed_at)}</dd>`];
+    if (a.isp_operator_id) {
+      const op = allOperators.find(o => o.id === a.isp_operator_id);
+      rows.push(`<dt>Operator</dt><dd><a href="/platform/operators/${a.isp_operator_id}">${escHtml(op ? op.name : 'Open operator')}</a>${op ? ` <span class="text-muted">${escHtml(op.slug)}</span>` : ''}</dd>`);
+    }
+    review = `<div class="app-label">Review</div><dl class="kv">${rows.join('')}</dl>`;
+    if (a.status === 'rejected') {
+      review += `<div class="app-label">Rejection reason</div>
+        <p class="app-message">${a.rejection_reason ? escHtml(a.rejection_reason) : '<span class="text-muted">No reason recorded.</span>'}</p>`;
+    }
+  }
+  document.getElementById('detail-review').innerHTML = review;
+
+  document.getElementById('detail-actions').innerHTML = a.status === 'pending'
+    ? `<button class="btn" onclick="closeModals()">Close</button>
+       <button class="btn danger" onclick="openReject('${a.id}')">Reject</button>
+       <button class="btn primary" onclick="openApprove('${a.id}')">Approve</button>`
+    : `<button class="btn primary" onclick="closeModals()">Close</button>`;
+  showOverlay('modal-detail');
 }
 
 function openApprove(id) {
@@ -359,10 +434,10 @@ document.getElementById('reject-submit').addEventListener('click', async () => {
   });
   const data = await res.json();
   if (!res.ok) { alert(data.detail || 'Failed to reject'); return; }
-  // Remove the rejected application from the pending list.
-  allApps = allApps.filter(a => a.id !== currentAppId);
-  renderApps();
+  // Reload rather than drop the row: a rejected application stays listed,
+  // with its reason and review time in the detail view.
   closeModals();
+  await loadApplications();
 });
 
 document.getElementById('copy-password').addEventListener('click', () => {
