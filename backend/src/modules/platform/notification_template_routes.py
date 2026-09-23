@@ -27,6 +27,7 @@ from src.db.models import PlatformNotificationTemplate, PlatformOwner
 from src.middleware.auth import get_platform_owner_context
 from src.modules.notifications import template_catalog as catalog
 from src.modules.notifications import template_store
+from src.modules.platform.settings_service import get_platform_name
 
 logger = logging.getLogger("platform.notification_templates")
 
@@ -45,7 +46,15 @@ def _known(event: str, channel: str) -> None:
         raise HTTPException(status_code=404, detail=f"No such notification template: {event}/{channel}.")
 
 
-def _describe(event: str, channel: str, current: catalog.TemplateDef, *, is_default: bool, updated_at=None) -> dict:
+def _describe(
+    event: str,
+    channel: str,
+    current: catalog.TemplateDef,
+    *,
+    is_default: bool,
+    platform_name: str,
+    updated_at=None,
+) -> dict:
     definition = catalog.EVENTS[event]
     default = catalog.DEFAULTS[(event, channel)]
     return {
@@ -73,7 +82,12 @@ def _describe(event: str, channel: str, current: catalog.TemplateDef, *, is_defa
         ],
         "max_sms_segments": catalog.MAX_SMS_SEGMENTS if channel == catalog.SMS else None,
         "preview": catalog.preview(
-            event, channel, subject=current.subject, body_text=current.body_text, body_html=current.body_html
+            event,
+            channel,
+            subject=current.subject,
+            body_text=current.body_text,
+            body_html=current.body_html,
+            platform_name=platform_name,
         ),
     }
 
@@ -105,6 +119,7 @@ async def list_templates(
     # One query for all eighteen, then resolve from it — the per-template loader
     # would issue a SELECT each time round the loop.
     rows = {(r.event_type, r.channel): r for r in (await db.execute(select(PlatformNotificationTemplate))).scalars()}
+    platform_name = await get_platform_name()
     items = []
     for event in catalog.EVENTS:
         for channel in catalog.CHANNELS:
@@ -123,6 +138,7 @@ async def list_templates(
                     channel,
                     current,
                     is_default=row is None or _matches_default(row, default),
+                    platform_name=platform_name,
                     updated_at=row.updated_at if row else None,
                 )
             )
@@ -144,6 +160,7 @@ async def get_template(
         channel,
         current,
         is_default=row is None or _matches_default(row, catalog.DEFAULTS[(event, channel)]),
+        platform_name=await get_platform_name(),
         updated_at=row.updated_at if row else None,
     )
 
@@ -157,8 +174,14 @@ async def preview_template(
 ):
     """Validate and measure without saving — what the editor calls as you type."""
     _known(event, channel)
+    platform_name = await get_platform_name()
     error = catalog.validation_error(
-        event, channel, subject=payload.subject, body_text=payload.body_text, body_html=payload.body_html
+        event,
+        channel,
+        subject=payload.subject,
+        body_text=payload.body_text,
+        body_html=payload.body_html,
+        platform_name=platform_name,
     )
     if error:
         return {"valid": False, "error": error, "preview": None}
@@ -166,7 +189,12 @@ async def preview_template(
         "valid": True,
         "error": None,
         "preview": catalog.preview(
-            event, channel, subject=payload.subject, body_text=payload.body_text, body_html=payload.body_html
+            event,
+            channel,
+            subject=payload.subject,
+            body_text=payload.body_text,
+            body_html=payload.body_html,
+            platform_name=platform_name,
         ),
     }
 
@@ -183,7 +211,12 @@ async def update_template(
     subject = payload.subject if channel == catalog.EMAIL else None
     body_html = payload.body_html if channel == catalog.EMAIL else None
     error = catalog.validation_error(
-        event, channel, subject=subject, body_text=payload.body_text, body_html=body_html
+        event,
+        channel,
+        subject=subject,
+        body_text=payload.body_text,
+        body_html=body_html,
+        platform_name=await get_platform_name(),
     )
     if error:
         raise HTTPException(status_code=400, detail=error)

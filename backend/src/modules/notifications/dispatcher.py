@@ -21,7 +21,7 @@ from decimal import Decimal
 
 from src.modules.notifications.email.service import get_email_service
 from src.modules.notifications import template_store as store
-from src.modules.notifications.template_catalog import DEFAULT_PLATFORM_NAME
+from src.modules.platform.settings_service import get_platform_name
 from src.config import get_settings
 
 logger = logging.getLogger("notifications.dispatcher")
@@ -109,7 +109,7 @@ async def notify_application_received(*, email: str, contact_name: str, isp_name
         "contact_name": contact_name,
         "isp_name": isp_name,
         "support_email": await _support_email(),
-        "platform_name": DEFAULT_PLATFORM_NAME,
+        "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("application_received", values)
     await _send_email(email, subj, html, text)
@@ -136,7 +136,7 @@ async def notify_application_approved(
         "admin_email": admin_email,
         "temp_password": temp_password,
         "trial_days": trial_days,
-        "platform_name": DEFAULT_PLATFORM_NAME,
+        "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("application_approved", values)
     await _send_email(email, subj, html, text)
@@ -158,7 +158,7 @@ async def notify_application_rejected(
         "isp_name": isp_name,
         "rejection_reason": rejection_reason,
         "support_email": await _support_email(),
-        "platform_name": DEFAULT_PLATFORM_NAME,
+        "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("application_rejected", values)
     await _send_email(email, subj, html, text)
@@ -180,7 +180,7 @@ async def notify_trial_expiry_warning(
         "days_remaining": days_remaining,
         "monthly_fee_ghs": monthly_fee_ghs,
         "billing_url": f"{_settings().platform_app_url}/admin/billing",
-        "platform_name": DEFAULT_PLATFORM_NAME,
+        "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("trial_expiry_warning", values)
     await _send_email(email, subj, html, text)
@@ -191,7 +191,7 @@ async def notify_trial_expired(*, email: str, phone: str, isp_name: str) -> None
     values = {
         "isp_name": isp_name,
         "billing_url": f"{_settings().platform_app_url}/admin/billing",
-        "platform_name": DEFAULT_PLATFORM_NAME,
+        "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("trial_expired", values)
     await _send_email(email, subj, html, text)
@@ -218,7 +218,7 @@ async def notify_invoice_issued(
         "period_end": period_end,
         "due_date": due_date,
         "payment_url": payment_url,
-        "platform_name": DEFAULT_PLATFORM_NAME,
+        "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("invoice_issued", values)
     await _send_email(email, subj, html, text)
@@ -241,7 +241,7 @@ async def notify_grace_period(
         "amount_ghs": amount_ghs,
         "suspension_date": suspension_date,
         "payment_url": payment_url,
-        "platform_name": DEFAULT_PLATFORM_NAME,
+        "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("grace_period", values)
     await _send_email(email, subj, html, text)
@@ -252,7 +252,7 @@ async def notify_suspended(*, email: str, phone: str, isp_name: str) -> None:
     values = {
         "isp_name": isp_name,
         "payment_url": f"{_settings().platform_app_url}/admin/billing",
-        "platform_name": DEFAULT_PLATFORM_NAME,
+        "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("account_suspended", values)
     await _send_email(email, subj, html, text)
@@ -263,7 +263,7 @@ async def notify_reactivated(*, email: str, phone: str, isp_name: str, next_invo
     values = {
         "isp_name": isp_name,
         "next_invoice_date": next_invoice_date,
-        "platform_name": DEFAULT_PLATFORM_NAME,
+        "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("account_reactivated", values)
     await _send_email(email, subj, html, text)

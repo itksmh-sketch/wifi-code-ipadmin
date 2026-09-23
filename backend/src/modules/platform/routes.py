@@ -1300,7 +1300,7 @@ async def get_platform_settings(
     """Return all platform-level settings as a flat key/value object.
 
     Keys: wg_server_endpoint, platform_app_url, webhook_base_url,
-    platform_support_email, platform_trial_days. Values come
+    platform_support_email, platform_trial_days, platform_name. Values come
     from the platform_settings table, falling back to the .env/config default.
     """
     from src.modules.platform.settings_service import get_all_settings
@@ -1314,7 +1314,9 @@ async def update_platform_settings(
     owner: PlatformOwner = Depends(get_platform_owner_context),
 ):
     """Update one or more platform settings. Only known safe keys are allowed."""
-    from src.modules.platform.settings_service import PLATFORM_SETTING_KEYS, get_all_settings, set_setting
+    from src.modules.platform.settings_service import (
+        PLATFORM_NAME_MAX_LENGTH, PLATFORM_SETTING_KEYS, get_all_settings, set_setting,
+    )
     from src.modules.applications.service import TRIAL_DAYS_MAX
 
     unknown = set(updates) - set(PLATFORM_SETTING_KEYS)
@@ -1347,6 +1349,16 @@ async def update_platform_settings(
                 detail=f"Trial length must be a whole number of days between 1 and {TRIAL_DAYS_MAX}.",
             )
         cleaned["platform_trial_days"] = str(int(raw))
+    # Lands in every operator notification, SMS included, where each extra
+    # character counts against the segment cap the templates were checked at.
+    if "platform_name" in cleaned:
+        name = " ".join(cleaned["platform_name"].split())
+        if not name or len(name) > PLATFORM_NAME_MAX_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Platform name is required and must be at most {PLATFORM_NAME_MAX_LENGTH} characters.",
+            )
+        cleaned["platform_name"] = name
     for key, value in cleaned.items():
         await set_setting(db, key, value)
     await db.commit()

@@ -12,6 +12,7 @@ import logging
 from src.config import get_settings
 from src.db.base import async_session_factory
 from src.db.models import AdminUser
+from src.modules.platform.settings_service import get_platform_name
 from src.modules.sms.types import SMSSendResult
 from src.utils.phone import mask_phone
 
@@ -71,6 +72,7 @@ async def _send(to: str, message: str, *, kind: str) -> SMSSendResult:
 async def send_temp_password_sms(admin: AdminUser, temp_password: str, *, reason: str = "new") -> SMSSendResult:
     """reason: "new" (account just created) or "reset" (a platform owner reset it)."""
     login_url = await _login_url()
+    name = await get_platform_name()
     if reason == "reset":
         next_step = (
             "You'll be asked to choose a new password."
@@ -78,13 +80,13 @@ async def send_temp_password_sms(admin: AdminUser, temp_password: str, *, reason
             else "You'll be asked to verify this phone and choose a new password."
         )
         message = (
-            f"IpAdmin: your admin password was reset by platform support and you were signed out. "
+            f"{name}: your admin password was reset by platform support and you were signed out. "
             f"Sign in at {login_url} with email {admin.email} and temporary password {temp_password}. "
             f"{next_step}"
         )
     else:
         message = (
-            f"IpAdmin: your admin account is ready. Sign in at {login_url} "
+            f"{name}: your admin account is ready. Sign in at {login_url} "
             f"with email {admin.email} and temporary password {temp_password}. "
             "You'll be asked to verify this phone and choose your own password."
         )
@@ -104,8 +106,9 @@ _OTP_ACTIONS = {
 
 async def send_otp_sms(phone: str, code: str, *, purpose: str) -> SMSSendResult:
     action = _OTP_ACTIONS.get(purpose, "reset your password")
+    name = await get_platform_name()
     message = (
-        f"IpAdmin code: {code}. Use it to {action}. "
+        f"{name} code: {code}. Use it to {action}. "
         f"It expires in {OTP_TTL_MINUTES} minutes. Never share this code."
     )
     return await _send(phone, message, kind=f"otp_{purpose}")
@@ -127,15 +130,16 @@ async def send_lockout_sms(admin: AdminUser, *, kind: str) -> SMSSendResult:
     from src.modules.admin_accounts.lockout import LOCKOUT_HOURS, LOGIN_MAX_ATTEMPTS, PIN_MAX_ATTEMPTS
 
     login_url = await _login_url()
+    name = await get_platform_name()
     if kind == "pin":
         message = (
-            f"IpAdmin security: your PIN was locked for {LOCKOUT_HOURS} hours after "
+            f"{name} security: your PIN was locked for {LOCKOUT_HOURS} hours after "
             f"{PIN_MAX_ATTEMPTS} incorrect entries, and you were signed out everywhere. "
             f"If this wasn't you, change your password now at {login_url}."
         )
     else:
         message = (
-            f"IpAdmin security: your account was locked for {LOCKOUT_HOURS} hours after "
+            f"{name} security: your account was locked for {LOCKOUT_HOURS} hours after "
             f"{LOGIN_MAX_ATTEMPTS} failed sign-in attempts. "
             f"If this wasn't you, reset your password at {login_url} once the lock clears."
         )
@@ -154,8 +158,9 @@ async def send_phone_changed_sms(old_phone: str, admin: AdminUser) -> SMSSendRes
     an attacker cannot intercept, and it goes out before they can benefit.
     """
     login_url = await _login_url()
+    name = await get_platform_name()
     message = (
-        f"IpAdmin security: the phone number on admin account {admin.email} was just changed to a "
+        f"{name} security: the phone number on admin account {admin.email} was just changed to a "
         f"different number, so alerts and reset codes will no longer come here. "
         f"If this wasn't you, sign in at {login_url} and change your password immediately."
     )

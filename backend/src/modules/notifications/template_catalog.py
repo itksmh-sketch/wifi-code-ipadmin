@@ -35,8 +35,9 @@ EMAIL = "email"
 SMS = "sms"
 CHANNELS = (EMAIL, SMS)
 
-# No platform-name setting exists; this is the value the email defaults have
-# always carried, so {platform_name} renders today's text unchanged.
+# The name the email defaults carried before {platform_name} existed; kept so
+# the legacy-parity tests can reproduce that text. Real sends and previews use
+# the platform_name setting (settings_service.get_platform_name) instead.
 DEFAULT_PLATFORM_NAME = "YourISP Platform"
 
 # A platform notification may legitimately need two segments (the approval SMS
@@ -478,15 +479,30 @@ SAMPLE_VALUES: dict[str, str] = {
 }
 
 
-def sample_values(event: str) -> dict[str, str]:
-    """Only the placeholders this event actually offers."""
+def sample_values(event: str, *, platform_name: str | None = None) -> dict[str, str]:
+    """Only the placeholders this event actually offers.
+
+    platform_name: the real configured name, so the preview (and its segment
+    count) shows what operators will actually receive.
+    """
     definition = EVENTS[event]
-    return {name: SAMPLE_VALUES[name] for name in definition.placeholders}
+    values = {name: SAMPLE_VALUES[name] for name in definition.placeholders}
+    if platform_name and "platform_name" in values:
+        values["platform_name"] = platform_name
+    return values
 
 
-def preview(event: str, channel: str, *, subject: str | None, body_text: str, body_html: str | None) -> dict:
+def preview(
+    event: str,
+    channel: str,
+    *,
+    subject: str | None,
+    body_text: str,
+    body_html: str | None,
+    platform_name: str | None = None,
+) -> dict:
     """Render the sample values and, for SMS, measure the real segment count."""
-    values = sample_values(event)
+    values = sample_values(event, platform_name=platform_name)
     if channel == SMS:
         text = render_sms(body_text, values)
         info = count_sms_segments(text)
@@ -526,9 +542,18 @@ def _placeholder_error(text: str, definition: EventDef, where: str) -> str | Non
 
 
 def validation_error(
-    event: str, channel: str, *, subject: str | None, body_text: str, body_html: str | None
+    event: str,
+    channel: str,
+    *,
+    subject: str | None,
+    body_text: str,
+    body_html: str | None,
+    platform_name: str | None = None,
 ) -> str | None:
-    """None when the edit is safe to store, else the message to show."""
+    """None when the edit is safe to store, else the message to show.
+
+    platform_name: measure the SMS segment count with the real configured name.
+    """
     if event not in EVENTS:
         return f"Unknown notification: {event}."
     if channel not in CHANNELS:
@@ -569,7 +594,9 @@ def validation_error(
             )
 
     if channel == SMS:
-        measured = preview(event, SMS, subject=None, body_text=body_text, body_html=None)
+        measured = preview(
+            event, SMS, subject=None, body_text=body_text, body_html=None, platform_name=platform_name
+        )
         if measured["segment_count"] > MAX_SMS_SEGMENTS:
             limit = 160 if measured["encoding"] == "gsm7" else 70
             return (
