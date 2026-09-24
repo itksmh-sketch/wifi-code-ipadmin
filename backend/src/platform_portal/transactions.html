@@ -7,27 +7,10 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=3">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=4">
   <style>
-    #toast{position:fixed;top:20px;right:20px;z-index:1000;padding:12px 18px;border-radius:10px;
-      border:1px solid rgba(34,197,94,.35);background:rgba(34,197,94,.16);color:#bbf7d0;font-size:14px;
-      font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(-8px);
-      transition:opacity .2s,transform .2s;pointer-events:none}
-    #toast.show{opacity:1;transform:translateY(0)}
-    #toast.bad{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.16);color:#fca5a5}
-
-    .switch{position:relative;display:inline-block;width:42px;height:24px;flex:none}
-    .switch input{position:absolute;opacity:0;width:0;height:0;padding:0;margin:0}
-    .slider{position:absolute;inset:0;border-radius:999px;background:var(--surface-raised-hover);border:1px solid var(--border);
-      cursor:pointer;transition:background .15s,border-color .15s}
-    .slider::before{content:"";position:absolute;height:16px;width:16px;left:3px;top:3px;border-radius:50%;
-      background:var(--muted);transition:transform .15s,background .15s}
-    .switch input:checked + .slider{background:rgba(245,158,11,.3);border-color:rgba(245,158,11,.5)}
-    .switch input:checked + .slider::before{transform:translateX(18px);background:#f59e0b}
-    .switch input:focus-visible + .slider{box-shadow:0 0 0 3px rgba(99,102,241,.25)}
-    .switch input:disabled + .slider{cursor:not-allowed;opacity:.4}
-
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--muted)}
+    /* Toast and switch come from app.css. */
+    .mono{font-family:var(--mono);font-size:var(--fs-xs);color:var(--muted)}
     .num{font-variant-numeric:tabular-nums}
     .pager{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:14px;font-size:13px;color:var(--muted)}
     .filters{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
@@ -42,7 +25,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=3"></script>
+  <script src="/platform/statics/nav.js?v=4"></script>
 
   <div class="section-title">Transactions</div>
   <p class="section-sub">
@@ -80,7 +63,7 @@
             <tr>
               <th>Date</th>
               <th>Operator</th>
-              <th>Amount (GHS)</th>
+              <th class="qty">Amount (GHS)</th>
               <th>Method</th>
               <th>Status</th>
               <th>Reference</th>
@@ -115,9 +98,9 @@
             <tr>
               <th>Sent</th>
               <th>Operator</th>
-              <th>Segments</th>
-              <th>Rate</th>
-              <th>Amount (GHS)</th>
+              <th class="qty">Segments</th>
+              <th class="qty">Rate</th>
+              <th class="qty">Amount (GHS)</th>
               <th>Billed</th>
               <th>Diagnostic</th>
             </tr>
@@ -136,18 +119,14 @@
   <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
 </div>
 
-<div id="toast"></div>
+<div id="toast" class="toast" role="status"></div>
 
-<script src="/platform/statics/setup-guard.js?v=3"></script>
+<script src="/platform/statics/setup-guard.js?v=4"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
-if (!token) { window.location.replace('/platform/login'); }
-
-document.getElementById('logout-btn').addEventListener('click', () => {
-  localStorage.removeItem('platform_access_token');
-  localStorage.removeItem('platform_refresh_token');
-  window.location.href = '/platform/login';
-});
+// Stop here when signed out: every API call below would fail and flash an
+// error before the redirect lands. Sign-out itself is handled by nav.js.
+if (!token) { window.location.replace('/platform/login'); throw new Error('Signed out: redirecting to login'); }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -177,7 +156,7 @@ let toastTimer = null;
 function showToast(text, bad) {
   const t = document.getElementById('toast');
   t.textContent = text;
-  t.className = bad ? 'bad show' : 'show';
+  t.className = bad ? 'toast bad show' : 'toast show';
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
 }
@@ -202,7 +181,7 @@ function diagnosticCell(tx) {
   const dis = canToggle ? '' : ' disabled';
   const chk = tx.is_diagnostic ? ' checked' : '';
   const title = canToggle ? '' : ' title="Only success/failed/reversed transactions can be flagged."';
-  return `<label class="switch"${title}>`
+  return `<label class="switch warn"${title}>`
        + `<input type="checkbox" data-kind="tx" data-id="${esc(tx.id)}"${chk}${dis}>`
        + `<span class="slider"></span></label>`;
 }
@@ -213,7 +192,7 @@ function usageDiagnosticCell(rec) {
   const chk = rec.is_diagnostic ? ' checked' : '';
   const title = rec.is_billed
     ? ' title="Already billed on an invoice — can no longer be flagged."' : '';
-  return `<label class="switch"${title}>`
+  return `<label class="switch warn"${title}>`
        + `<input type="checkbox" data-kind="usage" data-id="${esc(rec.id)}"${chk}${dis}>`
        + `<span class="slider"></span></label>`;
 }
@@ -223,7 +202,7 @@ function render(data) {
     <tr>
       <td class="num">${tx.initiated_at ? new Date(tx.initiated_at).toLocaleString() : '—'}</td>
       <td>${esc(tx.operator_name)} <span class="mono">${esc(tx.operator_slug)}</span></td>
-      <td class="num">${tx.amount_ghs}</td>
+      <td class="num qty">${tx.amount_ghs}</td>
       <td>${esc(tx.payment_method)} <span class="mono">${esc(tx.provider)}</span></td>
       <td>${statusCell(tx)}</td>
       <td><span class="mono">${esc(tx.internal_reference)}</span>${tx.phone_number ? `<br><span class="mono">${esc(tx.phone_number)}</span>` : ''}</td>
@@ -307,9 +286,9 @@ function renderUsage(data) {
     <tr>
       <td class="num">${rec.sent_at ? new Date(rec.sent_at).toLocaleString() : '—'}</td>
       <td>${esc(rec.operator_name)} <span class="mono">${esc(rec.operator_slug)}</span></td>
-      <td class="num">${rec.segment_count}</td>
-      <td class="num">${esc(rec.rate_ghs_per_segment)}</td>
-      <td class="num">${rec.amount_ghs}</td>
+      <td class="num qty">${rec.segment_count}</td>
+      <td class="num qty">${esc(rec.rate_ghs_per_segment)}</td>
+      <td class="num qty">${rec.amount_ghs}</td>
       <td>${rec.is_billed
             ? '<span class="badge active">Billed</span>'
             : '<span class="badge pending">Not yet invoiced</span>'}</td>

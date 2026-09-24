@@ -7,8 +7,8 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=3">
-  <script src="/platform/statics/setup-guard.js?v=3"></script>
+  <link rel="stylesheet" href="/platform/statics/app.css?v=4">
+  <script src="/platform/statics/setup-guard.js?v=4"></script>
   <style>
     /* Layout for this page only. Everything it demonstrates comes from app.css. */
     #shell{display:none}
@@ -38,7 +38,6 @@
     .sg-login-demo{display:flex;justify-content:center;flex-wrap:wrap;gap:var(--sp-6);padding:var(--sp-6) 0}
     .sg-controls{display:flex;gap:var(--sp-2);align-items:center;flex-wrap:wrap}
     .sg-controls input,.sg-controls select{width:180px}
-    .sg-num{text-align:right}
   </style>
 </head>
 <body>
@@ -48,7 +47,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=3"></script>
+  <script src="/platform/statics/nav.js?v=4"></script>
 
   <div class="section-title">Style guide</div>
   <p class="section-sub">Every token and component in <code>statics/app.css</code>. Token values below are read live from the stylesheet.
@@ -207,11 +206,11 @@
     <div class="card sg-group">
       <div class="table-wrap">
         <table class="table">
-          <thead><tr><th>Operator</th><th>Status</th><th>Routers</th><th class="sg-num">Revenue (GH₵)</th><th></th></tr></thead>
+          <thead><tr><th>Operator</th><th>Status</th><th>Routers</th><th class="qty">Revenue (GH₵)</th><th></th></tr></thead>
           <tbody>
-            <tr><td>Osu Wireless</td><td><span class="badge active">active</span></td><td><span class="dot good"></span> 3 online</td><td class="sg-num">12,480.00</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
-            <tr><td>Aflao Net</td><td><span class="badge trial">trial</span></td><td><span class="dot warn"></span> 1 degraded</td><td class="sg-num">911.50</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
-            <tr><td>East Legon</td><td><span class="badge past_due">past_due</span></td><td><span class="dot bad"></span> offline</td><td class="sg-num">0.00</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
+            <tr><td>Osu Wireless</td><td><span class="badge active">active</span></td><td><span class="dot good"></span> 3 online</td><td class="qty">12,480.00</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
+            <tr><td>Aflao Net</td><td><span class="badge trial">trial</span></td><td><span class="dot warn"></span> 1 degraded</td><td class="qty">911.50</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
+            <tr><td>East Legon</td><td><span class="badge past_due">past_due</span></td><td><span class="dot bad"></span> offline</td><td class="qty">0.00</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
           </tbody>
         </table>
       </div>
@@ -351,13 +350,9 @@
 
 <script>
 const token = localStorage.getItem('platform_access_token');
-if (!token) { window.location.replace('/platform/login'); }
-
-document.getElementById('logout-btn').addEventListener('click', () => {
-  localStorage.removeItem('platform_access_token');
-  localStorage.removeItem('platform_refresh_token');
-  window.location.href = '/platform/login';
-});
+// Stop here when signed out: every API call below would fail and flash an
+// error before the redirect lands. Sign-out itself is handled by nav.js.
+if (!token) { window.location.replace('/platform/login'); throw new Error('Signed out: redirecting to login'); }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
