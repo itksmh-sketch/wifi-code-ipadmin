@@ -9,6 +9,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
+from platform_owner_session import SEED_CODE_VAR, owner_login_via_request, seeded_owner_code
 from test_multi_tenant_security import _request
 
 from src.db.models import ISPOperator, OperatorPaymentCredential, PaymentTransaction
@@ -17,6 +18,11 @@ from src.modules.payments.service import PaymentService
 from src.modules.payments.types import PaymentMethod, PaymentProviderName
 
 
+# The seeded platform owner. The setup gate refuses an owner whose security
+# setup is pending, so the target server must be seeded with the setup opt-in
+# (see src/db/seeds/seed.py), and these same values passed here:
+#   PLATFORM_OWNER_EMAIL / PLATFORM_OWNER_PASSWORD, SEED_OWNER_CHARACTER_CODE.
+# This suite only talks HTTP; it never writes to the database itself.
 PLATFORM_OWNER_EMAIL = os.getenv("PLATFORM_OWNER_EMAIL", "owner@yourisp.com")
 PLATFORM_OWNER_PASSWORD = os.getenv("PLATFORM_OWNER_PASSWORD", "ChangeMe2024Strong!")
 _PLATFORM_OWNER_TOKEN: str | None = None
@@ -34,12 +40,15 @@ def _login_platform_owner() -> str:
     global _PLATFORM_OWNER_TOKEN
     if _PLATFORM_OWNER_TOKEN:
         return _PLATFORM_OWNER_TOKEN
-    status, body = _request(
-        "POST",
-        "/api/v1/platform/auth/login",
-        body={"email": PLATFORM_OWNER_EMAIL, "password": PLATFORM_OWNER_PASSWORD},
-    )
-    assert status == 200, body
+    code = seeded_owner_code()
+    if code is None:
+        pytest.skip(
+            f"{SEED_CODE_VAR} is not set. Platform-owner sign-in needs the seeded owner's character "
+            f"code: seed the target server with SEED_OWNER_SETUP_COMPLETE=true and "
+            f"{SEED_CODE_VAR}=<code>, then run this suite with the same {SEED_CODE_VAR}."
+        )
+    status, body = owner_login_via_request(_request, PLATFORM_OWNER_EMAIL, PLATFORM_OWNER_PASSWORD, code)
+    assert status == 200 and "access_token" in body, body
     _PLATFORM_OWNER_TOKEN = body["access_token"]
     return _PLATFORM_OWNER_TOKEN
 

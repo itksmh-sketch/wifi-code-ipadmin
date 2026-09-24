@@ -14,6 +14,12 @@ An integration run is now impossible without a deliberate opt-in:
      real gate — it would have stopped every accidental run.
   2. Independently, the effective base URL must not name a known production host
      and must match a local / throwaway / CI pattern.
+  3. Independently, DATABASE_URL must name a throwaway database. Some of these
+     suites also write rows straight into the database (test_billing creates
+     its platform owner that way), and that write goes to whatever
+     DATABASE_URL says — which, inside the backend container, is production,
+     however safe TEST_BASE_URL looks. Unset counts as unsafe: the app would
+     fall back to its default (hotspot_db).
 
 Either failing → pytest exits at collection time (returncode 2) with a loud
 banner. Pure unit-test runs (no integration module collected) are unaffected.
@@ -27,6 +33,7 @@ import sys
 import pytest
 
 _OPT_IN_ENV = "ALLOW_INTEGRATION_TESTS"
+_DATABASE_URL_ENV = "DATABASE_URL"
 _BASE_URL_ENV = "TEST_BASE_URL"
 _DEFAULT_BASE_URL = "http://localhost:8000"
 
@@ -79,8 +86,15 @@ def _effective_base_url() -> str:
     return os.getenv(_BASE_URL_ENV, _DEFAULT_BASE_URL)
 
 
-def _guard_failures(base_url: str) -> list[str]:
+def _database_name(database_url: str) -> str:
+    """The database name from a SQLAlchemy/libpq URL ('' if there isn't one)."""
+    tail = (database_url or "").rsplit("/", 1)[-1] if "/" in (database_url or "") else ""
+    return tail.split("?", 1)[0]
+
+
+def _guard_failures(base_url: str, database_url: str | None = None) -> list[str]:
     problems: list[str] = []
+    database_url = os.getenv(_DATABASE_URL_ENV, "") if database_url is None else database_url
     if os.getenv(_OPT_IN_ENV) != "1":
         problems.append(
             f"{_OPT_IN_ENV} is not set to '1'. Integration tests write to the live "
@@ -99,6 +113,14 @@ def _guard_failures(base_url: str) -> list[str]:
             f"{_BASE_URL_ENV}={base_url!r} does not match the local/CI safe pattern "
             f"(localhost, 127.0.0.1, *.test, *.local, test-*). If this really is "
             f"disposable, widen _SAFE_BASE_URL in tests/conftest.py."
+        )
+    db_name = _database_name(database_url)
+    if "throwaway" not in db_name.lower():
+        shown = db_name or ("unset" if not database_url else "no database name")
+        problems.append(
+            f"{_DATABASE_URL_ENV} does not name a throwaway database (database: {shown}). "
+            f"These suites write rows directly to {_DATABASE_URL_ENV}; point it at the same "
+            f"disposable database as {_BASE_URL_ENV}, with 'throwaway' in its name."
         )
     return problems
 

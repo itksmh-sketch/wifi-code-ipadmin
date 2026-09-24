@@ -12,7 +12,8 @@ import re
 from pathlib import Path
 
 PORTAL = Path(__file__).resolve().parents[1] / "src" / "platform_portal"
-GUARD = '<script src="/platform/statics/setup-guard.js"></script>'
+# The guard's tag, allowing a cache-busting query string (?v=1, ...).
+GUARD = re.compile(r'<script src="/platform/statics/setup-guard\.js(?:\?[^"]*)?"></script>')
 # Pages that must NOT carry the guard: sign-in, and the redirect target itself.
 UNGUARDED = {"login.html", "setup.html"}
 
@@ -29,11 +30,12 @@ def test_every_signed_in_page_loads_the_guard_before_its_own_script():
     missing, late = [], []
     for page in pages():
         html = page.read_text()
-        if GUARD not in html:
+        guard = GUARD.search(html)
+        if guard is None:
             missing.append(page.name)
             continue
         first_inline = re.search(r"<script>", html)
-        if first_inline and html.index(GUARD) > first_inline.start():
+        if first_inline and guard.start() > first_inline.start():
             late.append(page.name)
     assert missing == [], f"pages without the setup guard: {missing}"
     assert late == [], f"guard loaded after the page's own script: {late}"
@@ -41,7 +43,19 @@ def test_every_signed_in_page_loads_the_guard_before_its_own_script():
 
 def test_setup_and_login_pages_do_not_load_the_guard():
     for name in UNGUARDED:
-        assert GUARD not in (PORTAL / name).read_text(), name
+        assert GUARD.search((PORTAL / name).read_text()) is None, name
+
+
+def test_the_guard_pattern_accepts_a_cache_buster_and_nothing_looser():
+    ok = ['<script src="/platform/statics/setup-guard.js"></script>',
+          '<script src="/platform/statics/setup-guard.js?v=1"></script>',
+          '<script src="/platform/statics/setup-guard.js?v=2024-09-24"></script>']
+    bad = ['<script src="/platform/statics/setup-guard.json"></script>',
+           '<script src="/platform/statics/setup-guardXjs"></script>',
+           '<script src="/elsewhere/setup-guard.js"></script>',
+           '<!-- setup-guard.js -->']
+    assert all(GUARD.search(t) for t in ok)
+    assert not any(GUARD.search(t) for t in bad)
 
 
 def test_the_guard_redirects_on_the_header_and_never_settles():

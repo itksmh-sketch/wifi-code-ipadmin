@@ -14,6 +14,7 @@ from decimal import Decimal
 import asyncio
 import pytest
 
+from platform_owner_session import create_ready_owner, owner_login_via_request
 from test_multi_tenant_security import _request
 
 
@@ -29,22 +30,23 @@ def run_async(coro):
         except Exception:
             pass
 
-PLATFORM_OWNER_EMAIL = os.getenv("PLATFORM_OWNER_EMAIL", "owner@yourisp.com")
-PLATFORM_OWNER_PASSWORD = os.getenv("PLATFORM_OWNER_PASSWORD", "ChangeMe2024Strong!")
-
 _PLATFORM_TOKEN: str | None = None
 
 
 def _login_platform_owner() -> str:
+    """A platform owner of this suite's own, created in the completed-setup
+    state (the setup gate refuses everything else), signed in through the
+    password and the character challenge. Created with a direct database
+    write, so DATABASE_URL must be the target server's (throwaway) database;
+    tests/conftest.py refuses the run otherwise."""
     global _PLATFORM_TOKEN
     if _PLATFORM_TOKEN:
         return _PLATFORM_TOKEN
-    status, body = _request(
-        "POST",
-        "/api/v1/platform/auth/login",
-        body={"email": PLATFORM_OWNER_EMAIL, "password": PLATFORM_OWNER_PASSWORD},
-    )
-    assert status == 200, body
+    email = f"billing-owner-{uuid.uuid4().hex[:10]}@ci.test"
+    password = f"Billing-{uuid.uuid4().hex[:12]}"
+    code = run_async(create_ready_owner(email, password))
+    status, body = owner_login_via_request(_request, email, password, code)
+    assert status == 200 and "access_token" in body, body
     _PLATFORM_TOKEN = body["access_token"]
     return _PLATFORM_TOKEN
 
