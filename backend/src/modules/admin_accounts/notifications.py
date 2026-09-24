@@ -184,6 +184,20 @@ async def send_platform_owner_lockout_sms(owner: PlatformOwner, *, kind: str, cl
     return await _send(owner.phone or "", message, kind=f"platform_owner_lockout_{kind}")
 
 
+
+async def send_platform_owner_break_glass_sms(phone: str, *, action_text: str) -> SMSSendResult:
+    """Tell the platform owner that scripts/platform_owner_recover.py just
+    changed their account's security state. It can only be run by someone
+    with shell access to the server, which is exactly why the owner should
+    hear about it on a channel that person may not control. Fixed wording, for
+    the same reason as the other security sends."""
+    name = await get_platform_name()
+    message = (
+        f"{name} security: {action_text} on the platform owner account, using the server's "
+        f"recovery tool. If you did not ask for this, someone has access to your server."
+    )
+    return await _send(phone, message, kind="platform_owner_break_glass")
+
 async def send_phone_changed_sms(old_phone: str, admin: AdminUser) -> SMSSendResult:
     """Tell the OLD number that the account's phone was just moved.
 
