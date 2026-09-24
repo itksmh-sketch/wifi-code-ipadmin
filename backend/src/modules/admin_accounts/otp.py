@@ -3,6 +3,14 @@
 The Redis rate limiter fails open, so it cannot be what stops a 6-digit code
 from being guessed. Every wrong guess is counted on the code row itself (under
 a row lock), and a code that has used its attempts is dead regardless of Redis.
+
+Two stores share this one code path: operator admins (admin_otp_codes) and the
+platform owner (platform_owner_otp_codes). The caller names the account with
+exactly one of ``admin_user_id=`` / ``platform_owner_id=``, and that keyword
+picks the table. There is deliberately no separate "model" argument: with a
+model and an id passed independently, a platform-owner id checked against the
+admin table would not fail loudly, it would just find no code. Tying the table
+to the keyword makes that mismatch impossible to write.
 """
 from __future__ import annotations
 
@@ -14,33 +22,68 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models import AdminOtpCode
+from src.db.models import AdminOtpCode, PlatformOwnerOtpCode
 from src.modules.admin_accounts.notifications import OTP_TTL_MINUTES
 from src.utils.auth import hash_password, verify_password
 
 OTP_MAX_ATTEMPTS = 5
+
+OtpCode = AdminOtpCode | PlatformOwnerOtpCode
+
+
+@dataclass(frozen=True)
+class _Store:
+    model: type
+    owner_column: str
+    # Checked here as well as by the database (enum / CHECK), so a typo fails
+    # before the supersede UPDATE runs, with a message that names the store.
+    purposes: frozenset[str]
+
+
+_ADMIN = _Store(AdminOtpCode, "admin_user_id", frozenset({"onboarding", "reset", "phone_change", "pin_reset"}))
+_PLATFORM_OWNER = _Store(
+    PlatformOwnerOtpCode, "platform_owner_id", frozenset({"setup", "reset", "challenge_reset", "phone_change"})
+)
+
+
+def _resolve(admin_user_id: uuid.UUID | None, platform_owner_id: uuid.UUID | None, purpose: str) -> tuple[_Store, uuid.UUID]:
+    if (admin_user_id is None) == (platform_owner_id is None):
+        raise TypeError("pass exactly one of admin_user_id= or platform_owner_id=")
+    store, owner_id = (_ADMIN, admin_user_id) if admin_user_id is not None else (_PLATFORM_OWNER, platform_owner_id)
+    if purpose not in store.purposes:
+        raise ValueError(f"{purpose!r} is not an OTP purpose for {store.model.__tablename__}")
+    return store, owner_id
 
 
 def generate_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
-async def issue_code(db: AsyncSession, *, admin_user_id: uuid.UUID, purpose: str, phone: str) -> tuple[AdminOtpCode, str]:
+async def issue_code(
+    db: AsyncSession,
+    *,
+    purpose: str,
+    phone: str,
+    admin_user_id: uuid.UUID | None = None,
+    platform_owner_id: uuid.UUID | None = None,
+) -> tuple[OtpCode, str]:
     """Create a fresh code (superseding any open one for the same purpose).
     Adds and flushes; the caller commits."""
+    store, owner_id = _resolve(admin_user_id, platform_owner_id, purpose)
+    model, owner_col = store.model, getattr(store.model, store.owner_column)
     now = datetime.now(timezone.utc)
     await db.execute(
-        update(AdminOtpCode)
+        update(model)
         .where(
-            AdminOtpCode.admin_user_id == admin_user_id,
-            AdminOtpCode.purpose == purpose,
-            AdminOtpCode.consumed_at.is_(None),
+            owner_col == owner_id,
+            model.purpose == purpose,
+            model.consumed_at.is_(None),
         )
         .values(consumed_at=now)
     )
     code = generate_code()
-    row = AdminOtpCode(
-        admin_user_id=admin_user_id,
+    row = model(
+        **{store.owner_column: owner_id},
         purpose=purpose,
         phone=phone,
         code_hash=hash_password(code),
@@ -55,27 +98,36 @@ async def issue_code(db: AsyncSession, *, admin_user_id: uuid.UUID, purpose: str
 @dataclass
 class VerifyResult:
     ok: bool
-    row: AdminOtpCode | None = None
+    row: OtpCode | None = None
     reason: str | None = None  # "no_code" | "expired" | "locked" | "mismatch"
 
 
-async def verify_code(db: AsyncSession, *, admin_user_id: uuid.UUID, purpose: str, code: str) -> VerifyResult:
-    """Check ``code`` against the admin's open code for ``purpose``.
+async def verify_code(
+    db: AsyncSession,
+    *,
+    purpose: str,
+    code: str,
+    admin_user_id: uuid.UUID | None = None,
+    platform_owner_id: uuid.UUID | None = None,
+) -> VerifyResult:
+    """Check ``code`` against the account's open code for ``purpose``.
 
     Commits the attempt counter on a miss (so a later rollback can't undo it)
     and marks the row consumed on a hit (the caller commits that together with
     whatever the successful verification unlocks).
     """
+    store, owner_id = _resolve(admin_user_id, platform_owner_id, purpose)
+    model, owner_col = store.model, getattr(store.model, store.owner_column)
     now = datetime.now(timezone.utc)
     row = (
         await db.execute(
-            select(AdminOtpCode)
+            select(model)
             .where(
-                AdminOtpCode.admin_user_id == admin_user_id,
-                AdminOtpCode.purpose == purpose,
-                AdminOtpCode.consumed_at.is_(None),
+                owner_col == owner_id,
+                model.purpose == purpose,
+                model.consumed_at.is_(None),
             )
-            .order_by(AdminOtpCode.created_at.desc())
+            .order_by(model.created_at.desc())
             .limit(1)
             .with_for_update()
         )

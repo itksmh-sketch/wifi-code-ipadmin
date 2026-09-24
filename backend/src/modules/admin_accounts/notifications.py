@@ -102,6 +102,9 @@ _OTP_ACTIONS = {
     "reset": "reset your password",
     "pin_reset": "reset your PIN",
     "phone_change": "confirm your new phone number",
+    # Platform-owner purposes (platform_owner_otp_codes).
+    "setup": "verify your phone",
+    "challenge_reset": "reset your character code",
 }
 
 
