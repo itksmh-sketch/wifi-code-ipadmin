@@ -7,12 +7,12 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=1">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=2">
   <style>
     .kv{display:grid;grid-template-columns:130px 1fr;gap:8px 14px;font-size:13px;margin:0 0 16px}
     .kv dt{color:var(--muted)}
     .kv dd{margin:0;overflow-wrap:anywhere}
-    .app-message{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13.5px;line-height:1.5;background:#0b1430;color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0 0 16px;max-height:240px;overflow-y:auto}
+    .app-message{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13.5px;line-height:1.5;background:var(--surface-input);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0 0 16px;max-height:240px;overflow-y:auto}
     .app-label{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
   </style>
 </head>
@@ -22,7 +22,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=1"></script>
+  <script src="/platform/statics/nav.js?v=2"></script>
 
   <div id="main" style="display:none">
     <div class="page-head">
@@ -96,7 +96,7 @@
 </div>
 
 <!-- Modals -->
-<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:50;align-items:center;justify-content:center;padding:20px">
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:var(--backdrop);z-index:50;align-items:center;justify-content:center;padding:20px">
   <!-- Approve -->
   <div id="modal-approve" class="card" style="display:none;max-width:420px;width:100%;padding:24px">
     <div class="card-title" style="margin-bottom:6px">Approve application</div>
@@ -152,7 +152,7 @@
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js?v=1"></script>
+<script src="/platform/statics/setup-guard.js?v=2"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
 if (!token) { window.location.replace('/platform/login'); }

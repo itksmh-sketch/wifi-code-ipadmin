@@ -1,67 +1,70 @@
-/* Platform portal design tokens. Every colour below is the value the portal
-   already used; nothing here is meant to change how an existing page looks.
+/* Platform portal design tokens.
    The *-rgb channels exist so tints can be written rgba(var(--x-rgb), alpha). */
 :root{
   /* Colour channels */
   --slate-rgb:148,163,184;
-  --card-rgb:16,26,51;
+  --card-rgb:22,28,41;
   --accent-rgb:99,102,241;
   --success-rgb:34,197,94;
   --warning-rgb:245,158,11;
   --danger-rgb:239,68,68;
-  --info-rgb:99,102,241;
+  --info-rgb:56,189,248;
 
-  /* Surfaces, back to front */
-  --surface-page:#0b1220;
-  --surface-page-top:#070b16;
-  --surface-card:rgba(var(--card-rgb),.85);
-  --surface-card-solid:#101a33;
-  --surface-card-strong:rgba(var(--card-rgb),.95);
-  --surface-raised:#0f172a;
-  --surface-raised-hover:#1e293b;
-  --surface-input:#0b1430;
-  --backdrop:rgba(4,7,14,.6);
-  --shadow-overlay:0 8px 24px rgba(0,0,0,.35);
+  /* Surfaces, back to front. Each step is about 1.13x lighter than the one
+     below it, so page < card < raised < hover read as distinct layers.
+     Inputs sit below the card (inset). */
+  --surface-page:#0a0d14;
+  --surface-page-top:var(--surface-page);
+  --surface-card:#161c29;
+  --surface-card-solid:var(--surface-card);
+  --surface-card-strong:var(--surface-card);
+  --surface-raised:#1f2636;
+  --surface-raised-hover:#283143;
+  --surface-input:#0f131d;
+  --surface-table-head:rgba(var(--slate-rgb),.05);
+  --row-hover:rgba(var(--slate-rgb),.06);
+  --backdrop:rgba(3,5,10,.66);
+  --shadow-overlay:0 12px 32px rgba(0,0,0,.45);
 
   /* Text and lines */
-  --text:#e5e7eb;
+  --text:#e2e8f0;
   --text-on-accent:#fff;
   --muted:#94a3b8;
-  --border:rgba(var(--slate-rgb),.18);
-  --border-subtle:rgba(var(--slate-rgb),.1);
-  --neutral-tint:rgba(var(--slate-rgb),.1);
+  --border:rgba(var(--slate-rgb),.16);
+  --border-subtle:rgba(var(--slate-rgb),.09);
+  --border-strong:rgba(var(--slate-rgb),.3);
+  --neutral-tint:rgba(var(--slate-rgb),.12);
 
-  /* Accent */
+  /* Accent: indigo, reserved for interactive and selected states */
   --accent:#6366f1;
   --accent-hover:#4f46e5;
   --accent-active:#4338ca;
-  --accent-fill:linear-gradient(135deg,var(--accent-hover),var(--accent));
-  --accent-fill-hover:linear-gradient(135deg,var(--accent-active),var(--accent-hover));
+  --accent-fill:var(--accent-hover);
+  --accent-fill-hover:var(--accent-active);
   --link:#818cf8;
-  --focus-border:rgba(var(--accent-rgb),.6);
-  --focus-ring:0 0 0 3px rgba(var(--accent-rgb),.12);
+  --focus-border:rgba(var(--accent-rgb),.7);
+  --focus-ring:0 0 0 3px rgba(var(--accent-rgb),.18);
   --focus-outline:2px solid var(--link);
 
-  /* Semantic: solid, tint (badge fill), border, text. The *-text-bright
-     shades are what notices and toasts use today. */
+  /* Semantic: solid, tint (badge fill), border, text. One text shade each. */
   --success:#22c55e;
-  --success-tint:rgba(var(--success-rgb),.15);
-  --success-border:rgba(var(--success-rgb),.35);
+  --success-tint:rgba(var(--success-rgb),.14);
+  --success-border:rgba(var(--success-rgb),.32);
   --success-text:#86efac;
-  --success-text-bright:#bbf7d0;
+  --success-text-bright:var(--success-text);
   --warning:#f59e0b;
-  --warning-tint:rgba(var(--warning-rgb),.12);
-  --warning-border:rgba(var(--warning-rgb),.35);
+  --warning-tint:rgba(var(--warning-rgb),.14);
+  --warning-border:rgba(var(--warning-rgb),.32);
   --warning-text:#fcd34d;
-  --warning-text-bright:#fde68a;
+  --warning-text-bright:var(--warning-text);
   --danger:#ef4444;
-  --danger-tint:rgba(var(--danger-rgb),.12);
-  --danger-border:rgba(var(--danger-rgb),.35);
+  --danger-tint:rgba(var(--danger-rgb),.14);
+  --danger-border:rgba(var(--danger-rgb),.32);
   --danger-text:#fca5a5;
-  --info:#6366f1;
-  --info-tint:rgba(var(--info-rgb),.15);
-  --info-border:rgba(var(--info-rgb),.35);
-  --info-text:#c7d2fe;
+  --info:#38bdf8;
+  --info-tint:rgba(var(--info-rgb),.14);
+  --info-border:rgba(var(--info-rgb),.32);
+  --info-text:#7dd3fc;
 
   /* Type */
   --font-sans:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
@@ -85,10 +88,14 @@
   --sp-16:64px;
 
   /* Radius */
-  --radius-sm:8px;
-  --radius-md:10px;
-  --radius-lg:14px;
+  --radius-sm:6px;
+  --radius-md:8px;
+  --radius-lg:12px;
   --radius-pill:999px;
+
+  /* Controls: buttons, inputs and selects share one height. */
+  --control-h:36px;
+  --control-h-sm:28px;
 
   /* Layers */
   --z-modal:100;
@@ -96,30 +103,31 @@
 
   /* Names the pages' own <style> blocks still use; kept until Phase 4. */
   --bg:var(--surface-page);
-  --card:var(--surface-card-solid);
+  --card:var(--surface-card);
   --accent2:var(--link);
 }
 *{box-sizing:border-box}
-html,body{margin:0;padding:0;font-family:var(--font-sans);background:linear-gradient(180deg,var(--surface-page-top),var(--surface-page));color:var(--text);min-height:100vh}
+html,body{margin:0;padding:0;font-family:var(--font-sans);background:var(--surface-page);color:var(--text);min-height:100vh;
+  line-height:1.45;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
 a{color:var(--link);text-decoration:none}
 a:hover{text-decoration:underline}
 
 .container{max-width:1100px;margin:0 auto;padding:var(--sp-4) var(--sp-5)}
 /* ── Nav (rendered by statics/nav.js into each page's <nav id="platform-nav"> shell) ── */
-.nav{display:flex;flex-wrap:wrap;gap:10px var(--sp-4);align-items:center;margin:var(--sp-2) 0 var(--sp-6);padding-bottom:14px;border-bottom:1px solid var(--border)}
-.nav .brand{font-size:18px;font-weight:700;color:var(--text);white-space:nowrap}
+.nav{display:flex;flex-wrap:wrap;gap:var(--sp-3) var(--sp-4);align-items:center;margin:var(--sp-2) 0 var(--sp-6);padding-bottom:var(--sp-3);border-bottom:1px solid var(--border)}
+.nav .brand{font-size:var(--fs-md);font-weight:700;color:var(--text);white-space:nowrap}
 .nav .brand:hover{text-decoration:none}
 .nav .brand span{color:var(--link)}
 .nav-menu{display:flex;flex:1;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-1) var(--sp-4)}
 .nav-links,.nav-account{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1)}
-.nav-link{appearance:none;background:none;border:0;font-family:inherit;font-size:var(--fs-sm);font-weight:500;line-height:1.3;color:var(--muted);
-  padding:7px 10px;border-radius:var(--radius-sm);cursor:pointer;text-decoration:none;white-space:nowrap}
+.nav-link{appearance:none;background:none;border:0;font-family:inherit;font-size:var(--fs-sm);font-weight:500;line-height:20px;color:var(--muted);
+  padding:6px var(--sp-3);border-radius:var(--radius-sm);cursor:pointer;text-decoration:none;white-space:nowrap}
 .nav-link:hover{color:var(--text);background:var(--surface-raised);text-decoration:none}
-.nav-link[aria-current="page"]{color:var(--text);background:var(--surface-raised-hover);box-shadow:inset 0 -2px 0 var(--accent)}
+.nav-link[aria-current="page"]{color:var(--text);background:var(--surface-raised);box-shadow:inset 0 -2px 0 var(--accent)}
 /* Shell before nav.js runs (or if it fails to load): keep Sign out at the right. */
 .nav > .nav-link{margin-left:auto}
-/* Same height as a .nav-link, so the row does not change height when it appears. */
-.nav-toggle{display:none;margin-left:auto;padding:6px var(--sp-3);line-height:1.3}
+/* Same 32px height as a .nav-link, so the row does not change height when it appears. */
+.nav-toggle{display:none;margin-left:auto;padding:5px var(--sp-3);line-height:20px}
 @media(max-width:960px){
   .nav-toggle{display:inline-flex}
   .nav-menu{display:none;flex-basis:100%;flex-direction:column;align-items:stretch;gap:var(--sp-2)}
@@ -136,13 +144,16 @@ a:hover{text-decoration:underline}
 /* Page title block with actions on the right; actions wrap below on phones. */
 .page-head{display:flex;flex-wrap:wrap;gap:var(--sp-3) var(--sp-4);align-items:flex-start;justify-content:space-between}
 
-.btn{appearance:none;border:1px solid var(--border);background:var(--surface-raised);color:var(--text);padding:9px var(--sp-4);border-radius:var(--radius-sm);font-size:var(--fs-sm);font-weight:500;cursor:pointer;display:inline-flex;gap:6px;align-items:center;text-decoration:none}
+/* Buttons: 36px (20px line + 2×7px padding + 2×1px border); .sm is 28px. */
+.btn{appearance:none;border:1px solid var(--border-strong);background:var(--surface-raised);color:var(--text);padding:7px var(--sp-4);line-height:20px;
+  border-radius:var(--radius-md);font-size:var(--fs-sm);font-weight:500;cursor:pointer;display:inline-flex;gap:var(--sp-2);align-items:center;
+  justify-content:center;text-decoration:none;white-space:nowrap;font-family:inherit}
 .btn:hover{background:var(--surface-raised-hover);text-decoration:none}
 .btn.primary{background:var(--accent-fill);border-color:transparent;color:var(--text-on-accent);font-weight:600}
 .btn.primary:hover{background:var(--accent-fill-hover)}
-.btn.danger{background:transparent;border-color:rgba(var(--danger-rgb),.4);color:var(--danger-text)}
-.btn.danger:hover{background:rgba(var(--danger-rgb),.1)}
-.btn.sm{padding:6px var(--sp-3);font-size:var(--fs-xs)}
+.btn.danger{background:transparent;border-color:var(--danger-border);color:var(--danger-text)}
+.btn.danger:hover{background:var(--danger-tint)}
+.btn.sm{padding:5px var(--sp-3);line-height:16px;font-size:var(--fs-xs)}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn:disabled:hover{background:var(--surface-raised)}
 .btn.primary:disabled:hover{background:var(--accent-fill)}
@@ -152,19 +163,26 @@ a:hover{text-decoration:underline}
 :where(a,button,summary,[tabindex]):focus-visible{outline:var(--focus-outline);outline-offset:2px}
 
 .card{background:var(--surface-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--sp-5)}
-.card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--sp-4)}
-.card-title{font-size:var(--fs-md);font-weight:600;margin:0}
+/* min-height = one control, so headers with and without a button/search line up. */
+.card-header{display:flex;flex-wrap:wrap;gap:var(--sp-3);align-items:center;justify-content:space-between;min-height:var(--control-h);margin-bottom:var(--sp-4)}
+.card-title{font-size:var(--fs-md);font-weight:600;margin:0;line-height:1.3}
 
 .stats-grid{display:grid;gap:var(--sp-3);grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:var(--sp-5)}
 @media(max-width:760px){.stats-grid{grid-template-columns:repeat(2,1fr)}}
-.stat-card{background:var(--surface-card);border:1px solid var(--border);border-radius:12px;padding:var(--sp-4)}
-.stat-label{font-size:var(--fs-xs);color:var(--muted);margin-bottom:6px}
-.stat-value{font-size:var(--fs-xl);font-weight:800;letter-spacing:-.02em}
+.stat-card{background:var(--surface-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--sp-4)}
+.stat-label{font-size:var(--fs-xs);font-weight:500;color:var(--muted);margin-bottom:var(--sp-2)}
+.stat-value{font-size:var(--fs-xl);font-weight:700;letter-spacing:-.02em;line-height:1.15;font-variant-numeric:tabular-nums}
 
-label{display:block;font-size:var(--fs-sm);color:var(--muted);margin:14px 0 5px}
-input,select,textarea{width:100%;padding:11px 14px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface-input);color:var(--text);font-size:var(--fs-base);outline:none;font-family:inherit}
+label{display:block;font-size:var(--fs-sm);font-weight:500;color:var(--muted);margin:var(--sp-4) 0 6px}
+/* Inputs: 36px at 14px text (1.43 line ≈ 20px + 2×7px + 2×1px). Unitless so the
+   large character-challenge inputs on login/setup keep a fitting line box. */
+input,select,textarea{width:100%;padding:7px var(--sp-3);line-height:1.43;border-radius:var(--radius-md);border:1px solid var(--border-strong);
+  background:var(--surface-input);color:var(--text);font-size:var(--fs-base);outline:none;font-family:inherit}
+/* Selects ignore line-height in some browsers; pin the height instead. */
+select{height:var(--control-h);padding-top:0;padding-bottom:0}
+input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
 input:focus,select:focus,textarea:focus{border-color:var(--focus-border);box-shadow:var(--focus-ring)}
-textarea{resize:vertical;min-height:80px}
+textarea{resize:vertical;min-height:80px;padding:var(--sp-2) var(--sp-3);line-height:1.5}
 input:disabled,select:disabled,textarea:disabled{color:var(--muted);cursor:not-allowed}
 /* A value to copy, not edit (temporary passwords): dashed edge and no fill read as read-only. */
 input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparent;border-style:dashed}
@@ -174,12 +192,14 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
 @media(max-width:600px){.field-row{grid-template-columns:1fr}}
 
 .table-wrap{overflow-x:auto}
-.table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
-.table th{padding:10px var(--sp-3);border-bottom:1px solid var(--border);text-align:left;color:var(--muted);font-weight:500;font-size:var(--fs-xs);white-space:nowrap}
-.table td{padding:11px var(--sp-3);border-bottom:1px solid var(--border-subtle);vertical-align:middle}
-.table tr:hover td{background:rgba(var(--accent-rgb),.05)}
+.table{width:100%;border-collapse:collapse;font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
+.table th{padding:var(--sp-2) var(--sp-3);background:var(--surface-table-head);border-bottom:1px solid var(--border);text-align:left;color:var(--muted);
+  font-weight:600;font-size:var(--fs-xs);letter-spacing:.02em;line-height:1.3;white-space:nowrap}
+.table td{padding:var(--sp-3);line-height:1.3;border-bottom:1px solid var(--border-subtle);vertical-align:middle}
+.table tbody tr:last-child td{border-bottom:0}
+.table tr:hover td{background:var(--row-hover)}
 
-.badge{display:inline-block;padding:3px 9px;border-radius:var(--radius-pill);font-size:11px;font-weight:600;border:1px solid transparent}
+.badge{display:inline-block;padding:2px var(--sp-2);border-radius:var(--radius-pill);font-size:var(--fs-xs);font-weight:500;line-height:16px;border:1px solid transparent;white-space:nowrap}
 .badge.approved,.badge.active{background:var(--success-tint);border-color:var(--success-border);color:var(--success-text)}
 .badge.pending{background:var(--warning-tint);border-color:var(--warning-border);color:var(--warning-text)}
 .badge.suspended,.badge.past_due{background:var(--danger-tint);border-color:var(--danger-border);color:var(--danger-text)}
@@ -187,14 +207,14 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
 .badge.trial{background:var(--info-tint);border-color:var(--info-border);color:var(--info-text)}
 /* Key-source badges (billing, providers, settings) */
 .badge.unset{background:var(--neutral-tint);border-color:var(--border);color:var(--muted)}
-.badge.off{background:var(--warning-tint);border-color:rgba(var(--warning-rgb),.45);color:var(--warning-text)}
+.badge.off{background:var(--warning-tint);border-color:var(--warning-border);color:var(--warning-text)}
 .badge.db{background:var(--info-tint);border-color:var(--info-border);color:var(--info-text)}
 
-.notice{padding:10px 14px;border-radius:var(--radius-md);border:1px solid var(--border);background:rgba(var(--slate-rgb),.06);font-size:var(--fs-sm)}
-.notice.good{border-color:var(--success-border);background:rgba(var(--success-rgb),.1);color:var(--success-text-bright)}
+.notice{padding:var(--sp-3) var(--sp-4);border-radius:var(--radius-md);border:1px solid var(--border);background:rgba(var(--slate-rgb),.06);font-size:var(--fs-sm);line-height:1.5}
+.notice.good{border-color:var(--success-border);background:rgba(var(--success-rgb),.08);color:var(--success-text)}
 .notice.bad{border-color:var(--danger-border);background:rgba(var(--danger-rgb),.08);color:var(--danger-text)}
-.notice.warn{border-color:rgba(var(--warning-rgb),.45);background:rgba(var(--warning-rgb),.1);color:var(--warning-text)}
-.notice.warn strong{color:var(--warning-text-bright)}
+.notice.warn{border-color:var(--warning-border);background:rgba(var(--warning-rgb),.08);color:var(--warning-text)}
+.notice.warn strong{color:inherit;font-weight:600}
 
 .spacer{height:var(--sp-3)}
 .text-muted{color:var(--muted);font-size:var(--fs-sm)}
@@ -208,19 +228,19 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
 .empty.lg{padding:var(--sp-16) 0}
 
 .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:var(--sp-5)}
-.login-card{background:var(--surface-card-strong);border:1px solid var(--border);border-radius:16px;padding:36px;width:100%;max-width:400px}
-.login-card h1{margin:0 0 6px;font-size:22px}
+.login-card{background:var(--surface-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--sp-8);width:100%;max-width:400px}
+.login-card h1{margin:0 0 6px;font-size:var(--fs-lg);line-height:1.3}
 .login-card .sub{color:var(--muted);font-size:var(--fs-base);margin-bottom:var(--sp-6)}
-.login-card .btn.primary{width:100%;justify-content:center;padding:var(--sp-3)}
+.login-card .btn.primary{width:100%}
 
-.section-title{font-size:var(--fs-lg);font-weight:700;margin:0 0 var(--sp-1)}
+.section-title{font-size:var(--fs-lg);font-weight:600;letter-spacing:-.01em;line-height:1.3;margin:0 0 var(--sp-1)}
 .section-sub{color:var(--muted);font-size:var(--fs-sm);margin-bottom:var(--sp-5)}
 
-.actions{display:flex;gap:6px;flex-wrap:wrap}
+.actions{display:flex;gap:var(--sp-2);flex-wrap:wrap}
 
 /* ── Key/value list ─────────────────────────────────────────────────────── */
-/* Only margin-bottom is set: dl keeps its default top margin, as it does today. */
-.kv{display:grid;grid-template-columns:170px 1fr;gap:var(--sp-2) 14px;font-size:var(--fs-sm);margin-bottom:18px}
+/* Only margin-bottom is set: dl keeps its default top margin. */
+.kv{display:grid;grid-template-columns:170px 1fr;gap:var(--sp-2) var(--sp-4);font-size:var(--fs-sm);margin-bottom:var(--sp-4)}
 .kv dt{color:var(--muted)}
 .kv dd{margin:0}
 .mask{font-family:var(--mono);letter-spacing:.04em}
@@ -241,7 +261,7 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
    (e.g. flagging a transaction as diagnostic). */
 .switch{position:relative;display:inline-block;width:42px;height:24px;flex:none}
 .switch input{position:absolute;opacity:0;width:0;height:0;padding:0;margin:0}
-.slider{position:absolute;inset:0;border-radius:var(--radius-pill);background:var(--surface-raised-hover);border:1px solid var(--border);
+.slider{position:absolute;inset:0;border-radius:var(--radius-pill);background:var(--surface-raised-hover);border:1px solid var(--border-strong);
   cursor:pointer;transition:background .15s,border-color .15s}
 .slider::before{content:"";position:absolute;height:16px;width:16px;left:3px;top:3px;border-radius:50%;
   background:var(--muted);transition:transform .15s,background .15s}
@@ -260,18 +280,19 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
   padding:var(--sp-5);background:var(--backdrop)}
 .modal-backdrop.show{display:flex}
 .modal-dialog{width:100%;max-width:460px;max-height:calc(100vh - 2 * var(--sp-5));overflow-y:auto;
-  background:var(--surface-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--sp-6)}
+  background:var(--surface-card);border:1px solid var(--border-strong);border-radius:var(--radius-lg);padding:var(--sp-6);box-shadow:var(--shadow-overlay)}
 .modal-dialog.sm{max-width:420px}
 .modal-dialog.lg{max-width:560px}
-.modal-title{font-size:var(--fs-md);font-weight:600;margin:0 0 6px}
-.modal-actions{display:flex;gap:var(--sp-2);justify-content:flex-end;flex-wrap:wrap;margin-top:var(--sp-4)}
+.modal-title{font-size:var(--fs-md);font-weight:600;margin:0 0 var(--sp-2)}
+.modal-actions{display:flex;gap:var(--sp-2);justify-content:flex-end;flex-wrap:wrap;margin-top:var(--sp-5)}
 
 /* ── Toast ──────────────────────────────────────────────────────────────── */
-/* <div class="toast" role="status"></div>; add .show (and .bad for errors). */
-.toast{position:fixed;top:var(--sp-5);right:var(--sp-5);z-index:var(--z-toast);padding:var(--sp-3) 18px;border-radius:var(--radius-md);
-  border:1px solid var(--success-border);background:rgba(var(--success-rgb),.16);color:var(--success-text-bright);font-size:var(--fs-base);
-  font-weight:600;box-shadow:var(--shadow-overlay);opacity:0;transform:translateY(-8px);
+/* <div class="toast" role="status"></div>; add .show (and .bad for errors).
+   Opaque, so it stays readable over tables; the left bar carries the state. */
+.toast{position:fixed;top:var(--sp-5);right:var(--sp-5);z-index:var(--z-toast);padding:var(--sp-3) var(--sp-4);border-radius:var(--radius-md);
+  border:1px solid var(--border-strong);border-left:3px solid var(--success);background:var(--surface-raised);color:var(--text);font-size:var(--fs-base);
+  font-weight:500;box-shadow:var(--shadow-overlay);opacity:0;transform:translateY(-8px);
   transition:opacity .2s,transform .2s;pointer-events:none}
 .toast.show{opacity:1;transform:translateY(0)}
-.toast.bad{border-color:rgba(var(--danger-rgb),.4);background:rgba(var(--danger-rgb),.16);color:var(--danger-text)}
+.toast.bad{border-left-color:var(--danger)}
 @media (prefers-reduced-motion:reduce){.toast,.slider,.slider::before{transition:none}}

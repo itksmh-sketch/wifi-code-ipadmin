@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=1">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=2">
   <style>
     /* The page stays hidden until an authenticated load succeeds, so nothing
        renders for a visitor without a valid platform-owner token. */
@@ -16,31 +16,31 @@
     .tpl-layout{display:grid;grid-template-columns:300px 1fr;gap:20px;align-items:start}
     @media(max-width:900px){.tpl-layout{grid-template-columns:1fr}}
 
-    .evt{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:rgba(16,26,51,.55)}
+    .evt{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--surface-card)}
     .evt-name{font-size:13px;font-weight:600;margin-bottom:2px}
     .evt-desc{font-size:11.5px;color:var(--muted);line-height:1.4;margin-bottom:8px}
     .evt-ch{display:flex;gap:6px}
-    .ch-btn{flex:1;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:#0f172a;
+    .ch-btn{flex:1;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:var(--surface-raised);
       color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;
       justify-content:center;gap:6px}
-    .ch-btn:hover{background:#1e293b;color:var(--text)}
-    .ch-btn.on{background:linear-gradient(135deg,#4f46e5,#6366f1);border-color:transparent;color:#fff}
+    .ch-btn:hover{background:var(--surface-raised-hover);color:var(--text)}
+    .ch-btn.on{background:var(--accent-fill);border-color:transparent;color:#fff}
     .dot{width:6px;height:6px;border-radius:50%;background:var(--warning);display:inline-block}
     .ch-btn.on .dot{background:#fff}
 
     .ph{display:inline-block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
-      padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:#0b1430;color:var(--accent2);
+      padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:var(--surface-input);color:var(--accent2);
       cursor:pointer;margin:0 6px 6px 0}
     .ph:hover{border-color:rgba(99,102,241,.6)}
     .ph.req{border-color:rgba(245,158,11,.5);color:#fcd34d}
 
-    .stat{background:#0b1430;border:1px solid var(--border);border-radius:9px;padding:8px 13px;min-width:92px}
+    .stat{background:var(--surface-input);border:1px solid var(--border);border-radius:9px;padding:8px 13px;min-width:92px}
     .stat-k{font-size:11px;color:var(--muted);margin-bottom:2px}
     .stat-v{font-size:17px;font-weight:800}
     .stat.ok .stat-v{color:#4ade80}
     .stat.warn .stat-v{color:#fca5a5}
 
-    .rendered{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:#0b1430;
+    .rendered{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:var(--surface-input);
       border:1px solid var(--border);border-radius:9px;padding:12px;white-space:pre-wrap;word-break:break-word;
       line-height:1.55}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -63,7 +63,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=1"></script>
+  <script src="/platform/statics/nav.js?v=2"></script>
 
   <div class="section-title">Notification Templates</div>
   <p class="section-sub">
@@ -135,7 +135,7 @@
 
 <div id="toast">Saved</div>
 
-<script src="/platform/statics/setup-guard.js?v=1"></script>
+<script src="/platform/statics/setup-guard.js?v=2"></script>
 <script>
 const DEBOUNCE_MS = 400;
 

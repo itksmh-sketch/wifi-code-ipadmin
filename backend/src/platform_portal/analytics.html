@@ -7,16 +7,16 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=1">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=2">
   <style>
     .count-grid{display:grid;gap:12px;grid-template-columns:repeat(4,minmax(0,1fr))}
     @media(max-width:760px){.count-grid{grid-template-columns:repeat(2,1fr)}}
-    .count-cell{background:rgba(16,26,51,.55);border:1px solid var(--border);border-radius:12px;padding:14px}
+    .count-cell{background:var(--surface-card);border:1px solid var(--border);border-radius:12px;padding:14px}
     .count-cell .n{font-size:24px;font-weight:800;letter-spacing:-.02em}
     .count-cell .k{margin-top:6px}
     .axis-note{color:var(--muted);font-size:12.5px;margin:2px 0 16px;line-height:1.6}
     .access-line{display:flex;align-items:center;gap:12px;padding:14px 16px;border:1px solid var(--border);
-      border-radius:12px;background:rgba(16,26,51,.55)}
+      border-radius:12px;background:var(--surface-card)}
     .access-line .n{font-size:24px;font-weight:800;letter-spacing:-.02em}
     .access-line .k{color:var(--muted);font-size:13px}
     .router-row{display:flex;gap:12px;flex-wrap:wrap}
@@ -31,7 +31,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=1"></script>
+  <script src="/platform/statics/nav.js?v=2"></script>
 
   <div class="section-title">Analytics</div>
   <p class="section-sub">
@@ -118,7 +118,7 @@
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js?v=1"></script>
+<script src="/platform/statics/setup-guard.js?v=2"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
 if (!token) { window.location.replace('/platform/login'); }

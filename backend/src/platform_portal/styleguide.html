@@ -7,8 +7,8 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=1">
-  <script src="/platform/statics/setup-guard.js?v=1"></script>
+  <link rel="stylesheet" href="/platform/statics/app.css?v=2">
+  <script src="/platform/statics/setup-guard.js?v=2"></script>
   <style>
     /* Layout for this page only. Everything it demonstrates comes from app.css. */
     #shell{display:none}
@@ -36,6 +36,9 @@
     .sg-toc{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-8)}
     .sg-inline{display:inline-flex;align-items:center;gap:6px;margin-right:var(--sp-4)}
     .sg-login-demo{display:flex;justify-content:center;padding:var(--sp-6) 0}
+    .sg-controls{display:flex;gap:var(--sp-2);align-items:center;flex-wrap:wrap}
+    .sg-controls input,.sg-controls select{width:180px}
+    .sg-num{text-align:right}
   </style>
 </head>
 <body>
@@ -45,11 +48,11 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=1"></script>
+  <script src="/platform/statics/nav.js?v=2"></script>
 
   <div class="section-title">Style guide</div>
   <p class="section-sub">Every token and component in <code>statics/app.css</code>. Token values below are read live from the stylesheet.
-    Items marked <span class="badge trial">new</span> were added in Phase 1 and are not yet used by the portal's pages.</p>
+    Items marked <span class="badge trial">new</span> are shared components the pages will adopt in Phase 4.</p>
 
   <div class="sg-toc">
     <a class="btn sm" href="#tokens">Tokens</a>
@@ -154,6 +157,15 @@
     <h2>Forms</h2>
     <p class="text-muted">Bare <code>label</code>, <code>input</code>, <code>select</code>, <code>textarea</code> are styled globally.</p>
     <div class="card" style="max-width:600px">
+      <div class="subhead">Control heights — button, input, select and small button in one row</div>
+      <div class="sg-controls">
+        <button class="btn" type="button">Button</button>
+        <input type="search" placeholder="Search…" aria-label="Search demo">
+        <select aria-label="Select demo"><option>All statuses</option></select>
+        <button class="btn primary" type="button">Primary</button>
+        <button class="btn sm" type="button">Small</button>
+      </div>
+      <div class="spacer"></div>
       <div class="subhead">Business info <span class="badge trial">new</span> <code>.subhead</code></div>
       <div class="field-row">
         <div class="field"><label for="sg-name">Business name</label><input id="sg-name" placeholder="Osu Wireless"></div>
@@ -195,11 +207,11 @@
     <div class="card sg-group">
       <div class="table-wrap">
         <table class="table">
-          <thead><tr><th>Operator</th><th>Status</th><th>Routers</th><th></th></tr></thead>
+          <thead><tr><th>Operator</th><th>Status</th><th>Routers</th><th class="sg-num">Revenue (GH₵)</th><th></th></tr></thead>
           <tbody>
-            <tr><td>Osu Wireless</td><td><span class="badge active">active</span></td><td><span class="dot good"></span> 3 online</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
-            <tr><td>Aflao Net</td><td><span class="badge trial">trial</span></td><td><span class="dot warn"></span> 1 degraded</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
-            <tr><td>East Legon</td><td><span class="badge past_due">past_due</span></td><td><span class="dot bad"></span> offline</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
+            <tr><td>Osu Wireless</td><td><span class="badge active">active</span></td><td><span class="dot good"></span> 3 online</td><td class="sg-num">12,480.00</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
+            <tr><td>Aflao Net</td><td><span class="badge trial">trial</span></td><td><span class="dot warn"></span> 1 degraded</td><td class="sg-num">911.50</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
+            <tr><td>East Legon</td><td><span class="badge past_due">past_due</span></td><td><span class="dot bad"></span> offline</td><td class="sg-num">0.00</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
           </tbody>
         </table>
       </div>
