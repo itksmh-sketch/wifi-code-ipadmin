@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Style Guide — Platform Admin</title>
+  <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
+  <link rel="stylesheet" href="/platform/statics/app.css">
+  <script src="/platform/statics/setup-guard.js"></script>
+  <style>
+    /* Layout for this page only. Everything it demonstrates comes from app.css. */
+    #shell{display:none}
+    .sg-section{margin:0 0 var(--sp-10)}
+    .sg-section > h2{font-size:var(--fs-lg);font-weight:700;margin:0 0 var(--sp-1)}
+    .sg-section > .text-muted{margin:0 0 var(--sp-4)}
+    .sg-group{margin-bottom:var(--sp-6)}
+    .sg-row{display:flex;gap:var(--sp-3);flex-wrap:wrap;align-items:center}
+    .sg-swatches{display:grid;gap:var(--sp-3);grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}
+    .sg-swatch{border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;background:var(--surface-page)}
+    .sg-swatch .chip{height:56px;border-bottom:1px solid var(--border)}
+    .sg-swatch .meta{padding:var(--sp-2) 10px}
+    .sg-swatch .name{font-family:var(--mono);font-size:var(--fs-xs)}
+    .sg-swatch .val{font-family:var(--mono);font-size:11px;color:var(--muted);overflow-wrap:anywhere;margin-top:2px}
+    .sg-sem{display:grid;gap:var(--sp-3);grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+    .sg-sem-card{border-radius:var(--radius-md);border:1px solid;padding:var(--sp-3) 14px}
+    .sg-sem-card .name{font-weight:600;font-size:var(--fs-sm);margin-bottom:var(--sp-1)}
+    .sg-sem-card .val{font-family:var(--mono);font-size:11px;opacity:.85}
+    .sg-scale{display:grid;grid-template-columns:120px 70px 1fr;gap:var(--sp-2) var(--sp-4);align-items:center}
+    .sg-scale code{font-family:var(--mono);font-size:var(--fs-xs)}
+    .sg-bar{height:12px;background:var(--accent);border-radius:2px}
+    .sg-radius{width:72px;height:48px;background:var(--surface-raised-hover);border:1px solid var(--border)}
+    .sg-note{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:var(--sp-2)}
+    .sg-demo{border:1px dashed var(--border);border-radius:var(--radius-md);padding:var(--sp-4)}
+    .sg-toc{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-8)}
+    .sg-inline{display:inline-flex;align-items:center;gap:6px;margin-right:var(--sp-4)}
+    .sg-login-demo{display:flex;justify-content:center;padding:var(--sp-6) 0}
+  </style>
+</head>
+<body>
+<div id="gate" class="empty lg">Loading…</div>
+<div id="shell" class="container">
+  <nav class="nav">
+    <span class="brand">Platform <span>Admin</span></span>
+    <div class="links">
+      <a href="/platform/operators" class="btn">← Operators</a>
+      <button class="btn" id="logout-btn">Logout</button>
+    </div>
+  </nav>
+
+  <div class="section-title">Style guide</div>
+  <p class="section-sub">Every token and component in <code>statics/app.css</code>. Token values below are read live from the stylesheet.
+    Items marked <span class="badge trial">new</span> were added in Phase 1 and are not yet used by the portal's pages.</p>
+
+  <div class="sg-toc">
+    <a class="btn sm" href="#tokens">Tokens</a>
+    <a class="btn sm" href="#buttons">Buttons</a>
+    <a class="btn sm" href="#cards">Cards &amp; stats</a>
+    <a class="btn sm" href="#forms">Forms</a>
+    <a class="btn sm" href="#tables">Tables &amp; badges</a>
+    <a class="btn sm" href="#feedback">Notices, toast, modal</a>
+    <a class="btn sm" href="#data">Key/value, dot, switch</a>
+    <a class="btn sm" href="#text">Text &amp; placeholders</a>
+    <a class="btn sm" href="#login">Login card</a>
+  </div>
+
+  <!-- ── Tokens ───────────────────────────────────────────────────────── -->
+  <section class="sg-section" id="tokens">
+    <h2>Tokens</h2>
+    <p class="text-muted">Defined on <code>:root</code>. The <code>--*-rgb</code> channels let a rule write <code>rgba(var(--success-rgb), .1)</code>.</p>
+
+    <div class="sg-group"><div class="subhead">Surfaces</div><div class="sg-swatches" data-swatches="--surface-page --surface-page-top --surface-card --surface-card-solid --surface-card-strong --surface-raised --surface-raised-hover --surface-input --backdrop"></div></div>
+    <div class="sg-group"><div class="subhead">Text and lines</div><div class="sg-swatches" data-swatches="--text --text-on-accent --muted --border --border-subtle --neutral-tint"></div></div>
+    <div class="sg-group"><div class="subhead">Accent</div><div class="sg-swatches" data-swatches="--accent --accent-hover --accent-active --accent-fill --accent-fill-hover --link --focus-border"></div></div>
+
+    <div class="sg-group">
+      <div class="subhead">Semantic</div>
+      <div class="sg-sem" id="semantic"></div>
+    </div>
+
+    <div class="sg-group">
+      <div class="subhead">Type scale</div>
+      <div class="sg-scale" id="type-scale"></div>
+      <div class="sg-note">--font-sans: <span data-value="--font-sans"></span></div>
+      <div class="sg-note">--mono: <span data-value="--mono"></span></div>
+      <p style="font-family:var(--mono);font-size:var(--fs-base);margin:var(--sp-2) 0 0">Mono sample — Tmp9#kQ2 0O1lI</p>
+      <div class="sg-note">Still off-scale in app.css: 11px (badge), 18px (brand), 22px (login heading).</div>
+    </div>
+
+    <div class="sg-group">
+      <div class="subhead">Spacing (4px base)</div>
+      <div class="sg-scale" id="space-scale"></div>
+    </div>
+
+    <div class="sg-group">
+      <div class="subhead">Radius</div>
+      <div class="sg-row" id="radius-scale"></div>
+      <div class="sg-note">Still off-scale in app.css: 12px (stat card), 16px (login card).</div>
+    </div>
+
+    <div class="sg-group">
+      <div class="subhead">Layers</div>
+      <div class="sg-note">--z-modal: <span data-value="--z-modal"></span> · --z-toast: <span data-value="--z-toast"></span> (a toast shows above an open modal)</div>
+    </div>
+
+    <div class="sg-group">
+      <div class="subhead">Legacy names (pages' own styles still use these)</div>
+      <div class="sg-swatches" data-swatches="--bg --card --accent2"></div>
+    </div>
+  </section>
+
+  <!-- ── Buttons ──────────────────────────────────────────────────────── -->
+  <section class="sg-section" id="buttons">
+    <h2>Buttons</h2>
+    <p class="text-muted"><code>.btn</code> with <code>.primary</code>, <code>.danger</code>, <code>.sm</code>. Tab through them to see the keyboard focus ring.</p>
+    <div class="sg-group sg-row">
+      <button class="btn">Default</button>
+      <button class="btn primary">Primary</button>
+      <button class="btn danger">Danger</button>
+      <button class="btn sm">Small</button>
+      <button class="btn primary sm">Small primary</button>
+      <a class="btn" href="#buttons">Link as button</a>
+    </div>
+    <div class="subhead">Disabled <span class="badge trial">new</span></div>
+    <div class="sg-row">
+      <button class="btn" disabled>Default</button>
+      <button class="btn primary" disabled>Primary</button>
+      <button class="btn danger" disabled>Danger</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="subhead"><code>.actions</code> row</div>
+    <div class="actions"><button class="btn sm">View</button><button class="btn sm">Edit</button><button class="btn sm danger">Suspend</button></div>
+  </section>
+
+  <!-- ── Cards & stats ────────────────────────────────────────────────── -->
+  <section class="sg-section" id="cards">
+    <h2>Cards and stats</h2>
+    <div class="card sg-group">
+      <div class="card-header">
+        <h3 class="card-title">Card title</h3>
+        <button class="btn sm">Action</button>
+      </div>
+      <p class="text-muted" style="margin:0">A <code>.card</code> with a <code>.card-header</code>.</p>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-label">Operators</div><div class="stat-value">24</div></div>
+      <div class="stat-card"><div class="stat-label">Active</div><div class="stat-value">19</div></div>
+      <div class="stat-card"><div class="stat-label">Revenue (month)</div><div class="stat-value">GH₵ 4,210</div></div>
+      <div class="stat-card"><div class="stat-label">Past due</div><div class="stat-value">2</div></div>
+    </div>
+  </section>
+
+  <!-- ── Forms ────────────────────────────────────────────────────────── -->
+  <section class="sg-section" id="forms">
+    <h2>Forms</h2>
+    <p class="text-muted">Bare <code>label</code>, <code>input</code>, <code>select</code>, <code>textarea</code> are styled globally.</p>
+    <div class="card" style="max-width:600px">
+      <div class="subhead">Business info <span class="badge trial">new</span> <code>.subhead</code></div>
+      <div class="field-row">
+        <div class="field"><label for="sg-name">Business name</label><input id="sg-name" placeholder="Osu Wireless"></div>
+        <div class="field"><label for="sg-plan">Plan</label><select id="sg-plan"><option>Standard</option><option>Enterprise</option></select></div>
+      </div>
+      <label for="sg-notes">Notes</label>
+      <textarea id="sg-notes" placeholder="Free text"></textarea>
+      <p class="help">Helper text under a field. <span class="badge trial">new</span> <code>.help</code></p>
+
+      <label style="display:flex;align-items:center;gap:var(--sp-2);margin-top:var(--sp-4)">
+        <input type="checkbox" checked style="width:auto;margin:0">
+        <span style="color:var(--text);font-size:var(--fs-sm)">Checkbox with label (pages do this inline today)</span>
+      </label>
+    </div>
+
+    <div class="spacer"></div>
+    <div class="subhead">Read-only and disabled inputs <span class="badge trial">new</span> (Phase 0 check)</div>
+    <p class="help">Same markup the pages use, with a dummy value, so the fix can be checked without a real password reset or SMS.</p>
+    <div class="card" style="max-width:460px;padding:24px">
+      <!-- Mirrors operators_new.html / operator_detail.html / operators.html -->
+      <div class="card-title" style="margin-bottom:6px">Admin created</div>
+      <p class="text-muted" style="margin:0 0 14px">Temporary password for the new admin. It is not stored in readable form and cannot be shown again.</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <input id="sg-readout" readonly class="readout" value="Tmp9#kQ2-vX4" style="flex:1;padding:9px 12px;font-size:14px">
+        <button class="btn" type="button" id="sg-copy">Copy</button>
+      </div>
+      <p class="sg-note" style="margin:0 0 16px"><code>input.readout</code> — dummy value, not a real credential.</p>
+
+      <!-- Mirrors settings.html "Your account" email -->
+      <label for="sg-disabled">Email</label>
+      <input id="sg-disabled" type="email" disabled value="owner@platform.com">
+      <p class="sg-note" style="margin:6px 0 0"><code>input:disabled</code> — as on Settings → Your account.</p>
+    </div>
+  </section>
+
+  <!-- ── Tables & badges ──────────────────────────────────────────────── -->
+  <section class="sg-section" id="tables">
+    <h2>Tables and badges</h2>
+    <div class="card sg-group">
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>Operator</th><th>Status</th><th>Routers</th><th></th></tr></thead>
+          <tbody>
+            <tr><td>Osu Wireless</td><td><span class="badge active">active</span></td><td><span class="dot good"></span> 3 online</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
+            <tr><td>Aflao Net</td><td><span class="badge trial">trial</span></td><td><span class="dot warn"></span> 1 degraded</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
+            <tr><td>East Legon</td><td><span class="badge past_due">past_due</span></td><td><span class="dot bad"></span> offline</td><td><div class="actions"><button class="btn sm">View</button></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="subhead">Operator status</div>
+    <div class="sg-row sg-group">
+      <span class="badge approved">approved</span><span class="badge active">active</span>
+      <span class="badge pending">pending</span><span class="badge suspended">suspended</span>
+      <span class="badge past_due">past_due</span><span class="badge cancelled">cancelled</span><span class="badge trial">trial</span>
+    </div>
+    <div class="subhead">Key source <span class="badge trial">new</span></div>
+    <div class="sg-row">
+      <span class="badge db">Stored in database</span><span class="badge off">Stored — switched off</span><span class="badge unset">Not set</span>
+    </div>
+  </section>
+
+  <!-- ── Notices, toast, modal ────────────────────────────────────────── -->
+  <section class="sg-section" id="feedback">
+    <h2>Notices, toast and modal</h2>
+    <div class="sg-group" style="display:grid;gap:var(--sp-3);max-width:720px">
+      <div class="notice">Neutral notice.</div>
+      <div class="notice good">Saved. The new keys are active.</div>
+      <div class="notice bad">Could not reach Paystack: invalid secret key.</div>
+      <div class="notice warn"><strong>Heads up:</strong> these keys override the environment. <span class="badge trial">new</span></div>
+    </div>
+    <div class="subhead">Toast <span class="badge trial">new</span></div>
+    <div class="sg-row sg-group">
+      <button class="btn" type="button" id="sg-toast-good">Show success toast</button>
+      <button class="btn" type="button" id="sg-toast-bad">Show error toast</button>
+    </div>
+    <div class="subhead">Modal <span class="badge trial">new</span></div>
+    <div class="sg-row">
+      <button class="btn" type="button" data-open="sm">Open .sm (420px)</button>
+      <button class="btn" type="button" data-open="">Open default (460px)</button>
+      <button class="btn" type="button" data-open="lg">Open .lg (560px)</button>
+    </div>
+  </section>
+
+  <!-- ── Key/value, dot, switch ───────────────────────────────────────── -->
+  <section class="sg-section" id="data">
+    <h2>Key/value, status dot, switch</h2>
+    <div class="card sg-group" style="max-width:720px">
+      <div class="subhead">Key/value <span class="badge trial">new</span> <code>dl.kv</code> + <code>.mask</code> + <code>.divider</code></div>
+      <dl class="kv">
+        <dt>Source</dt>        <dd><span class="badge db">Stored in database</span></dd>
+        <dt>Public key</dt>    <dd class="mask"><span class="dots">••••••••</span>a1b2</dd>
+        <dt>Secret key</dt>    <dd class="mask"><span class="dots">••••••••</span>9f3c</dd>
+        <dt>Webhook secret</dt><dd class="mask"><span class="dots">not set</span></dd>
+      </dl>
+      <div class="divider"></div>
+      <p class="text-muted" style="margin:0">Content after a divider.</p>
+    </div>
+
+    <div class="subhead">Status dot <span class="badge trial">new</span></div>
+    <div class="sg-group">
+      <span class="sg-inline"><span class="dot good"></span>.good</span>
+      <span class="sg-inline"><span class="dot warn"></span>.warn</span>
+      <span class="sg-inline"><span class="dot bad"></span>.bad</span>
+      <span class="sg-inline"><span class="dot idle"></span>.idle</span>
+    </div>
+
+    <div class="subhead">Switch <span class="badge trial">new</span></div>
+    <div class="sg-row">
+      <span class="sg-inline"><label class="switch"><input type="checkbox" checked><span class="slider"></span></label>on</span>
+      <span class="sg-inline"><label class="switch"><input type="checkbox"><span class="slider"></span></label>off</span>
+      <span class="sg-inline"><label class="switch warn"><input type="checkbox" checked><span class="slider"></span></label>.warn on</span>
+      <span class="sg-inline"><label class="switch"><input type="checkbox" checked disabled><span class="slider"></span></label>disabled</span>
+    </div>
+  </section>
+
+  <!-- ── Text & placeholders ──────────────────────────────────────────── -->
+  <section class="sg-section" id="text">
+    <h2>Text and placeholders</h2>
+    <div class="sg-demo sg-group">
+      <div class="section-title">.section-title</div>
+      <p class="section-sub">.section-sub — one line under a page title.</p>
+      <p class="text-muted" style="margin:0">.text-muted — secondary body text.</p>
+      <div class="spacer"></div>
+      <a href="#text">A link</a>
+    </div>
+    <div class="subhead"><code>.empty</code> placeholders <span class="badge trial">new</span></div>
+    <div class="card" style="padding:0">
+      <div class="empty sm">.empty.sm — no rows in this table.</div>
+      <div class="divider" style="margin:0"></div>
+      <div class="empty">.empty — loading a card…</div>
+      <div class="divider" style="margin:0"></div>
+      <div class="empty lg">.empty.lg — loading the page…</div>
+    </div>
+  </section>
+
+  <!-- ── Login card ───────────────────────────────────────────────────── -->
+  <section class="sg-section" id="login">
+    <h2>Login card</h2>
+    <p class="text-muted"><code>.login-card</code> as used by login and setup (normally centred full-height by <code>.login-wrap</code>).</p>
+    <div class="sg-login-demo">
+      <div class="login-card">
+        <h1>Platform Admin</h1>
+        <p class="sub">Sign in with your platform owner credentials.</p>
+        <label for="sg-email">Email</label>
+        <input id="sg-email" type="email" placeholder="admin@platform.com">
+        <label for="sg-pass">Password</label>
+        <input id="sg-pass" type="password">
+        <div class="spacer"></div>
+        <button class="btn primary" type="button">Sign In</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="sg-modal">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="sg-modal-title">
+    <div class="modal-title" id="sg-modal-title">Waive invoice</div>
+    <p class="text-muted" style="margin:0 0 var(--sp-3)">INV-2026-0042 · Osu Wireless · GH₵ 120.00</p>
+    <label for="sg-reason">Reason</label>
+    <textarea id="sg-reason" placeholder="Shown on the invoice history"></textarea>
+    <div class="modal-actions">
+      <button class="btn" type="button" data-close>Cancel</button>
+      <button class="btn primary" type="button" data-close>Waive</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="sg-toast" role="status"></div>
+
+<script>
+const token = localStorage.getItem('platform_access_token');
+if (!token) { window.location.replace('/platform/login'); }
+
+document.getElementById('logout-btn').addEventListener('click', () => {
+  localStorage.removeItem('platform_access_token');
+  localStorage.removeItem('platform_refresh_token');
+  window.location.href = '/platform/login';
+});
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: {
+      'Authorization': 'Bearer ' + localStorage.getItem('platform_access_token'),
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('platform_access_token');
+    window.location.replace('/platform/login');
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
+const rootStyle = getComputedStyle(document.documentElement);
+const tokenValue = (name) => rootStyle.getPropertyValue(name).trim();
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function renderTokens() {
+  document.querySelectorAll('[data-swatches]').forEach((grid) => {
+    grid.dataset.swatches.split(' ').forEach((name) => {
+      const card = el('div', 'sg-swatch');
+      const chip = el('div', 'chip');
+      chip.style.background = `var(${name})`;
+      if (name === '--text' || name === '--muted' || name === '--link' || name === '--text-on-accent') {
+        chip.style.background = 'var(--surface-page)';
+        chip.style.color = `var(${name})`;
+        chip.style.display = 'flex';
+        chip.style.alignItems = 'center';
+        chip.style.justifyContent = 'center';
+        chip.style.fontWeight = '600';
+        chip.textContent = 'Aa';
+        chip.style.borderLeft = `8px solid var(${name})`;
+      }
+      const meta = el('div', 'meta');
+      meta.append(el('div', 'name', name), el('div', 'val', tokenValue(name)));
+      card.append(chip, meta);
+      grid.append(card);
+    });
+  });
+
+  const sem = document.getElementById('semantic');
+  ['success', 'warning', 'danger', 'info'].forEach((k) => {
+    const card = el('div', 'sg-sem-card');
+    card.style.background = `var(--${k}-tint)`;
+    card.style.borderColor = `var(--${k}-border)`;
+    card.style.color = `var(--${k}-text)`;
+    card.append(el('div', 'name', k));
+    ['', '-tint', '-border', '-text'].concat(k === 'success' || k === 'warning' ? ['-text-bright'] : [])
+      .forEach((s) => card.append(el('div', 'val', `--${k}${s}: ${tokenValue('--' + k + s)}`)));
+    sem.append(card);
+  });
+
+  const type = document.getElementById('type-scale');
+  ['xs', 'sm', 'base', 'md', 'lg', 'xl'].forEach((s) => {
+    const sample = el('div', null, 'Operators and invoices');
+    sample.style.fontSize = `var(--fs-${s})`;
+    type.append(el('code', null, `--fs-${s}`), el('code', null, tokenValue('--fs-' + s)), sample);
+  });
+
+  const space = document.getElementById('space-scale');
+  ['1', '2', '3', '4', '5', '6', '8', '10', '16'].forEach((s) => {
+    const bar = el('div', 'sg-bar');
+    bar.style.width = `var(--sp-${s})`;
+    space.append(el('code', null, `--sp-${s}`), el('code', null, tokenValue('--sp-' + s)), bar);
+  });
+
+  const radius = document.getElementById('radius-scale');
+  ['sm', 'md', 'lg', 'pill'].forEach((s) => {
+    const wrap = el('div');
+    const box = el('div', 'sg-radius');
+    box.style.borderRadius = `var(--radius-${s})`;
+    wrap.append(box, el('div', 'sg-note', `--radius-${s}: ${tokenValue('--radius-' + s)}`));
+    radius.append(wrap);
+  });
+
+  document.querySelectorAll('[data-value]').forEach((n) => { n.textContent = tokenValue(n.dataset.value); });
+}
+
+let toastTimer = null;
+function showToast(text, bad) {
+  const t = document.getElementById('sg-toast');
+  t.textContent = text;
+  t.classList.toggle('bad', !!bad);
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+const modal = document.getElementById('sg-modal');
+const dialog = modal.querySelector('.modal-dialog');
+let lastFocus = null;
+function openModal(size) {
+  lastFocus = document.activeElement;
+  dialog.className = 'modal-dialog' + (size ? ' ' + size : '');
+  modal.classList.add('show');
+  modal.querySelector('textarea').focus();
+}
+function closeModal() {
+  modal.classList.remove('show');
+  if (lastFocus) lastFocus.focus();
+}
+
+function wireDemos() {
+  document.getElementById('sg-toast-good').addEventListener('click', () => showToast('Settings saved'));
+  document.getElementById('sg-toast-bad').addEventListener('click', () => showToast('Could not save — try again', true));
+  document.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => openModal(b.dataset.open)));
+  modal.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', closeModal));
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && modal.classList.contains('show')) closeModal(); });
+  document.getElementById('sg-copy').addEventListener('click', () => {
+    const input = document.getElementById('sg-readout');
+    input.select();
+    navigator.clipboard?.writeText(input.value);
+    showToast('Copied');
+  });
+}
+
+(async () => {
+  // Same gate as the other signed-in pages: nothing renders until the
+  // platform-owner token is accepted by the API.
+  if (!token) return;  // already redirecting to /platform/login
+  try {
+    const res = await api('/api/v1/platform/me');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+  } catch (e) {
+    if (e.message === 'Unauthorized') return;
+    document.getElementById('gate').textContent = 'Could not verify your session. Reload to try again.';
+    return;
+  }
+  document.getElementById('gate').remove();
+  document.getElementById('shell').style.display = 'block';
+  renderTokens();
+  wireDemos();
+})();
+</script>
+</body>
+</html>

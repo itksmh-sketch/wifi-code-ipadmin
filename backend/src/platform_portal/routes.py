@@ -75,6 +75,14 @@ async def platform_analytics_page():
     return FileResponse(_DIR / "analytics.html")
 
 
+@router.get("/platform/styleguide", include_in_schema=False)
+async def platform_styleguide_page():
+    """Tokens and components from statics/app.css. Gated client-side like every
+    other signed-in page: it renders nothing until /api/v1/platform/me accepts
+    the platform-owner token."""
+    return FileResponse(_DIR / "styleguide.html")
+
+
 @router.get("/platform", include_in_schema=False)
 async def platform_root_redirect():
     from fastapi.responses import RedirectResponse
