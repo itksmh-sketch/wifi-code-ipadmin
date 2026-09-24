@@ -61,7 +61,7 @@ class Outbox:
     def __init__(self):
         self.sent = []  # (kind, phone)
 
-    async def owner_lockout(self, owner, *, kind):
+    async def owner_lockout(self, owner, *, kind, client_ip=None):
         self.sent.append((f"owner_lockout_{kind}", owner.phone))
         return SMSSendResult(success=True, provider_reference="test")
 

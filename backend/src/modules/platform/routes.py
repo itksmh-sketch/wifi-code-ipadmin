@@ -47,7 +47,7 @@ from src.modules.mikrotik import setup_status as setup_store
 # drill-down can never disagree with what an operator's own dashboard shows.
 from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 from src.middleware.rate_limit import enforce_rate_limit
-from src.modules.platform import owner_lockout
+from src.modules.platform import character_code, owner_lockout
 from src.modules.admin_accounts import platform_reset
 from src.modules.admin_accounts.notifications import send_temp_password_sms
 from src.modules.admin_accounts.provisioning import admin_email_taken, provision_operator_admin
@@ -58,7 +58,10 @@ from src.modules.billing.service import DEFAULT_MONTHLY_FEE_KEY, get_default_mon
 from src.modules.payments.filters import REAL_TRANSACTIONS_ONLY
 from src.utils.encryption import encrypt_secret
 from src.utils.auth import (
+    LOGIN_CHALLENGE_TTL_MINUTES,
+    create_login_challenge_token,
     hash_password,
+    verify_login_challenge_token,
     verify_password,
     verify_platform_owner_token,
 )
@@ -97,8 +100,22 @@ INVALID_CREDENTIALS = "Invalid email or password"
 # don't leak, by being faster, what the shared message hides.
 _DUMMY_HASH = hash_password("dummy-password-for-timing-equalisation")
 
+CHALLENGE_EXPIRED = "This sign-in step has expired or was already used. Sign in again."
+CHALLENGE_LOCKED = "Too many incorrect character-code entries. Try again in a few hours, or reset your code."
 
-@router.post("/auth/login", response_model=TokenResponse)
+
+class LoginChallengeResponse(BaseModel):
+    """What /auth/login returns instead of tokens once the owner's security
+    setup is complete: the password was right, now answer the challenge."""
+
+    challenge_required: bool = True
+    challenge_token: str
+    positions: list[int]  # 1-based, ascending
+    code_length: int
+    expires_in_seconds: int
+
+
+@router.post("/auth/login", response_model=TokenResponse | LoginChallengeResponse)
 async def platform_auth_login(
     body: LoginRequest,
     request: Request,
@@ -143,6 +160,122 @@ async def platform_auth_login(
 
     # A correct password ends the run of failures, lapsed lock and all.
     owner_lockout.clear(owner, owner_lockout.LOGIN)
+
+    if owner.must_complete_security_setup:
+        # Setup not finished: password-only, exactly as before the challenge
+        # existed. This is the path the existing owner takes until they
+        # complete setup, so no one is locked out mid-transition.
+        owner.last_login_at = datetime.now(timezone.utc)
+        await db.commit()
+        return platform_owner_token_response(owner)
+
+    if owner.challenge_hashes is None:
+        # Setup can only complete with a code saved, so this state means the
+        # row was edited by hand. Fail closed rather than fall back to
+        # password-only; scripts/platform_owner_recover.py resets setup.
+        await db.commit()
+        logger.error("platform_owner_setup_complete_without_code owner_id=%s", owner.id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account's security setup is incomplete. Contact the server administrator.",
+        )
+
+    if owner_lockout.is_locked(owner, owner_lockout.CHALLENGE):
+        await db.commit()  # keep the cleared password counter
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CHALLENGE_LOCKED)
+
+    # The same positions until they are answered correctly: signing in again
+    # must not deal a fresh set to shop through.
+    if not owner.challenge_pending_positions:
+        owner.challenge_pending_positions = character_code.choose_positions(owner.challenge_hashes)
+    # A new jti on every password success voids any earlier challenge token.
+    owner.challenge_pending_jti = uuid.uuid4()
+    await db.commit()
+    return LoginChallengeResponse(
+        challenge_token=create_login_challenge_token(
+            owner_id=str(owner.id), token_version=int(owner.token_version or 0), jti=str(owner.challenge_pending_jti)
+        ),
+        positions=[p + 1 for p in owner.challenge_pending_positions],
+        code_length=character_code.code_length(owner.challenge_hashes),
+        expires_in_seconds=LOGIN_CHALLENGE_TTL_MINUTES * 60,
+    )
+
+
+class ChallengeAnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    challenge_token: str = Field(max_length=2048)
+    # 1-based position -> the character at that position.
+    characters: dict[int, str] = Field(max_length=character_code.POSITIONS_PER_CHALLENGE)
+
+
+@router.post("/auth/challenge", response_model=TokenResponse)
+async def platform_auth_challenge(
+    body: ChallengeAnswerRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Second sign-in step: answer the character-code challenge issued by
+    /auth/login, and get the real token pair.
+
+    Every answer, right or wrong, spends the challenge token (the pending jti
+    is cleared), so a wrong answer means signing in again, which costs another
+    password check. The positions do NOT change on a miss; they change only
+    after a correct answer.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    await enforce_rate_limit(client_ip, "platform:challenge", limit=20, window_seconds=60)
+
+    grant = verify_login_challenge_token(body.challenge_token)
+    if grant is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=CHALLENGE_EXPIRED)
+    owner = (
+        await db.execute(
+            select(PlatformOwner)
+            .where(PlatformOwner.id == grant["sub"], PlatformOwner.is_active == True)  # noqa: E712
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if (
+        owner is None
+        or not token_version_matches(grant, owner)
+        or owner.challenge_pending_jti is None
+        or str(owner.challenge_pending_jti) != grant["jti"]
+        or owner.must_complete_security_setup
+        or owner.challenge_hashes is None
+        or not owner.challenge_pending_positions
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=CHALLENGE_EXPIRED)
+
+    if owner_lockout.is_locked(owner, owner_lockout.CHALLENGE):
+        owner.challenge_pending_jti = None
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CHALLENGE_LOCKED)
+
+    asked = set(owner.challenge_pending_positions)
+    answers = {position - 1: value for position, value in body.characters.items()}
+    if set(answers) != asked:
+        # Not an attempt at the code (wrong positions submitted), so it neither
+        # counts nor spends the token.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter exactly the characters asked for.")
+
+    correct = character_code.check_positions(owner.id, owner.challenge_hashes, answers)
+    owner.challenge_pending_jti = None  # single-use, right or wrong
+    if not correct:
+        event_id = await owner_lockout.register_failure(db, owner, owner_lockout.CHALLENGE, client_ip=client_ip)
+        if event_id is not None:
+            background_tasks.add_task(owner_lockout.send_lockout_notification, owner.id, owner_lockout.CHALLENGE, event_id)
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN, content={"detail": CHALLENGE_LOCKED}, background=background_tasks
+            )
+        remaining = owner_lockout.CHALLENGE_MAX_ATTEMPTS - int(owner.challenge_attempt_count or 0)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Those characters don't match your code. Sign in again to retry ({remaining} attempts left).",
+        )
+
+    owner_lockout.clear(owner, owner_lockout.CHALLENGE)
+    owner.challenge_pending_positions = None  # next sign-in gets new positions
     owner.last_login_at = datetime.now(timezone.utc)
     await db.commit()
     return platform_owner_token_response(owner)

@@ -150,18 +150,37 @@ async def send_lockout_sms(admin: AdminUser, *, kind: str) -> SMSSendResult:
     return await _send(admin.phone or "", message, kind=f"lockout_{kind}")
 
 
-async def send_platform_owner_lockout_sms(owner: PlatformOwner, *, kind: str) -> SMSSendResult:
-    """Tell the platform owner their sign-in just locked. Fixed wording, like
-    send_lockout_sms and for the same reason. kind: "login"."""
-    from src.modules.platform.owner_lockout import LOGIN_LOCKOUT_HOURS, LOGIN_MAX_ATTEMPTS
+async def send_platform_owner_lockout_sms(owner: PlatformOwner, *, kind: str, client_ip: str | None = None) -> SMSSendResult:
+    """Tell the platform owner their sign-in (kind "login") or character-code
+    entry (kind "challenge") just locked. Fixed wording, like send_lockout_sms
+    and for the same reason.
+
+    The challenge message is deliberately blunt: it can only be reached with
+    the correct password, so the owner needs to hear that their password is
+    known, and from where, rather than a generic "too many attempts".
+    """
+    from src.modules.platform.owner_lockout import (
+        CHALLENGE_LOCKOUT_HOURS,
+        CHALLENGE_MAX_ATTEMPTS,
+        LOGIN_LOCKOUT_HOURS,
+        LOGIN_MAX_ATTEMPTS,
+    )
 
     login_url = await _login_url("/platform/login")
     name = await get_platform_name()
-    message = (
-        f"{name} security: platform owner sign-in was locked for {LOGIN_LOCKOUT_HOURS} hour after "
-        f"{LOGIN_MAX_ATTEMPTS} failed attempts. If this wasn't you, change your password at "
-        f"{login_url} once the lock clears."
-    )
+    if kind == "challenge":
+        where = f" from IP {client_ip}" if client_ip else ""
+        message = (
+            f"{name} security: your correct platform owner password was just used{where}, followed by "
+            f"{CHALLENGE_MAX_ATTEMPTS} wrong character-code entries. Code entry is locked for "
+            f"{CHALLENGE_LOCKOUT_HOURS} hours. If this wasn't you, change your password now at {login_url}."
+        )
+    else:
+        message = (
+            f"{name} security: platform owner sign-in was locked for {LOGIN_LOCKOUT_HOURS} hour after "
+            f"{LOGIN_MAX_ATTEMPTS} failed attempts. If this wasn't you, change your password at "
+            f"{login_url} once the lock clears."
+        )
     return await _send(owner.phone or "", message, kind=f"platform_owner_lockout_{kind}")
 
 

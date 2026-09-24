@@ -93,3 +93,37 @@ def verify_password_reset_token(token: str) -> Optional[dict]:
     if payload.get("type") != "password_reset" or not payload.get("sub"):
         return None
     return payload
+
+
+# Platform-owner login challenge: proof that the password was just verified,
+# exchangeable once for a real token pair by answering the character-code
+# challenge. A distinct issuer means verify_platform_owner_token() (which
+# requires iss == "platform_owner") rejects it, so it can never act as a
+# session at any protected route or at refresh. The distinct type is a second,
+# independent guard. It carries the owner's token_version, and a jti that must
+# equal platform_owners.challenge_pending_jti: every password success rotates
+# that column, and every answer (right or wrong) clears it, so each challenge
+# token is single-use and replacing it voids the previous one.
+LOGIN_CHALLENGE_ISSUER = "platform_owner_login_challenge"
+LOGIN_CHALLENGE_TYPE = "login_challenge"
+LOGIN_CHALLENGE_TTL_MINUTES = 5
+
+
+def create_login_challenge_token(*, owner_id: str, token_version: int, jti: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=LOGIN_CHALLENGE_TTL_MINUTES)
+    return jwt.encode(
+        {"sub": owner_id, "tv": token_version, "jti": jti, "type": LOGIN_CHALLENGE_TYPE,
+         "iss": LOGIN_CHALLENGE_ISSUER, "exp": expire},
+        settings.platform_owner_jwt_secret,
+        algorithm="HS256",
+    )
+
+
+def verify_login_challenge_token(token: str) -> Optional[dict]:
+    try:
+        payload = jwt.decode(token, settings.platform_owner_jwt_secret, algorithms=["HS256"], issuer=LOGIN_CHALLENGE_ISSUER)
+    except JWTError:
+        return None
+    if payload.get("type") != LOGIN_CHALLENGE_TYPE or not payload.get("sub") or not payload.get("jti"):
+        return None
+    return payload

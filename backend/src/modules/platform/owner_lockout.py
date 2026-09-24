@@ -8,6 +8,7 @@ machine differs: the row type, the audit table (admin_security_events requires
 an operator), the SMS wording and link, and the thresholds.
 
     password login   5 consecutive failures -> locked 1h
+    character code   5 consecutive failures -> locked 3h
 
 Why 1h and not the operator admins' 3h: the platform owner is a single account
 with nobody above it. An operator admin locked out by someone guessing at their
@@ -16,8 +17,12 @@ so the lock is itself a denial-of-service lever against the one account that
 runs the platform. A shorter lock keeps the guessing budget small (5 per hour)
 while bounding what a griefer can do. A successful password change clears it.
 
-The character-challenge lockout (a later change) will be a second kind here,
-with its own columns and budget.
+The character-challenge lockout is stricter, and not because the challenge is
+guessable (3 positions of a 31-symbol alphabet is ~1 in 30,000 per try). A
+wrong answer can only arrive AFTER a correct password, so it is the strongest
+compromise signal this account produces: someone has the password and not the
+code. The lock is 3h, and the SMS says so plainly, with the source IP, so the
+owner changes their password. The two counters never touch each other.
 """
 from __future__ import annotations
 
@@ -34,13 +39,20 @@ from src.db.models import PlatformOwner, PlatformOwnerSecurityEvent
 logger = logging.getLogger("platform.owner_lockout")
 
 LOGIN = "login"
+CHALLENGE = "challenge"
 
 LOGIN_MAX_ATTEMPTS = 5
 LOGIN_LOCKOUT_HOURS = 1
+CHALLENGE_MAX_ATTEMPTS = 5
+CHALLENGE_LOCKOUT_HOURS = 3
 
 # kind -> (attempt column, lock column, threshold, lock hours, event_type)
 _KINDS: dict[str, tuple[str, str, int, int, str]] = {
     LOGIN: ("login_attempt_count", "login_locked_until", LOGIN_MAX_ATTEMPTS, LOGIN_LOCKOUT_HOURS, "login_lockout"),
+    CHALLENGE: (
+        "challenge_attempt_count", "challenge_locked_until", CHALLENGE_MAX_ATTEMPTS, CHALLENGE_LOCKOUT_HOURS,
+        "challenge_lockout",
+    ),
 }
 
 
@@ -129,7 +141,8 @@ async def send_lockout_notification(owner_id: uuid.UUID, kind: str, event_id: uu
                 logger.warning("platform_owner_lockout_sms_skipped owner_id=%s kind=%s reason=no_verified_phone", owner_id, kind)
                 return
 
-            result = await send_platform_owner_lockout_sms(owner, kind=kind)
+            client_ip = (event.detail or {}).get("client_ip") if event is not None else None
+            result = await send_platform_owner_lockout_sms(owner, kind=kind, client_ip=client_ip)
             if event is not None:
                 event.sms_sent = bool(result.success)
                 event.sms_error = None if result.success else (result.error or "unknown")

@@ -1,6 +1,7 @@
-"""Platform-owner security setup: verify a phone, set a security question.
+"""Platform-owner security setup: verify a phone, set a security question,
+generate the character code.
 
-These are the first two steps of the owner's security setup (the character
+These are the first three steps of the owner's security setup (confirming the
 code and the all-or-nothing completion come later). They only accept calls
 while ``must_complete_security_setup`` is TRUE. Once setup is complete, the
 phone is the recovery channel for both forgot-password and forgot-code, and
@@ -22,7 +23,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +33,7 @@ from src.middleware.auth import get_platform_owner_context
 from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.admin_accounts import otp as otp_service
 from src.modules.admin_accounts.notifications import OTP_TTL_MINUTES, send_otp_sms
+from src.modules.platform import character_code
 from src.modules.admin_accounts.security_questions import ANSWER_MIN_LENGTH, SECURITY_QUESTIONS, normalize_answer
 from src.utils.auth import hash_password, verify_password
 from src.utils.phone import GHANA_PHONE_ERROR, mask_phone, normalize_ghana_phone
@@ -51,6 +53,11 @@ class SetupPhoneRequest(BaseModel):
 class SetupOtpVerifyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     code: str = Field(min_length=1, max_length=12)
+
+
+class SetupCharacterCodeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    current_password: str = Field(max_length=256)
 
 
 class SetupSecurityQuestionRequest(BaseModel):
@@ -177,3 +184,44 @@ async def setup_security_question(
     await db.commit()
     logger.info("platform_owner_security_question_set owner_id=%s replaced=%s", owner.id, replacing)
     return {"status": "saved", "security_question": owner.security_question}
+
+
+@router.post("/character-code")
+async def setup_generate_character_code(
+    body: SetupCharacterCodeRequest,
+    request: Request,
+    response: Response,
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate the owner's character code and return it, the only time it is
+    ever shown. Only the per-position digests are stored.
+
+    Repeatable while setup is pending (a lost or unrecorded code is simply
+    replaced), which is why nothing is enforced at login until setup completes,
+    and completion requires the owner to prove they recorded the code. A new
+    code also discards any pending challenge positions, which were drawn
+    against the old one.
+    """
+    _require_setup_pending(owner)
+    await enforce_rate_limit(f"owner:{owner.id}", "platform:setup-code", limit=5, window_seconds=900)
+    if not verify_password(body.current_password, owner.password_hash):
+        raise _bad_request(WRONG_PASSWORD)
+
+    code = character_code.generate_code()
+    replacing = owner.challenge_hashes is not None
+    owner.challenge_hashes = character_code.build_storage(owner.id, code)
+    owner.challenge_set_at = datetime.now(timezone.utc)
+    owner.challenge_pending_positions = None
+    owner.challenge_pending_jti = None
+    _record_event(db, owner, "challenge_generated", replaced=replacing, client_ip=_client_ip(request))
+    await db.commit()
+    logger.info("platform_owner_character_code_generated owner_id=%s replaced=%s", owner.id, replacing)
+    # The body is the plaintext code: no browser or proxy may keep a copy.
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "status": "generated",
+        "character_code": code,
+        "length": len(code),
+        "shown_once": True,
+    }
