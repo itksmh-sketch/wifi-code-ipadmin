@@ -7,19 +7,13 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=2">
-  <style>
-    .char-row{display:flex;gap:12px}
-    .char-row .char{flex:1;min-width:0}
-    .char-row input{text-align:center;font-size:22px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;padding:10px 0}
-    .linkish{background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;padding:0;margin-top:14px;text-decoration:underline}
-  </style>
+  <link rel="stylesheet" href="/platform/statics/app.css?v=3">
 </head>
 <body>
 <div class="login-wrap">
   <div class="login-card">
     <h1>Platform Admin</h1>
-    <div id="msg" class="notice bad" style="display:none;margin-bottom:16px"></div>
+    <div id="msg" class="notice bad" style="display:none"></div>
 
     <!-- Step 1: password -->
     <div id="step-password">
@@ -42,7 +36,8 @@
         <div class="spacer"></div>
         <button class="btn primary" type="submit" id="challenge-btn">Continue</button>
       </form>
-      <button class="linkish" type="button" id="back-btn">Back to password</button>
+      <div class="spacer"></div>
+      <button class="link-button" type="button" id="back-btn">Back to password</button>
     </div>
   </div>
 </div>

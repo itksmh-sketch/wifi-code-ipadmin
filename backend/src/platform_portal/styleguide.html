@@ -7,8 +7,8 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=2">
-  <script src="/platform/statics/setup-guard.js?v=2"></script>
+  <link rel="stylesheet" href="/platform/statics/app.css?v=3">
+  <script src="/platform/statics/setup-guard.js?v=3"></script>
   <style>
     /* Layout for this page only. Everything it demonstrates comes from app.css. */
     #shell{display:none}
@@ -35,7 +35,7 @@
     .sg-demo{border:1px dashed var(--border);border-radius:var(--radius-md);padding:var(--sp-4)}
     .sg-toc{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-8)}
     .sg-inline{display:inline-flex;align-items:center;gap:6px;margin-right:var(--sp-4)}
-    .sg-login-demo{display:flex;justify-content:center;padding:var(--sp-6) 0}
+    .sg-login-demo{display:flex;justify-content:center;flex-wrap:wrap;gap:var(--sp-6);padding:var(--sp-6) 0}
     .sg-controls{display:flex;gap:var(--sp-2);align-items:center;flex-wrap:wrap}
     .sg-controls input,.sg-controls select{width:180px}
     .sg-num{text-align:right}
@@ -48,7 +48,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=2"></script>
+  <script src="/platform/statics/nav.js?v=3"></script>
 
   <div class="section-title">Style guide</div>
   <p class="section-sub">Every token and component in <code>statics/app.css</code>. Token values below are read live from the stylesheet.
@@ -316,6 +316,20 @@
         <input id="sg-pass" type="password">
         <div class="spacer"></div>
         <button class="btn primary" type="button">Sign In</button>
+      </div>
+      <div class="login-card">
+        <h1>Character challenge</h1>
+        <p class="sub">Enter characters 2, 7, 11 of your 12-character code.</p>
+        <div class="char-row">
+          <div class="char"><label for="sg-c2">Character 2</label><input id="sg-c2" maxlength="1" value="K"></div>
+          <div class="char"><label for="sg-c7">Character 7</label><input id="sg-c7" maxlength="1" value="0"></div>
+          <div class="char"><label for="sg-c11">Character 11</label><input id="sg-c11" maxlength="1"></div>
+        </div>
+        <label class="check"><input type="checkbox"> <span>I have written this code down somewhere safe. (<code>.check</code>)</span></label>
+        <div class="spacer"></div>
+        <button class="btn primary" type="button">Continue</button>
+        <div class="spacer"></div>
+        <button class="link-button" type="button">Back to password</button>
       </div>
     </div>
   </section>

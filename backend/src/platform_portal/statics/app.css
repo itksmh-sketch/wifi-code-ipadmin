@@ -232,11 +232,26 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
 .login-card h1{margin:0 0 6px;font-size:var(--fs-lg);line-height:1.3}
 .login-card .sub{color:var(--muted);font-size:var(--fs-base);margin-bottom:var(--sp-6)}
 .login-card .btn.primary{width:100%}
+.login-card .notice{margin-bottom:var(--sp-4)}
+
+/* ── Character challenge (login and setup): one box per requested character ── */
+/* Monospace to match how setup shows the code (keeps 0/O and 1/I apart). No
+   letter-spacing: on a single centred character it only pushes it off-centre. */
+.char-row{display:flex;gap:var(--sp-3)}
+.char-row .char{flex:1;min-width:0}
+.char-row input{font-family:var(--mono);font-size:var(--fs-lg);font-weight:600;text-align:center;text-transform:uppercase;padding:var(--sp-3) 0}
 
 .section-title{font-size:var(--fs-lg);font-weight:600;letter-spacing:-.01em;line-height:1.3;margin:0 0 var(--sp-1)}
 .section-sub{color:var(--muted);font-size:var(--fs-sm);margin-bottom:var(--sp-5)}
 
-.actions{display:flex;gap:var(--sp-2);flex-wrap:wrap}
+.actions{display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center}
+/* A button that reads as a text link (secondary actions such as "Back"). */
+.link-button{appearance:none;background:none;border:0;padding:0;font-family:inherit;font-size:var(--fs-sm);color:var(--muted);
+  text-decoration:underline;cursor:pointer}
+.link-button:hover{color:var(--text)}
+/* Checkbox with its label text beside it: <label class="check"><input type="checkbox"> <span>…</span></label> */
+.check{display:flex;gap:var(--sp-2);align-items:flex-start;margin:var(--sp-3) 0 0;font-size:var(--fs-sm);font-weight:400;color:var(--text)}
+.check input{width:auto;margin:2px 0 0;flex:none}
 
 /* ── Key/value list ─────────────────────────────────────────────────────── */
 /* Only margin-bottom is set: dl keeps its default top margin. */

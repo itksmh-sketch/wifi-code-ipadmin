@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=2">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=3">
   <style>
     .kv{display:grid;grid-template-columns:130px 1fr;gap:8px 14px;font-size:13px;margin:0 0 16px}
     .kv dt{color:var(--muted)}
@@ -22,7 +22,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=2"></script>
+  <script src="/platform/statics/nav.js?v=3"></script>
 
   <div id="main" style="display:none">
     <div class="page-head">
@@ -152,7 +152,7 @@
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js?v=2"></script>
+<script src="/platform/statics/setup-guard.js?v=3"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
 if (!token) { window.location.replace('/platform/login'); }
