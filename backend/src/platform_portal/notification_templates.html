@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=4">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=5">
   <style>
     /* The page stays hidden until an authenticated load succeeds, so nothing
        renders for a visitor without a valid platform-owner token. */
@@ -25,8 +25,8 @@
       justify-content:center;gap:6px}
     .ch-btn:hover{background:var(--surface-raised-hover);color:var(--text)}
     .ch-btn.on{background:var(--accent-fill);border-color:transparent;color:#fff}
-    .dot{width:6px;height:6px;border-radius:50%;background:var(--warning);display:inline-block}
-    .ch-btn.on .dot{background:#fff}
+    /* The "edited" marker is the shared .dot.warn; on the selected button it turns white. */
+    .ch-btn.on .dot{background:var(--text-on-accent);box-shadow:none}
 
     .ph{display:inline-block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
       padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:var(--surface-input);color:var(--accent2);
@@ -46,12 +46,6 @@
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     iframe.mail{width:100%;height:340px;border:1px solid var(--border);border-radius:9px;background:#fff}
 
-    #toast{position:fixed;top:20px;right:20px;z-index:1000;padding:12px 18px;border-radius:10px;
-      border:1px solid rgba(34,197,94,.35);background:rgba(34,197,94,.16);color:#bbf7d0;font-size:14px;
-      font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(-8px);
-      transition:opacity .2s,transform .2s;pointer-events:none}
-    #toast.show{opacity:1;transform:translateY(0)}
-    #toast.bad{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.16);color:#fca5a5}
   </style>
 </head>
 <body>
@@ -63,7 +57,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=4"></script>
+  <script src="/platform/statics/nav.js?v=5"></script>
 
   <div class="section-title">Notification Templates</div>
   <p class="section-sub">
@@ -82,7 +76,7 @@
       <div class="card-header">
         <div>
           <h2 class="card-title" id="ed-title">—</h2>
-          <p class="text-muted" id="ed-desc" style="font-size:12.5px;margin:4px 0 0"></p>
+          <p class="help" id="ed-desc"></p>
         </div>
         <span class="badge" id="ed-badge">—</span>
       </div>
@@ -99,7 +93,7 @@
 
       <div id="ed-html-wrap">
         <label for="ed-body-html">HTML body</label>
-        <p class="text-muted" style="font-size:11.5px;margin:-2px 0 5px">
+        <p class="help">
           The page chrome around this is added automatically. Values are escaped when they are
           substituted, so an operator name containing &lt; or &amp; cannot break the markup.
         </p>
@@ -108,7 +102,7 @@
 
       <label style="margin-top:16px">Insert a placeholder</label>
       <div id="ed-placeholders"></div>
-      <div id="ed-ph-help" class="text-muted" style="font-size:11.5px;line-height:1.6;margin-top:2px"></div>
+      <div id="ed-ph-help" class="help"></div>
 
       <div class="spacer"></div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
@@ -121,7 +115,7 @@
       <div class="spacer"></div>
       <div style="border-top:1px solid var(--border);padding-top:16px">
         <h3 style="font-size:14px;font-weight:600;margin:0 0 3px">Preview</h3>
-        <p class="text-muted" style="font-size:11.5px;margin:0 0 12px">
+        <p class="help">
           Rendered with realistic sample values — the same ones the save-time length check uses.
         </p>
         <div id="ed-counts" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px"></div>
@@ -133,9 +127,9 @@
   <div id="list-loading" style="text-align:center;padding:40px 0;color:var(--muted)">Loading templates…</div>
 </div>
 
-<div id="toast">Saved</div>
+<div id="toast" class="toast" role="status">Saved</div>
 
-<script src="/platform/statics/setup-guard.js?v=4"></script>
+<script src="/platform/statics/setup-guard.js?v=5"></script>
 <script>
 const DEBOUNCE_MS = 400;
 
@@ -161,17 +155,11 @@ async function api(path, opts = {}) {
   return res;
 }
 
-document.getElementById('logout-btn').addEventListener('click', () => {
-  localStorage.removeItem('platform_access_token');
-  localStorage.removeItem('platform_refresh_token');
-  window.location.href = '/platform/login';
-});
-
 let toastTimer = null;
 function showToast(text, bad) {
   const t = document.getElementById('toast');
   t.textContent = text;
-  t.className = bad ? 'bad show' : 'show';
+  t.className = bad ? 'toast bad show' : 'toast show';
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
 }
@@ -223,7 +211,7 @@ function renderList() {
           .map(t => `
             <button class="ch-btn${current && keyOf(current) === keyOf(t) ? ' on' : ''}"
                     data-key="${esc(keyOf(t))}">
-              ${t.channel === 'email' ? 'Email' : 'SMS'}${t.is_default ? '' : ' <span class="dot" title="Edited"></span>'}
+              ${t.channel === 'email' ? 'Email' : 'SMS'}${t.is_default ? '' : ' <span class="dot warn" title="Edited"></span>'}
             </button>`).join('')}
       </div>
     </div>`).join('');
@@ -378,7 +366,7 @@ function measure(preview, error) {
       stat('SMS segments', preview.segment_count, over ? 'warn' : 'ok') +
       stat('Encoding', preview.encoding === 'gsm7' ? 'GSM-7' : 'Unicode');
     out.innerHTML = `<div class="rendered">${esc(preview.body_text)}</div>`
-      + `<p class="text-muted" style="font-size:11.5px;margin:10px 0 0">`
+      + `<p class="help">`
       + `One segment is ${preview.encoding === 'gsm7' ? '160' : '70'} characters`
       + `${preview.encoding === 'gsm7' ? '' : ' — this text uses characters outside the GSM alphabet'}. `
       + `The limit is ${esc(current.max_sms_segments)} segments.</p>`;
@@ -390,7 +378,7 @@ function measure(preview, error) {
   out.innerHTML =
     `<div class="rendered" style="margin-bottom:12px"><strong>Subject:</strong> ${esc(preview.subject)}</div>`
     + `<iframe class="mail" sandbox="" srcdoc="${esc(preview.body_html)}" title="Email preview"></iframe>`
-    + `<p class="text-muted" style="font-size:11.5px;margin:10px 0 4px">Plain-text alternative</p>`
+    + `<p class="help">Plain-text alternative</p>`
     + `<div class="rendered">${esc(preview.body_text)}</div>`;
 }
 

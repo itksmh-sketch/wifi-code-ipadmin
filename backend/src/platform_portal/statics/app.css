@@ -261,7 +261,7 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
 /* Only margin-bottom is set: dl keeps its default top margin. */
 .kv{display:grid;grid-template-columns:170px 1fr;gap:var(--sp-2) var(--sp-4);font-size:var(--fs-sm);margin-bottom:var(--sp-4)}
 .kv dt{color:var(--muted)}
-.kv dd{margin:0}
+.kv dd{margin:0;overflow-wrap:anywhere}
 .mask{font-family:var(--mono);letter-spacing:.04em}
 .mask .dots{color:var(--muted)}
 .divider{height:1px;background:var(--border);margin:var(--sp-5) 0}

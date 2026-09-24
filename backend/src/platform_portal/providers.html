@@ -7,33 +7,16 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=4">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=5">
   <style>
-    #toast{position:fixed;top:20px;right:20px;z-index:1000;padding:12px 18px;border-radius:10px;
-      border:1px solid rgba(34,197,94,.35);background:rgba(34,197,94,.16);color:#bbf7d0;font-size:14px;
-      font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(-8px);
-      transition:opacity .2s,transform .2s;pointer-events:none}
-    #toast.show{opacity:1;transform:translateY(0)}
-    #toast.bad{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.16);color:#fca5a5}
-
-    /* Three states must be readable at a glance, so each gets its own colour,
-       its own badge wording and its own control affordance. */
-    .switch{position:relative;display:inline-block;width:42px;height:24px;flex:none}
-    .switch input{position:absolute;opacity:0;width:0;height:0;padding:0;margin:0}
-    .slider{position:absolute;inset:0;border-radius:999px;background:var(--surface-raised-hover);border:1px solid var(--border);
-      cursor:pointer;transition:background .15s,border-color .15s}
-    .slider::before{content:"";position:absolute;height:16px;width:16px;left:3px;top:3px;border-radius:50%;
-      background:var(--muted);transition:transform .15s,background .15s}
-    .switch input:checked + .slider{background:rgba(34,197,94,.3);border-color:rgba(34,197,94,.5)}
-    .switch input:checked + .slider::before{transform:translateX(18px);background:#22c55e}
-    .switch input:focus-visible + .slider{box-shadow:0 0 0 3px rgba(99,102,241,.25)}
-    .switch input:disabled + .slider{cursor:not-allowed;opacity:.4}
-
+    /* Toast, switch, dot, key/value list and key-source badges come from app.css.
+       Three provider states must be readable at a glance, so each gets its own
+       colour, its own badge wording and its own control affordance. */
     tr.locked td{opacity:.55}
     tr.locked td .provider-name::after{content:" 🔒";opacity:.7;font-size:11px}
-    .badge.integrated{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.35);color:#fcd34d}
-    .badge.locked{background:rgba(148,163,184,.1);border-color:var(--border);color:var(--muted)}
-    .badge.platform{background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.35);color:#c7d2fe}
+    .badge.integrated{background:var(--warning-tint);border-color:var(--warning-border);color:var(--warning-text)}
+    .badge.locked{background:var(--neutral-tint);border-color:var(--border);color:var(--muted)}
+    .badge.platform{background:rgba(var(--accent-rgb),.14);border-color:rgba(var(--accent-rgb),.32);color:var(--link)}
 
     .provider-name{font-weight:600}
     .provider-desc{color:var(--muted);font-size:12px;margin-top:3px;max-width:440px;line-height:1.45}
@@ -43,18 +26,6 @@
     .rate-prefix{color:var(--muted);font-size:12px;margin-right:5px}
     .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:18px}
     .legend span{display:inline-flex;align-items:center;gap:6px}
-    .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
-    .dot.on{background:#22c55e}.dot.off{background:#f59e0b}.dot.no{background:var(--muted)}
-
-    .kv{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;font-size:13px;margin-bottom:18px}
-    .kv dt{color:var(--muted)}
-    .kv dd{margin:0}
-    .mask{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}
-    .mask .dots{color:var(--muted)}
-    .badge.unset{background:rgba(148,163,184,.1);border-color:var(--border);color:var(--muted)}
-    .badge.off{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.45);color:#fcd34d}
-    .badge.db{background:var(--info-tint);border-color:var(--info-border);color:var(--info-text)}
-    .divider{height:1px;background:var(--border);margin:20px 0}
   </style>
 </head>
 <body>
@@ -63,7 +34,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=4"></script>
+  <script src="/platform/statics/nav.js?v=5"></script>
 
   <div class="section-title">Providers</div>
   <p class="section-sub">
@@ -72,9 +43,9 @@
   </p>
 
   <div class="legend">
-    <span><i class="dot on"></i> Available — operators can select it</span>
-    <span><i class="dot off"></i> Integrated, switched off</span>
-    <span><i class="dot no"></i> Not yet integrated — cannot be switched on</span>
+    <span><i class="dot good"></i> Available — operators can select it</span>
+    <span><i class="dot warn"></i> Integrated, switched off</span>
+    <span><i class="dot idle"></i> Not yet integrated — cannot be switched on</span>
   </div>
 
   <div id="msg" class="notice bad" style="display:none;margin-bottom:16px"></div>
@@ -125,7 +96,7 @@
   </div>
 
   <!-- ── Platform SMS Gateway Keys ───────────────────────────────────────── -->
-  <div id="sms-keys-loading" style="text-align:center;padding:40px 0;color:var(--muted)">Loading SMS gateway keys…</div>
+  <div id="sms-keys-loading" class="empty">Loading SMS gateway keys…</div>
 
   <div id="sms-keys-card-body" style="display:none;margin-top:16px">
     <div class="card" style="max-width:720px">
@@ -159,9 +130,9 @@
         <label>Sender ID</label>
         <input id="sms_sender_id" type="text" autocomplete="off" spellcheck="false" placeholder="Registered Arkesel sender ID">
 
-        <label style="display:flex;align-items:center;gap:8px;margin-top:16px">
-          <input id="sms_is_active" type="checkbox" checked style="width:auto;margin:0">
-          <span style="color:var(--text);font-size:13px">Active — use these keys for the platform SMS gateway</span>
+        <label class="check">
+          <input id="sms_is_active" type="checkbox" checked>
+          <span>Active — use these keys for the platform SMS gateway</span>
         </label>
 
         <p class="text-muted" style="margin:10px 0 0">
@@ -178,21 +149,17 @@
     </div>
   </div>
 
-  <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
+  <div id="loading" class="empty lg">Loading…</div>
 </div>
 
-<div id="toast"></div>
+<div id="toast" class="toast" role="status"></div>
 
-<script src="/platform/statics/setup-guard.js?v=4"></script>
+<script src="/platform/statics/setup-guard.js?v=5"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
-if (!token) { window.location.replace('/platform/login'); }
-
-document.getElementById('logout-btn').addEventListener('click', () => {
-  localStorage.removeItem('platform_access_token');
-  localStorage.removeItem('platform_refresh_token');
-  window.location.href = '/platform/login';
-});
+// Stop here when signed out: every API call below would fail and flash an
+// error before the redirect lands. Sign-out itself is handled by nav.js.
+if (!token) { window.location.replace('/platform/login'); throw new Error('Signed out: redirecting to login'); }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -222,7 +189,7 @@ let toastTimer = null;
 function showToast(text, bad) {
   const t = document.getElementById('toast');
   t.textContent = text;
-  t.className = bad ? 'bad show' : 'show';
+  t.className = bad ? 'toast bad show' : 'toast show';
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
 }
