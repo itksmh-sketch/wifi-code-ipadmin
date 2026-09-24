@@ -8,6 +8,30 @@ Seed script: Creates test data for Phase 1.
 - 1 superadmin user
 
 Safe to run multiple times (idempotent).
+
+Platform owner security setup (non-production opt-in)
+------------------------------------------------------
+Every platform-owner route is gated until the owner completes security setup,
+and setup needs a working SMS account to verify a phone. A dev/CI install with
+no SMS would leave the seeded owner stuck at the setup wizard. For those
+environments only, the seed can create the owner with setup already complete:
+
+    SEED_OWNER_SETUP_COMPLETE=true
+    SEED_OWNER_CHARACTER_CODE=<12 characters from ABCDEFGHJKMNPQRSTUVWXYZ23456789>
+
+e.g. docker exec -e SEED_OWNER_SETUP_COMPLETE=true -e SEED_OWNER_CHARACTER_CODE=ABCDEFGHJK23 \
+       -e PLATFORM_OWNER_EMAIL=owner@ci.test hotspot-backend python -m src.db.seeds.seed
+
+Guard rails, all checked before anything is written:
+  * off unless SEED_OWNER_SETUP_COMPLETE is true/1/yes; any other non-false
+    value is refused (a typo must not silently mean "off" or "on");
+  * the code must be a valid 12-character code;
+  * the owner email must be a reserved test address (.test, .example,
+    .invalid, .localhost, .local, example.com/.org/.net). The production
+    owner's address is not, so the opt-in refuses there;
+  * INSERT-ONLY: it applies only when this run creates the owner. An owner
+    that already exists is never modified, whatever the variables say.
+There is deliberately no runtime switch that skips the setup gate.
 """
 import asyncio
 import os
@@ -28,6 +52,8 @@ from src.modules.vouchers.engine import (
     generate_voucher_username,
 )
 from src.utils.auth import hash_password
+from src.db.models import PlatformOwnerSecurityEvent
+from src.modules.platform.owner_setup import is_valid_code, looks_like_test_email, mark_setup_complete
 from src.utils.reseller_auth import hash_reseller_password
 from src.utils.encryption import encrypt_secret
 from src.db.models import CommissionRule, Reseller, ResellerVoucherAllocation, ResellerWallet, ResellerWalletTransaction
@@ -35,11 +61,49 @@ from src.modules.resellers.wallet_service import WalletService
 
 settings = get_settings()
 
+SEED_SETUP_FLAG = "SEED_OWNER_SETUP_COMPLETE"
+SEED_CODE_VAR = "SEED_OWNER_CHARACTER_CODE"
+
+
+class SeedRefused(Exception):
+    """A seed opt-in is misconfigured. Raised before anything is written."""
+
+
+def owner_setup_opt_in(env=None, email: str | None = None) -> str | None:
+    """The character code to seed the owner with, or None if the opt-in is off.
+    Raises SeedRefused for anything half-configured or unsafe."""
+    env = os.environ if env is None else env
+    email = settings.platform_owner_email if email is None else email
+    raw = env.get(SEED_SETUP_FLAG, "")
+    flag = raw.strip().lower()
+    code = env.get(SEED_CODE_VAR, "").strip().upper()
+    if flag in ("", "false", "0", "no"):
+        if code:
+            print(f"  {SEED_CODE_VAR} is set but {SEED_SETUP_FLAG} is not true: ignored.")
+        return None
+    if flag not in ("true", "1", "yes"):
+        raise SeedRefused(f"{SEED_SETUP_FLAG}={raw!r} is not true/false.")
+    if not is_valid_code(code):
+        raise SeedRefused(
+            f"{SEED_SETUP_FLAG} is on but {SEED_CODE_VAR} is missing or invalid: it must be "
+            "12 characters from ABCDEFGHJKMNPQRSTUVWXYZ23456789."
+        )
+    if not looks_like_test_email(email):
+        raise SeedRefused(
+            f"{SEED_SETUP_FLAG} is on but the owner email {email!r} is not a reserved test address "
+            "(.test, .example, .invalid, .localhost, .local, example.com/.org/.net). "
+            "This opt-in is for dev/CI databases only."
+        )
+    return code
+
+
 BATCH_ID = "SEED-BATCH-001"
 RESELLER_SEED_BATCH = "SEED-RESELLER-ALLOC"
 
 
 async def seed():
+    # Validated before the engine exists: a refused opt-in writes nothing.
+    owner_setup_code = owner_setup_opt_in()
     engine = create_async_engine(settings.database_url)
     async_session = async_sessionmaker(
         engine,
@@ -61,10 +125,23 @@ async def seed():
                 is_active=True,
             )
             db.add(owner)
+            if owner_setup_code:
+                await db.flush()  # the code's digests are bound to the owner id
+                mark_setup_complete(owner, code=owner_setup_code)
+                db.add(PlatformOwnerSecurityEvent(
+                    platform_owner_id=owner.id,
+                    event_type="seeded_setup_complete",
+                    detail={"source": "seed.py", "opt_in": SEED_SETUP_FLAG},
+                ))
             await db.commit()
             print(f"  Platform owner created: {owner.email}")
+            if owner_setup_code:
+                print(f"  Security setup marked complete ({SEED_SETUP_FLAG}); sign in with the password "
+                      f"and characters from {SEED_CODE_VAR}.")
         else:
             print(f"  Platform owner already exists: {owner.email}")
+            if owner_setup_code:
+                print(f"  {SEED_SETUP_FLAG} ignored: the seed never modifies an existing owner.")
 
         tenant_zero = (
             await db.execute(select(ISPOperator).where(ISPOperator.slug == "tenant-zero"))
@@ -517,4 +594,8 @@ async def seed():
 
 
 if __name__ == "__main__":
-    asyncio.run(seed())
+    try:
+        asyncio.run(seed())
+    except SeedRefused as exc:
+        print(f"SEED REFUSED, nothing was written: {exc}", file=sys.stderr)
+        sys.exit(2)
