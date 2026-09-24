@@ -8,21 +8,42 @@
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
   <link rel="stylesheet" href="/platform/statics/app.css">
+  <style>
+    .char-row{display:flex;gap:12px}
+    .char-row .char{flex:1;min-width:0}
+    .char-row input{text-align:center;font-size:22px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;padding:10px 0}
+    .linkish{background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;padding:0;margin-top:14px;text-decoration:underline}
+  </style>
 </head>
 <body>
 <div class="login-wrap">
   <div class="login-card">
     <h1>Platform Admin</h1>
-    <p class="sub">Sign in with your platform owner credentials.</p>
     <div id="msg" class="notice bad" style="display:none;margin-bottom:16px"></div>
-    <form id="form">
-      <label>Email</label>
-      <input id="email" type="email" required autocomplete="username" placeholder="admin@platform.com">
-      <label>Password</label>
-      <input id="password" type="password" required autocomplete="current-password">
-      <div class="spacer"></div>
-      <button class="btn primary" type="submit" id="submit-btn">Sign In</button>
-    </form>
+
+    <!-- Step 1: password -->
+    <div id="step-password">
+      <p class="sub">Sign in with your platform owner credentials.</p>
+      <form id="form">
+        <label for="email">Email</label>
+        <input id="email" type="email" required autocomplete="username" placeholder="admin@platform.com">
+        <label for="password">Password</label>
+        <input id="password" type="password" required autocomplete="current-password">
+        <div class="spacer"></div>
+        <button class="btn primary" type="submit" id="submit-btn">Sign In</button>
+      </form>
+    </div>
+
+    <!-- Step 2: character challenge (only once security setup is complete) -->
+    <div id="step-challenge" style="display:none">
+      <p class="sub" id="challenge-intro">Enter the requested characters from your character code.</p>
+      <form id="challenge-form" autocomplete="off">
+        <div class="char-row" id="char-row"></div>
+        <div class="spacer"></div>
+        <button class="btn primary" type="submit" id="challenge-btn">Continue</button>
+      </form>
+      <button class="linkish" type="button" id="back-btn">Back to password</button>
+    </div>
   </div>
 </div>
 <script>
@@ -30,11 +51,85 @@
     window.location.replace('/platform/operators');
   }
 
+  const msg = document.getElementById('msg');
+  const stepPassword = document.getElementById('step-password');
+  const stepChallenge = document.getElementById('step-challenge');
+  const btn = document.getElementById('submit-btn');
+  const challengeBtn = document.getElementById('challenge-btn');
+  // The challenge token lives only in this variable: never in storage, gone
+  // with the page, and single-use on the server anyway.
+  let challenge = null;
+
+  function showError(text) {
+    msg.textContent = text;
+    msg.style.display = 'block';
+  }
+  function clearError() { msg.style.display = 'none'; }
+  function detailOf(data, fallback) {
+    if (data && typeof data.detail === 'string') return data.detail;
+    if (data && data.detail && typeof data.detail.message === 'string') return data.detail.message;
+    return fallback;
+  }
+  function finishSignIn(data) {
+    localStorage.setItem('platform_access_token', data.access_token);
+    localStorage.setItem('platform_refresh_token', data.refresh_token);
+    window.location.href = '/platform/operators';
+  }
+  function showPasswordStep(errorText) {
+    challenge = null;
+    stepChallenge.style.display = 'none';
+    stepPassword.style.display = '';
+    document.getElementById('password').value = '';
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+    if (errorText) showError(errorText); else clearError();
+    document.getElementById('password').focus();
+  }
+  function showChallengeStep(data) {
+    challenge = data;
+    clearError();
+    const row = document.getElementById('char-row');
+    row.innerHTML = '';
+    data.positions.forEach((pos, i) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'char';
+      const label = document.createElement('label');
+      label.htmlFor = 'char-' + pos;
+      label.textContent = 'Character ' + pos;
+      const input = document.createElement('input');
+      input.id = 'char-' + pos;
+      input.dataset.position = String(pos);
+      input.maxLength = 1;
+      input.required = true;
+      input.autocomplete = 'off';
+      input.setAttribute('autocapitalize', 'characters');
+      input.setAttribute('spellcheck', 'false');
+      input.setAttribute('aria-label', 'Character ' + pos + ' of ' + data.code_length);
+      input.addEventListener('input', () => {
+        input.value = input.value.replace(/\s/g, '').toUpperCase().slice(0, 1);
+        const next = row.querySelectorAll('input')[i + 1];
+        if (input.value && next) next.focus();
+      });
+      input.addEventListener('keydown', e => {
+        const prev = row.querySelectorAll('input')[i - 1];
+        if (e.key === 'Backspace' && !input.value && prev) prev.focus();
+      });
+      wrap.appendChild(label);
+      wrap.appendChild(input);
+      row.appendChild(wrap);
+    });
+    document.getElementById('challenge-intro').textContent =
+      'Enter characters ' + data.positions.join(', ') + ' of your ' + data.code_length + '-character code.';
+    challengeBtn.disabled = false;
+    challengeBtn.textContent = 'Continue';
+    stepPassword.style.display = 'none';
+    stepChallenge.style.display = '';
+    row.querySelector('input').focus();
+  }
+
   document.getElementById('form').addEventListener('submit', async e => {
     e.preventDefault();
-    const msg = document.getElementById('msg');
-    const btn = document.getElementById('submit-btn');
-    msg.style.display = 'none';
+    clearError();
     btn.disabled = true;
     btn.textContent = 'Signing in…';
     try {
@@ -48,22 +143,66 @@
       });
       const data = await res.json();
       if (!res.ok) {
-        msg.textContent = data.detail || 'Login failed. Check your credentials.';
-        msg.style.display = 'block';
+        showError(detailOf(data, 'Login failed. Check your credentials.'));
         btn.disabled = false;
         btn.textContent = 'Sign In';
         return;
       }
-      localStorage.setItem('platform_access_token', data.access_token);
-      localStorage.setItem('platform_refresh_token', data.refresh_token);
-      window.location.href = '/platform/operators';
+      if (data.challenge_required) {
+        showChallengeStep(data);
+        return;
+      }
+      if (!data.access_token) {
+        showError('Unexpected response from the server. Please try again.');
+        btn.disabled = false;
+        btn.textContent = 'Sign In';
+        return;
+      }
+      finishSignIn(data);
     } catch {
-      msg.textContent = 'Network error. Please try again.';
-      msg.style.display = 'block';
+      showError('Network error. Please try again.');
       btn.disabled = false;
       btn.textContent = 'Sign In';
     }
   });
+
+  document.getElementById('challenge-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    if (!challenge) return showPasswordStep('Please sign in again.');
+    clearError();
+    const characters = {};
+    document.querySelectorAll('#char-row input').forEach(input => {
+      characters[input.dataset.position] = input.value.trim().toUpperCase();
+    });
+    challengeBtn.disabled = true;
+    challengeBtn.textContent = 'Checking…';
+    try {
+      const res = await fetch('/api/v1/platform/auth/challenge', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({challenge_token: challenge.challenge_token, characters}),
+      });
+      const data = await res.json();
+      if (res.ok && data.access_token) return finishSignIn(data);
+      if (res.status === 400) {
+        // Not counted and the token is still good: let them fix it here.
+        showError(detailOf(data, 'Enter each requested character.'));
+        challengeBtn.disabled = false;
+        challengeBtn.textContent = 'Continue';
+        return;
+      }
+      // 401 (wrong characters, or the step expired / was used) and 403
+      // (locked) both spend the challenge: the only way on is a fresh
+      // password sign-in, which asks for the SAME positions again.
+      showPasswordStep(detailOf(data, 'Those characters did not match. Please sign in again.'));
+    } catch {
+      showError('Network error. Please try again.');
+      challengeBtn.disabled = false;
+      challengeBtn.textContent = 'Continue';
+    }
+  });
+
+  document.getElementById('back-btn').addEventListener('click', () => showPasswordStep());
 </script>
 </body>
 </html>
