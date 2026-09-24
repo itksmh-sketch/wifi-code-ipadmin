@@ -111,9 +111,16 @@ radtest <voucher_username> <voucher_password> localhost 0 <RADIUS_COA_SECRET>
 
 ## API Documentation
 
-Once running, visit:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+The interactive docs (`/docs`, `/redoc`) and `/openapi.json` are disabled: on a
+public server they list every route to anyone who asks. To get the OpenAPI
+schema, generate it from the app instead (inside the backend container, or any
+environment with the backend's dependencies installed):
+
+```bash
+docker exec hotspot-backend python -c "import json; from src.app import app; print(json.dumps(app.openapi(), indent=2))" > openapi.json
+```
+
+Load `openapi.json` into any OpenAPI viewer (e.g. Swagger Editor) to browse it.
 
 ## FreeRADIUS SQL Queries
 

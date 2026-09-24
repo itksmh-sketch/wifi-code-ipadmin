@@ -58,10 +58,16 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# No public API docs: /docs, /redoc and /openapi.json listed every route to
+# anyone who asked (the access logs showed only scanners using them). The
+# schema can still be generated locally with app.openapi(); see README.
 app = FastAPI(
     title="ISP Hotspot Voucher & Billing System",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # CORS
