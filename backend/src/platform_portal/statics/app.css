@@ -43,6 +43,9 @@ label{display:block;font-size:13px;color:var(--muted);margin:14px 0 5px}
 input,select,textarea{width:100%;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:#0b1430;color:var(--text);font-size:14px;outline:none;font-family:inherit}
 input:focus,select:focus,textarea:focus{border-color:rgba(99,102,241,.6);box-shadow:0 0 0 3px rgba(99,102,241,.12)}
 textarea{resize:vertical;min-height:80px}
+input:disabled,select:disabled,textarea:disabled{color:var(--muted);cursor:not-allowed}
+/* A value to copy, not edit (temporary passwords): dashed edge and no fill read as read-only. */
+input.readout{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.04em;background:transparent;border-style:dashed}
 
 .field{margin-bottom:4px}
 .field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}

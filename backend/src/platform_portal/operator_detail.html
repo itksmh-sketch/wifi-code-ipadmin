@@ -518,7 +518,7 @@ document.getElementById('reset-submit').addEventListener('click', async () => {
       + (body.mode === 'onboarding'
         ? '<p class="detail-line">Temporary password (shown once):</p>'
           + '<div style="display:flex;gap:8px;align-items:center;margin:6px 0 8px">'
-          + '<input id="reset-temp-password" readonly value="' + escHtml(body.temp_password || '') + '" style="flex:1;padding:9px 12px;font-size:14px;font-family:monospace;background:#f8fafc">'
+          + '<input id="reset-temp-password" readonly class="readout" value="' + escHtml(body.temp_password || '') + '" style="flex:1;padding:9px 12px;font-size:14px">'
           + '<button class="btn" type="button" id="reset-copy-password">Copy</button></div>'
           + '<p class="detail-line dim">On next sign-in they verify a phone and choose a new password.</p>'
         : '<p class="detail-line dim">On next sign-in they must choose a new password.'
@@ -671,7 +671,7 @@ document.getElementById('admin-submit').addEventListener('click', async () => {
       '<p class="detail-line">Email: <code>' + escHtml(admin.email) + '</code></p>'
       + '<p class="detail-line">Role: <code>' + escHtml(admin.role) + '</code></p>'
       + '<div style="display:flex;gap:8px;align-items:center;margin:10px 0 8px">'
-      + '<input id="admin-temp-password" readonly value="' + escHtml(admin.temp_password || '') + '" style="flex:1;padding:9px 12px;font-size:14px;font-family:monospace;background:#f8fafc">'
+      + '<input id="admin-temp-password" readonly class="readout" value="' + escHtml(admin.temp_password || '') + '" style="flex:1;padding:9px 12px;font-size:14px">'
       + '<button class="btn" type="button" id="admin-copy-password">Copy</button></div>'
       + '<p class="detail-line dim">' + (admin.temp_password_sms_sent
           ? 'Also sent by SMS to ' + escHtml(admin.phone) + '.'
