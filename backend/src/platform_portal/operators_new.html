@@ -7,18 +7,17 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=1">
 </head>
 <body>
 <div class="container">
-  <nav class="nav">
-    <span class="brand">Platform <span>Admin</span></span>
-    <div class="links">
-      <a href="/platform/operators" class="btn">← Back to Operators</a>
-      <button class="btn" id="logout-btn">Logout</button>
-    </div>
+  <nav class="nav" id="platform-nav" aria-label="Platform">
+    <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
+    <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
+  <script src="/platform/statics/nav.js?v=1"></script>
 
+  <a class="crumb" href="/platform/operators">← Operators</a>
   <div class="section-title">Create New Operator</div>
   <p class="section-sub">Provisions an operator account and creates their first admin user.</p>
 
@@ -94,7 +93,7 @@
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js"></script>
+<script src="/platform/statics/setup-guard.js?v=1"></script>
 <script>
   const token = localStorage.getItem('platform_access_token');
   if (!token) { window.location.replace('/platform/login'); }

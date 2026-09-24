@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=1">
   <style>
     .kv{display:grid;grid-template-columns:130px 1fr;gap:8px 14px;font-size:13px;margin:0 0 16px}
     .kv dt{color:var(--muted)}
@@ -18,24 +18,20 @@
 </head>
 <body>
 <div class="container">
-  <nav class="nav">
-    <span class="brand">Platform <span>Admin</span></span>
-    <div class="links">
-      <a href="/platform/operators/new" class="btn primary">+ New Operator</a>
-      <a href="/platform/analytics" class="btn">Analytics</a>
-      <a href="/platform/providers" class="btn">Providers</a>
-      <a href="/platform/billing" class="btn">Billing</a>
-      <a href="/platform/transactions" class="btn">Transactions</a>
-      <a href="/platform/health" class="btn">Service Health</a>
-      <a href="/platform/notification-templates" class="btn">Templates</a>
-      <a href="/platform/settings" class="btn">Settings</a>
-      <button class="btn" id="logout-btn">Logout</button>
-    </div>
+  <nav class="nav" id="platform-nav" aria-label="Platform">
+    <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
+    <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
+  <script src="/platform/statics/nav.js?v=1"></script>
 
   <div id="main" style="display:none">
-    <div class="section-title">Operators</div>
-    <p class="section-sub" id="owner-info">Loading…</p>
+    <div class="page-head">
+      <div>
+        <div class="section-title">Operators</div>
+        <p class="section-sub" id="owner-info">Loading…</p>
+      </div>
+      <a href="/platform/operators/new" class="btn primary">+ New Operator</a>
+    </div>
 
     <div class="stats-grid" id="stats">
       <div class="stat-card"><div class="stat-label">Total Operators</div><div class="stat-value" id="s-total">—</div></div>
@@ -156,7 +152,7 @@
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js"></script>
+<script src="/platform/statics/setup-guard.js?v=1"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
 if (!token) { window.location.replace('/platform/login'); }

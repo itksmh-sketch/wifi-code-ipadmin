@@ -7,8 +7,8 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css">
-  <script src="/platform/statics/setup-guard.js"></script>
+  <link rel="stylesheet" href="/platform/statics/app.css?v=1">
+  <script src="/platform/statics/setup-guard.js?v=1"></script>
   <style>
     /* Layout for this page only. Everything it demonstrates comes from app.css. */
     #shell{display:none}
@@ -41,13 +41,11 @@
 <body>
 <div id="gate" class="empty lg">Loading…</div>
 <div id="shell" class="container">
-  <nav class="nav">
-    <span class="brand">Platform <span>Admin</span></span>
-    <div class="links">
-      <a href="/platform/operators" class="btn">← Operators</a>
-      <button class="btn" id="logout-btn">Logout</button>
-    </div>
+  <nav class="nav" id="platform-nav" aria-label="Platform">
+    <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
+    <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
+  <script src="/platform/statics/nav.js?v=1"></script>
 
   <div class="section-title">Style guide</div>
   <p class="section-sub">Every token and component in <code>statics/app.css</code>. Token values below are read live from the stylesheet.

@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=1">
   <style>
     /* The page stays hidden until an authenticated load succeeds, so nothing
        renders for a visitor without a valid platform-owner token. */
@@ -59,16 +59,11 @@
 <div id="gate" style="text-align:center;padding:80px 0;color:var(--muted)">Loading…</div>
 
 <div id="shell" class="container">
-  <nav class="nav">
-    <span class="brand">Platform <span>Admin</span></span>
-    <div class="links">
-      <a href="/platform/operators" class="btn">← Operators</a>
-      <a href="/platform/settings" class="btn">Settings</a>
-      <a href="/platform/billing" class="btn">Billing</a>
-      <a href="/platform/health" class="btn">Service Health</a>
-      <button class="btn" id="logout-btn">Logout</button>
-    </div>
+  <nav class="nav" id="platform-nav" aria-label="Platform">
+    <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
+    <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
+  <script src="/platform/statics/nav.js?v=1"></script>
 
   <div class="section-title">Notification Templates</div>
   <p class="section-sub">
@@ -140,7 +135,7 @@
 
 <div id="toast">Saved</div>
 
-<script src="/platform/statics/setup-guard.js"></script>
+<script src="/platform/statics/setup-guard.js?v=1"></script>
 <script>
 const DEBOUNCE_MS = 400;
 

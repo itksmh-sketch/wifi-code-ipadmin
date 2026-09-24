@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=1">
   <style>
     .count-grid{display:grid;gap:12px;grid-template-columns:repeat(4,minmax(0,1fr))}
     @media(max-width:760px){.count-grid{grid-template-columns:repeat(2,1fr)}}
@@ -27,19 +27,11 @@
 </head>
 <body>
 <div class="container">
-  <nav class="nav">
-    <span class="brand">Platform <span>Admin</span></span>
-    <div class="links">
-      <a href="/platform/operators" class="btn">← Operators</a>
-      <a href="/platform/providers" class="btn">Providers</a>
-      <a href="/platform/billing" class="btn">Billing</a>
-      <a href="/platform/transactions" class="btn">Transactions</a>
-      <a href="/platform/health" class="btn">Service Health</a>
-      <a href="/platform/notification-templates" class="btn">Templates</a>
-      <a href="/platform/settings" class="btn">Settings</a>
-      <button class="btn" id="logout-btn">Logout</button>
-    </div>
+  <nav class="nav" id="platform-nav" aria-label="Platform">
+    <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
+    <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
+  <script src="/platform/statics/nav.js?v=1"></script>
 
   <div class="section-title">Analytics</div>
   <p class="section-sub">
@@ -126,7 +118,7 @@
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js"></script>
+<script src="/platform/statics/setup-guard.js?v=1"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
 if (!token) { window.location.replace('/platform/login'); }
