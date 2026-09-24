@@ -1,9 +1,16 @@
-"""Platform-owner security setup: verify a phone, set a security question,
-generate the character code.
+"""Platform-owner security setup: the four steps and the completion commit.
 
-These are the first three steps of the owner's security setup (confirming the
-code and the all-or-nothing completion come later). They only accept calls
-while ``must_complete_security_setup`` is TRUE. Once setup is complete, the
+    1. verify a phone (OTP)          3. generate the character code (shown once)
+    2. set a security question        4. confirm the code (answer 3 positions)
+
+then POST /complete, which checks all four in one transaction, turns the
+setup gate off, and signs the owner out so their next sign-in is the first
+with the character challenge.
+
+Every route here depends on get_authenticated_platform_owner, NOT the gated
+get_platform_owner_context: these are the only routes an owner with setup
+pending can reach. They only accept calls while
+``must_complete_security_setup`` is TRUE. Once setup is complete, the
 phone is the recovery channel for both forgot-password and forgot-code, and
 re-pointing it from a signed-in session is exactly the takeover path that
 send_phone_changed_sms exists to catch on the admin side. Changing either
@@ -29,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
 from src.db.models import PlatformOwner, PlatformOwnerSecurityEvent
-from src.middleware.auth import get_platform_owner_context
+from src.middleware.auth import get_authenticated_platform_owner
 from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.admin_accounts import otp as otp_service
 from src.modules.admin_accounts.notifications import OTP_TTL_MINUTES, send_otp_sms
@@ -60,6 +67,17 @@ class SetupCharacterCodeRequest(BaseModel):
     current_password: str = Field(max_length=256)
 
 
+class SetupCodeCheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # 1-based position -> the character at that position.
+    characters: dict[int, str] = Field(max_length=character_code.POSITIONS_PER_CHALLENGE)
+
+
+class SetupCompleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    current_password: str = Field(max_length=256)
+
+
 class SetupSecurityQuestionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     security_question: str = Field(max_length=64)
@@ -80,12 +98,29 @@ def _require_setup_pending(owner: PlatformOwner) -> None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Your security setup is already complete.")
 
 
+def _code_confirmed(owner: PlatformOwner) -> bool:
+    return bool(owner.challenge_hashes and owner.challenge_hashes.get("confirmed_at"))
+
+
+def _missing_steps(owner: PlatformOwner) -> list[str]:
+    missing = []
+    if not (owner.phone_verified and owner.phone):
+        missing.append("phone")
+    if not (owner.security_question and owner.security_answer_hash):
+        missing.append("security_question")
+    if owner.challenge_hashes is None:
+        missing.append("character_code")
+    elif not _code_confirmed(owner):
+        missing.append("character_code_confirmation")
+    return missing
+
+
 def _record_event(db: AsyncSession, owner: PlatformOwner, event_type: str, **detail) -> None:
     db.add(PlatformOwnerSecurityEvent(platform_owner_id=owner.id, event_type=event_type, detail=detail or None))
 
 
 @router.get("/status")
-async def setup_status(owner: PlatformOwner = Depends(get_platform_owner_context)):
+async def setup_status(owner: PlatformOwner = Depends(get_authenticated_platform_owner)):
     return {
         "must_complete_security_setup": bool(owner.must_complete_security_setup),
         "phone_verified": bool(owner.phone_verified),
@@ -93,6 +128,8 @@ async def setup_status(owner: PlatformOwner = Depends(get_platform_owner_context
         "has_security_question": bool(owner.security_question and owner.security_answer_hash),
         "security_question": owner.security_question,
         "has_character_code": owner.challenge_hashes is not None,
+        "character_code_confirmed": _code_confirmed(owner),
+        "ready_to_complete": _missing_steps(owner) == [],
         "security_questions": [{"key": key, "question": text} for key, text in SECURITY_QUESTIONS.items()],
     }
 
@@ -101,7 +138,7 @@ async def setup_status(owner: PlatformOwner = Depends(get_platform_owner_context
 async def setup_send_phone_code(
     body: SetupPhoneRequest,
     request: Request,
-    owner: PlatformOwner = Depends(get_platform_owner_context),
+    owner: PlatformOwner = Depends(get_authenticated_platform_owner),
     db: AsyncSession = Depends(get_db),
 ):
     _require_setup_pending(owner)
@@ -134,7 +171,7 @@ async def setup_send_phone_code(
 async def setup_verify_phone_code(
     body: SetupOtpVerifyRequest,
     request: Request,
-    owner: PlatformOwner = Depends(get_platform_owner_context),
+    owner: PlatformOwner = Depends(get_authenticated_platform_owner),
     db: AsyncSession = Depends(get_db),
 ):
     _require_setup_pending(owner)
@@ -162,7 +199,7 @@ async def setup_verify_phone_code(
 async def setup_security_question(
     body: SetupSecurityQuestionRequest,
     request: Request,
-    owner: PlatformOwner = Depends(get_platform_owner_context),
+    owner: PlatformOwner = Depends(get_authenticated_platform_owner),
     db: AsyncSession = Depends(get_db),
 ):
     _require_setup_pending(owner)
@@ -191,7 +228,7 @@ async def setup_generate_character_code(
     body: SetupCharacterCodeRequest,
     request: Request,
     response: Response,
-    owner: PlatformOwner = Depends(get_platform_owner_context),
+    owner: PlatformOwner = Depends(get_authenticated_platform_owner),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate the owner's character code and return it, the only time it is
@@ -225,3 +262,92 @@ async def setup_generate_character_code(
         "length": len(code),
         "shown_once": True,
     }
+
+
+@router.get("/character-code/check")
+async def setup_code_check_positions(
+    owner: PlatformOwner = Depends(get_authenticated_platform_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """The 3 positions to answer to prove the code was recorded. Drawn once and
+    kept until answered correctly (a new code discards them), so reloading
+    the page can't deal easier ones. Uses the same pending-positions column
+    as the login challenge, which is idle while setup is pending."""
+    _require_setup_pending(owner)
+    if owner.challenge_hashes is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Generate your character code first.")
+    if not owner.challenge_pending_positions:
+        owner.challenge_pending_positions = character_code.choose_positions(owner.challenge_hashes)
+        await db.commit()
+    return {
+        "positions": [p + 1 for p in owner.challenge_pending_positions],
+        "code_length": character_code.code_length(owner.challenge_hashes),
+        "confirmed": _code_confirmed(owner),
+    }
+
+
+@router.post("/character-code/check")
+async def setup_code_check(
+    body: SetupCodeCheckRequest,
+    request: Request,
+    owner: PlatformOwner = Depends(get_authenticated_platform_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Step 4: answer the positions from GET. Not counted toward the login
+    challenge lockout — a slip while copying the code during setup is not a
+    compromise signal, and a lock here would carry over to the first real
+    sign-in. The per-account rate limit bounds it instead."""
+    _require_setup_pending(owner)
+    await enforce_rate_limit(f"owner:{owner.id}", "platform:setup-code-check", limit=10, window_seconds=900)
+    if owner.challenge_hashes is None or not owner.challenge_pending_positions:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Generate your character code first.")
+    answers = {position - 1: value for position, value in body.characters.items()}
+    if set(answers) != set(owner.challenge_pending_positions):
+        raise _bad_request("Enter exactly the characters asked for.")
+    if not character_code.check_positions(owner.id, owner.challenge_hashes, answers):
+        raise _bad_request("Those characters don't match the code you were shown. Check what you wrote down, "
+                           "or generate a new code.")
+
+    # A new dict, not an in-place edit: SQLAlchemy only sees reassignment of a
+    # plain JSONB column. Regenerating the code replaces the dict, which is
+    # what un-confirms it.
+    owner.challenge_hashes = {**owner.challenge_hashes, "confirmed_at": datetime.now(timezone.utc).isoformat()}
+    owner.challenge_pending_positions = None
+    _record_event(db, owner, "challenge_confirmed", client_ip=_client_ip(request))
+    await db.commit()
+    return {"status": "confirmed"}
+
+
+@router.post("/complete")
+async def setup_complete(
+    body: SetupCompleteRequest,
+    request: Request,
+    owner: PlatformOwner = Depends(get_authenticated_platform_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """All-or-nothing: every step is checked in this one transaction, and only
+    if all four hold does the gate turn off. From then on, sign-in requires the
+    character code. Every session is ended (token_version bump), so the very
+    next sign-in exercises the challenge while the owner is still here to see
+    it work."""
+    _require_setup_pending(owner)
+    await enforce_rate_limit(f"owner:{owner.id}", "platform:setup-complete", limit=5, window_seconds=900)
+    if not verify_password(body.current_password, owner.password_hash):
+        raise _bad_request(WRONG_PASSWORD)
+    missing = _missing_steps(owner)
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"message": "Finish every setup step first.", "missing": missing},
+        )
+
+    owner.must_complete_security_setup = False
+    owner.challenge_pending_positions = None
+    owner.challenge_pending_jti = None
+    owner.challenge_attempt_count = 0
+    owner.challenge_locked_until = None
+    owner.token_version = int(owner.token_version or 0) + 1
+    _record_event(db, owner, "setup_completed", phone=mask_phone(owner.phone), client_ip=_client_ip(request))
+    await db.commit()
+    logger.warning("platform_owner_security_setup_completed owner_id=%s", owner.id)
+    return {"status": "complete", "logout": True}

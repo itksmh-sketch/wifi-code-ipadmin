@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Account Security Setup</title>
+  <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
+  <link rel="stylesheet" href="/platform/statics/app.css">
+  <style>
+    .setup-card{max-width:560px;width:100%}
+    .steps{list-style:none;padding:0;margin:0 0 18px;display:grid;gap:6px}
+    .steps li{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 12px;border:1px solid var(--border);border-radius:10px;font-size:13px}
+    .steps li.current{border-color:rgba(99,102,241,.6)}
+    .steps li .state{font-size:12px;color:var(--muted)}
+    .steps li.done .state{color:#86efac}
+    .code-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:14px 0}
+    .code-cell{border:1px solid var(--border);border-radius:8px;text-align:center;padding:8px 0 4px}
+    .code-cell .ch{font:600 24px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .code-cell .pos{font-size:11px;color:var(--muted)}
+    .char-row{display:flex;gap:12px}
+    .char-row .char{flex:1;min-width:0}
+    .char-row input{text-align:center;font-size:22px;font-weight:600;text-transform:uppercase;padding:10px 0}
+    .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .check{display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:13px;color:var(--text)}
+    .check input{width:auto;margin-top:2px}
+    @media (max-width:420px){.code-grid{grid-template-columns:repeat(4,1fr)}}
+  </style>
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card setup-card">
+    <h1>Secure your account</h1>
+    <p class="sub">Before you continue, finish these four steps. After setup, signing in will also ask for three characters of a code only you have.</p>
+    <ul class="steps" id="steps"></ul>
+    <div id="msg" class="notice bad" style="display:none;margin-bottom:14px"></div>
+    <div id="ok" class="notice good" style="display:none;margin-bottom:14px"></div>
+    <div id="panel"></div>
+    <div class="spacer"></div>
+    <button class="btn sm" type="button" id="logout-btn">Sign out</button>
+  </div>
+</div>
+<script>
+const token = localStorage.getItem('platform_access_token');
+if (!token) window.location.replace('/platform/login');
+
+const STEPS = [
+  {key: 'phone', title: '1. Verify your phone'},
+  {key: 'security_question', title: '2. Choose a security question'},
+  {key: 'character_code', title: '3. Get your character code'},
+  {key: 'character_code_confirmation', title: '4. Confirm your character code'},
+];
+let status = null;
+let forced = null;  // a completed step the owner chose to redo
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'text') node.textContent = v;
+    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  children.forEach(c => node.appendChild(c));
+  return node;
+}
+function showError(text) { const m = document.getElementById('msg'); m.textContent = text; m.style.display = 'block'; document.getElementById('ok').style.display = 'none'; }
+function showOk(text) { const m = document.getElementById('ok'); m.textContent = text; m.style.display = 'block'; document.getElementById('msg').style.display = 'none'; }
+function clearNotices() { document.getElementById('msg').style.display = 'none'; document.getElementById('ok').style.display = 'none'; }
+function detailOf(data, fallback) {
+  if (data && typeof data.detail === 'string') return data.detail;
+  if (data && data.detail && data.detail.message) return data.detail.message;
+  if (data && Array.isArray(data.detail)) return 'Please check the form and try again.';
+  return fallback;
+}
+function signOut(next = '/platform/login') {
+  localStorage.removeItem('platform_access_token');
+  localStorage.removeItem('platform_refresh_token');
+  window.location.replace(next);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch('/api/v1/platform/setup' + path, {
+    ...opts,
+    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token, ...(opts.headers || {})},
+  });
+  if (res.status === 401) { signOut(); return new Promise(() => {}); }
+  let data = null;
+  try { data = await res.json(); } catch { data = null; }
+  return {res, data};
+}
+
+function stepDone(key) {
+  if (!status) return false;
+  switch (key) {
+    case 'phone': return status.phone_verified;
+    case 'security_question': return status.has_security_question;
+    case 'character_code': return status.has_character_code;
+    case 'character_code_confirmation': return status.character_code_confirmed;
+  }
+}
+function currentStep() {
+  if (forced) return forced;
+  const next = STEPS.find(s => !stepDone(s.key));
+  return next ? next.key : 'complete';
+}
+
+function renderSteps() {
+  const list = document.getElementById('steps');
+  list.innerHTML = '';
+  const cur = currentStep();
+  STEPS.forEach(s => {
+    const done = stepDone(s.key);
+    const li = el('li', {class: (done ? 'done ' : '') + (cur === s.key ? 'current' : '')},
+      el('span', {text: s.title + (s.key === 'phone' && status.phone ? ' (' + status.phone + ')' : '')}));
+    const right = el('span', {class: 'actions'});
+    right.appendChild(el('span', {class: 'state', text: done ? 'Done' : (cur === s.key ? 'In progress' : 'To do')}));
+    // Steps 1-3 can be redone; redoing 3 replaces the code (and un-confirms it).
+    if (done && s.key !== 'character_code_confirmation' && cur !== s.key) {
+      right.appendChild(el('button', {class: 'btn sm', type: 'button', text: 'Redo', onclick: () => { forced = s.key; clearNotices(); render(); }}));
+    }
+    li.appendChild(right);
+    list.appendChild(li);
+  });
+}
+
+function passwordField(id) {
+  return [el('label', {for: id, text: 'Your current password'}),
+          el('input', {id, type: 'password', required: '', autocomplete: 'current-password'})];
+}
+function submitButton(text) { return el('button', {class: 'btn primary', type: 'submit', text}); }
+function busy(form, on, text) {
+  const b = form.querySelector('button[type=submit]');
+  b.disabled = on;
+  if (text) b.textContent = text;
+}
+
+// ── Step panels ──────────────────────────────────────────────────────────
+
+function renderPhone(panel) {
+  let sentTo = null;
+  const sendForm = el('form', {},
+    el('label', {for: 'phone', text: 'Mobile number (Ghana)'}),
+    el('input', {id: 'phone', type: 'tel', required: '', placeholder: '024 000 0000', autocomplete: 'tel'}),
+    ...passwordField('pw-phone'),
+    el('div', {class: 'spacer'}),
+    submitButton('Send code'));
+  const verifyForm = el('form', {style: 'display:none'},
+    el('p', {class: 'sub', id: 'sent-note'}),
+    el('label', {for: 'otp', text: '6-digit code'}),
+    el('input', {id: 'otp', inputmode: 'numeric', maxlength: '6', required: '', autocomplete: 'one-time-code'}),
+    el('div', {class: 'spacer'}),
+    el('div', {class: 'actions'}, submitButton('Verify'),
+      el('button', {class: 'btn sm', type: 'button', text: 'Use a different number', onclick: () => { verifyForm.style.display = 'none'; sendForm.style.display = ''; }})));
+  sendForm.addEventListener('submit', async e => {
+    e.preventDefault(); clearNotices(); busy(sendForm, true, 'Sending…');
+    const {res, data} = await api('/phone', {method: 'POST', body: JSON.stringify({
+      phone: document.getElementById('phone').value, current_password: document.getElementById('pw-phone').value})});
+    busy(sendForm, false, 'Send code');
+    if (!res.ok) return showError(detailOf(data, 'Could not send the code.'));
+    sentTo = data.phone;
+    document.getElementById('sent-note').textContent = 'We sent a code to ' + sentTo + '. It expires in 10 minutes.';
+    sendForm.style.display = 'none'; verifyForm.style.display = '';
+    document.getElementById('otp').focus();
+  });
+  verifyForm.addEventListener('submit', async e => {
+    e.preventDefault(); clearNotices(); busy(verifyForm, true, 'Verifying…');
+    const {res, data} = await api('/phone/verify', {method: 'POST', body: JSON.stringify({code: document.getElementById('otp').value.trim()})});
+    busy(verifyForm, false, 'Verify');
+    if (!res.ok) return showError(detailOf(data, 'That code did not work.'));
+    forced = null; showOk('Phone verified.'); await load();
+  });
+  panel.append(sendForm, verifyForm);
+}
+
+function renderQuestion(panel) {
+  const select = el('select', {id: 'question', required: ''});
+  select.appendChild(el('option', {value: '', text: 'Choose a question…'}));
+  status.security_questions.forEach(q => select.appendChild(el('option', {value: q.key, text: q.question})));
+  if (status.security_question) select.value = status.security_question;
+  const form = el('form', {},
+    el('label', {for: 'question', text: 'Security question'}), select,
+    el('label', {for: 'answer', text: 'Your answer'}),
+    el('input', {id: 'answer', required: '', autocomplete: 'off'}),
+    el('p', {class: 'sub', text: 'Capitals and extra spaces are ignored. Pick an answer that isn\'t public.'}),
+    ...passwordField('pw-question'),
+    el('div', {class: 'spacer'}),
+    submitButton('Save'));
+  form.addEventListener('submit', async e => {
+    e.preventDefault(); clearNotices(); busy(form, true, 'Saving…');
+    const {res, data} = await api('/security-question', {method: 'POST', body: JSON.stringify({
+      security_question: select.value, security_answer: document.getElementById('answer').value,
+      current_password: document.getElementById('pw-question').value})});
+    busy(form, false, 'Save');
+    if (!res.ok) return showError(detailOf(data, 'Could not save the question.'));
+    forced = null; showOk('Security question saved.'); await load();
+  });
+  panel.append(form);
+}
+
+function renderGenerate(panel) {
+  const intro = el('p', {class: 'sub', text: status.has_character_code
+    ? 'Generating a new code replaces the old one, which will stop working.'
+    : 'You will see a 12-character code once. Write it down and keep it somewhere safe and offline. Each sign-in will ask for three of its characters.'});
+  const form = el('form', {}, intro, ...passwordField('pw-code'), el('div', {class: 'spacer'}), submitButton('Show my code'));
+  form.addEventListener('submit', async e => {
+    e.preventDefault(); clearNotices(); busy(form, true, 'Generating…');
+    const {res, data} = await api('/character-code', {method: 'POST', body: JSON.stringify({current_password: document.getElementById('pw-code').value})});
+    busy(form, false, 'Show my code');
+    if (!res.ok) return showError(detailOf(data, 'Could not generate a code.'));
+    panel.innerHTML = '';
+    const grid = el('div', {class: 'code-grid', 'aria-label': 'Your character code'});
+    data.character_code.split('').forEach((ch, i) =>
+      grid.appendChild(el('div', {class: 'code-cell'}, el('div', {class: 'ch', text: ch}), el('div', {class: 'pos', text: String(i + 1)}))));
+    const ack = el('input', {type: 'checkbox', id: 'ack'});
+    const cont = el('button', {class: 'btn primary', type: 'button', text: 'Continue', disabled: ''});
+    ack.addEventListener('change', () => { cont.disabled = !ack.checked; });
+    cont.addEventListener('click', async () => { data.character_code = null; forced = null; await load(); });
+    panel.append(
+      el('div', {class: 'notice', text: 'This is the only time this code is shown. Numbers under each character are its position.'}),
+      grid,
+      el('label', {class: 'check', for: 'ack'}, ack, el('span', {text: 'I have written this code down somewhere safe.'})),
+      el('div', {class: 'spacer'}), cont);
+  });
+  panel.append(form);
+}
+
+async function renderConfirm(panel) {
+  const {res, data} = await api('/character-code/check');
+  if (!res.ok) return showError(detailOf(data, 'Could not load the check.'));
+  const row = el('div', {class: 'char-row'});
+  data.positions.forEach(pos => row.appendChild(el('div', {class: 'char'},
+    el('label', {for: 'c' + pos, text: 'Character ' + pos}),
+    el('input', {id: 'c' + pos, 'data-position': String(pos), maxlength: '1', required: '', autocomplete: 'off'}))));
+  const form = el('form', {autocomplete: 'off'},
+    el('p', {class: 'sub', text: 'From the code you wrote down, enter these characters. This is exactly what signing in will look like.'}),
+    row, el('div', {class: 'spacer'}), submitButton('Check'));
+  form.addEventListener('submit', async e => {
+    e.preventDefault(); clearNotices(); busy(form, true, 'Checking…');
+    const characters = {};
+    row.querySelectorAll('input').forEach(i => { characters[i.dataset.position] = i.value.trim().toUpperCase(); });
+    const r = await api('/character-code/check', {method: 'POST', body: JSON.stringify({characters})});
+    busy(form, false, 'Check');
+    if (!r.res.ok) return showError(detailOf(r.data, 'Those characters did not match.'));
+    showOk('Code confirmed.'); await load();
+  });
+  panel.append(form);
+}
+
+function renderComplete(panel) {
+  const form = el('form', {},
+    el('p', {class: 'sub', text: 'All steps are done. Finishing turns on the character challenge and signs you out everywhere. Sign in again to check it works.'}),
+    ...passwordField('pw-complete'), el('div', {class: 'spacer'}), submitButton('Finish setup'));
+  form.addEventListener('submit', async e => {
+    e.preventDefault(); clearNotices(); busy(form, true, 'Finishing…');
+    const {res, data} = await api('/complete', {method: 'POST', body: JSON.stringify({current_password: document.getElementById('pw-complete').value})});
+    busy(form, false, 'Finish setup');
+    if (!res.ok) { showError(detailOf(data, 'Could not finish setup.')); return load(); }
+    signOut('/platform/login');
+  });
+  panel.append(form);
+}
+
+async function render() {
+  renderSteps();
+  const panel = document.getElementById('panel');
+  panel.innerHTML = '';
+  const step = currentStep();
+  if (step === 'phone') renderPhone(panel);
+  else if (step === 'security_question') renderQuestion(panel);
+  else if (step === 'character_code') renderGenerate(panel);
+  else if (step === 'character_code_confirmation') await renderConfirm(panel);
+  else renderComplete(panel);
+}
+
+async function load() {
+  const {res, data} = await api('/status');
+  if (!res.ok) return showError(detailOf(data, 'Could not load your setup status.'));
+  status = data;
+  if (!status.must_complete_security_setup) return window.location.replace('/platform/operators');
+  await render();
+}
+
+document.getElementById('logout-btn').addEventListener('click', () => signOut());
+load();
+</script>
+</body>
+</html>

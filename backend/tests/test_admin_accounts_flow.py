@@ -32,6 +32,7 @@ if FLOW_DB:  # imports that bind the engine only happen when the guard can pass
     import httpx
     from sqlalchemy import select
 
+    from platform_owner_session import create_ready_owner, owner_login
     from src.app import app
     from src.db.base import async_session_factory
     from src.db.models import AdminOtpCode, AdminPasswordResetEvent, AdminUser, PlatformOwner
@@ -84,14 +85,13 @@ async def env(monkeypatch):
     outbox.limiter_calls = limiter_calls
 
     owner_email = f"owner-{uuid.uuid4().hex[:8]}@throwaway.test"
-    async with async_session_factory() as db:
-        db.add(PlatformOwner(email=owner_email, password_hash=hash_password(OWNER_PASSWORD), name="Owner", is_active=True))
-        await db.commit()
+    owner_code = await create_ready_owner(owner_email, OWNER_PASSWORD)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver/api/v1") as client:
-        res = await client.post("/platform/auth/login", json={"email": owner_email, "password": OWNER_PASSWORD})
+        res = await owner_login(client, owner_email, OWNER_PASSWORD, owner_code)
         assert res.status_code == 200, res.text
+        client.owner_code = owner_code
         client.owner_headers = {"Authorization": f"Bearer {res.json()['access_token']}"}
         async with async_session_factory() as db:
             client.owner_id = (await db.execute(select(PlatformOwner.id).where(PlatformOwner.email == owner_email))).scalar_one()
@@ -620,7 +620,7 @@ async def test_platform_owner_password_change_keeps_this_session_and_kills_other
     client, _ = env
     # A second signed-in session for the same owner.
     me = (await client.get("/platform/me", headers=client.owner_headers)).json()
-    other = await client.post("/platform/auth/login", json={"email": me["email"], "password": OWNER_PASSWORD})
+    other = await owner_login(client, me["email"], OWNER_PASSWORD, client.owner_code)
     other_token = other.json()["access_token"]
     other_refresh = other.json()["refresh_token"]
     assert (await client.get("/platform/me", headers=bearer(other_token))).status_code == 200
@@ -647,12 +647,12 @@ async def test_platform_owner_password_change_keeps_this_session_and_kills_other
 
     # Old password no longer signs in; new one does.
     assert (await client.post("/platform/auth/login", json={"email": me["email"], "password": OWNER_PASSWORD})).status_code == 401
-    relog = await client.post("/platform/auth/login", json={"email": me["email"], "password": NEW_PASSWORD})
+    relog = await owner_login(client, me["email"], NEW_PASSWORD, client.owner_code)
     assert relog.status_code == 200
     client.owner_headers = {"Authorization": f"Bearer {relog.json()['access_token']}"}
     # Restore for other tests in this module.
     assert (await owner_password_change(client, NEW_PASSWORD, OWNER_PASSWORD)).status_code == 200
-    client.owner_headers = {"Authorization": f"Bearer {(await client.post('/platform/auth/login', json={'email': me['email'], 'password': OWNER_PASSWORD})).json()['access_token']}"}
+    client.owner_headers = {"Authorization": f"Bearer {(await owner_login(client, me['email'], OWNER_PASSWORD, client.owner_code)).json()['access_token']}"}
 
 
 async def test_operator_profile_edit_validates_and_refuses_protected_fields(env):

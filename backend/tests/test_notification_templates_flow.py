@@ -26,6 +26,7 @@ if FLOW_DB:
     import httpx
     from sqlalchemy import select
 
+    from platform_owner_session import create_ready_owner, owner_login
     from src.app import app
     from src.db.base import async_session_factory
     from src.db.models import PlatformNotificationTemplate, PlatformOwner
@@ -41,13 +42,11 @@ async def client():
     """A signed-in platform owner. No operator or admin is needed: every endpoint
     under test is platform-scoped."""
     owner_email = f"tpl-owner-{uuid.uuid4().hex[:8]}@throwaway.test"
-    async with async_session_factory() as db:
-        db.add(PlatformOwner(email=owner_email, password_hash=hash_password(OWNER_PASSWORD), name="Owner", is_active=True))
-        await db.commit()
+    owner_code = await create_ready_owner(owner_email, OWNER_PASSWORD)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver/api/v1") as c:
-        res = await c.post("/platform/auth/login", json={"email": owner_email, "password": OWNER_PASSWORD})
+        res = await owner_login(c, owner_email, OWNER_PASSWORD, owner_code)
         assert res.status_code == 200, res.text
         c.owner_headers = {"Authorization": f"Bearer {res.json()['access_token']}"}
         async with async_session_factory() as db:

@@ -16,6 +16,13 @@ async def platform_login_page():
     return FileResponse(_DIR / "login.html")
 
 
+@router.get("/platform/setup", include_in_schema=False)
+async def platform_setup_page():
+    """Security setup wizard. Every other signed-in page redirects here (via
+    statics/setup-guard.js) while the owner's setup is pending."""
+    return FileResponse(_DIR / "setup.html")
+
+
 @router.get("/platform/operators/new", include_in_schema=False)
 async def platform_operators_new_page():
     return FileResponse(_DIR / "operators_new.html")

@@ -28,6 +28,9 @@ ONBOARDING_REQUIRED_HEADER = "X-Onboarding-Required"
 # knows which prompt to raise: "setup" (no PIN on the account yet), "verify"
 # (elevation absent or expired) or "locked" (too many wrong entries).
 PIN_REQUIRED_HEADER = "X-Pin-Required"
+# Set on the 403 from get_platform_owner_context while the owner's security
+# setup is pending. The platform portal redirects to /platform/setup on it.
+SECURITY_SETUP_REQUIRED_HEADER = "X-Security-Setup-Required"
 
 
 def token_version_matches(payload: dict, user: "AdminUser | PlatformOwner") -> bool:
@@ -157,10 +160,14 @@ async def get_admin_tenant_context(
     )
 
 
-async def get_platform_owner_context(
+async def get_authenticated_platform_owner(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> PlatformOwner:
+    """The platform owner behind a valid, current access token, whether or not
+    they have finished security setup. Only the /platform/setup endpoints may
+    depend on this directly; everything else uses get_platform_owner_context.
+    (Same split as get_authenticated_admin / get_current_user.)"""
     payload = verify_platform_owner_token(credentials.credentials)
     if payload is None or payload.get("type") != "access":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
@@ -174,6 +181,30 @@ async def get_platform_owner_context(
     if not token_version_matches(payload, owner):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is no longer valid. Please sign in again.")
     return owner
+
+
+async def get_platform_owner_context(
+    owner: PlatformOwner = Depends(get_authenticated_platform_owner),
+) -> PlatformOwner:
+    """A platform owner who has completed security setup. Every platform-owner
+    route goes through this, so an owner with setup pending (the state every
+    owner starts in, and the state a break-glass reset returns them to) can
+    reach nothing but /platform/setup. The portal reads the header and
+    redirects there; the status code alone can't be used for that, because
+    pages already treat 403 as other things."""
+    if owner.must_complete_security_setup:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Finish your account security setup to continue.",
+            headers={SECURITY_SETUP_REQUIRED_HEADER: "1"},
+        )
+    return owner
+
+
+# Marker read by tests/test_platform_owner_setup_gate.py, which walks the live
+# route table: every route resolving a platform owner must carry this guard,
+# except /platform/setup/*, which must not.
+get_platform_owner_context.is_security_setup_guard = True
 
 
 def require_role(*roles: str):

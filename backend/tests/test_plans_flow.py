@@ -75,16 +75,14 @@ async def env(monkeypatch):
     monkeypatch.setattr(platform_routes, "send_temp_password_sms", outbox.temp_password)
     monkeypatch.setattr(account_routes, "send_otp_sms", outbox.otp)
 
-    from src.db.models import PlatformOwner
+    from platform_owner_session import create_ready_owner, owner_login
 
     owner_email = f"owner-{uuid.uuid4().hex[:8]}@throwaway.test"
-    async with async_session_factory() as db:
-        db.add(PlatformOwner(email=owner_email, password_hash=hash_password(OWNER_PASSWORD), name="Owner", is_active=True))
-        await db.commit()
+    owner_code = await create_ready_owner(owner_email, OWNER_PASSWORD)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver/api/v1") as client:
-        res = await client.post("/platform/auth/login", json={"email": owner_email, "password": OWNER_PASSWORD})
+        res = await owner_login(client, owner_email, OWNER_PASSWORD, owner_code)
         client.owner_headers = {"Authorization": f"Bearer {res.json()['access_token']}"}
 
         admin_email = f"plan-admin-{uuid.uuid4().hex[:6]}@throwaway.test"

@@ -36,6 +36,7 @@ if FLOW_DB:  # imports that bind the engine only happen when the guard can pass
     from src.modules.admin_accounts.security_questions import SECURITY_QUESTIONS, normalize_answer
     from src.modules.auth.tokens import admin_token_response, platform_owner_token_response
     from src.modules.platform import owner_security_routes
+    from src.modules.platform import routes as platform_routes
     from src.modules.sms.types import SMSSendResult
     from src.utils.auth import hash_password, verify_password
 
@@ -71,6 +72,7 @@ async def env(monkeypatch):
         return None
 
     monkeypatch.setattr(owner_security_routes, "enforce_rate_limit", no_limit)
+    monkeypatch.setattr(platform_routes, "enforce_rate_limit", no_limit)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver/api/v1") as client:
         yield client, outbox
@@ -370,3 +372,160 @@ async def test_unknown_fields_are_rejected(env):
     res = await client.post("/platform/setup/phone", headers=auth(owner),
                             json={"phone": PHONE_INPUT, "current_password": PASSWORD, "phone_verified": True})
     assert res.status_code == 422
+
+
+# ── Step 3/4: generate, then confirm the code ─────────────────────────────
+
+
+async def generate(client, owner, password=PASSWORD):
+    res = await client.post("/platform/setup/character-code", headers=auth(owner), json={"current_password": password})
+    assert res.status_code == 200, res.text
+    return res.json()["character_code"]
+
+
+async def check_positions(client, owner):
+    return await client.get("/platform/setup/character-code/check", headers=auth(owner))
+
+
+async def check(client, owner, characters):
+    return await client.post("/platform/setup/character-code/check", headers=auth(owner), json={"characters": characters})
+
+
+def answer_for(code, positions, *, wrong=False):
+    chars = {str(p): code[p - 1] for p in positions}
+    if wrong:
+        last = str(positions[-1])
+        chars[last] = next(c for c in "ABCDEFGHJKMNPQRSTUVWXYZ23456789" if c != chars[last])
+    return chars
+
+
+async def test_confirm_needs_a_code_first(env):
+    client, _ = env
+    owner = await make_owner()
+    assert (await check_positions(client, owner)).status_code == 409
+
+
+async def test_confirm_positions_are_fixed_until_answered_and_misses_are_not_login_failures(env):
+    client, _ = env
+    owner = await make_owner()
+    code = await generate(client, owner)
+    first = (await check_positions(client, owner)).json()["positions"]
+    assert (await check_positions(client, owner)).json()["positions"] == first, "reloading must not redeal"
+    assert len(first) == 3
+
+    res = await check(client, owner, answer_for(code, first, wrong=True))
+    assert res.status_code == 400
+    assert (await check_positions(client, owner)).json()["positions"] == first
+    fresh = await row(owner.id)
+    assert fresh.challenge_attempt_count == 0 and fresh.challenge_locked_until is None
+
+    res = await check(client, owner, answer_for(code, first))
+    assert res.status_code == 200, res.text
+    status_body = (await client.get("/platform/setup/status", headers=auth(owner))).json()
+    assert status_body["character_code_confirmed"] is True
+    assert (await row(owner.id)).challenge_pending_positions is None
+
+
+async def test_confirm_rejects_other_positions(env):
+    client, _ = env
+    owner = await make_owner()
+    code = await generate(client, owner)
+    asked = (await check_positions(client, owner)).json()["positions"]
+    others = [p for p in range(1, 13) if p not in asked][:3]
+    assert (await check(client, owner, answer_for(code, others))).status_code == 400
+    assert (await client.get("/platform/setup/status", headers=auth(owner))).json()["character_code_confirmed"] is False
+
+
+async def test_regenerating_the_code_unconfirms_it(env):
+    client, _ = env
+    owner = await make_owner()
+    code = await generate(client, owner)
+    asked = (await check_positions(client, owner)).json()["positions"]
+    assert (await check(client, owner, answer_for(code, asked))).status_code == 200
+    await generate(client, owner)
+    body = (await client.get("/platform/setup/status", headers=auth(owner))).json()
+    assert body["has_character_code"] is True and body["character_code_confirmed"] is False
+
+
+# ── Completion: all or nothing ────────────────────────────────────────────
+
+
+async def complete_all_steps(client, outbox, owner):
+    """Drive steps 1-4 through the API. Returns the plaintext code."""
+    await send_code(client, owner)
+    assert (await verify_code(client, owner, outbox.last_code())).status_code == 200
+    assert (await set_question(client, owner)).status_code == 200
+    code = await generate(client, owner)
+    asked = (await check_positions(client, owner)).json()["positions"]
+    assert (await check(client, owner, answer_for(code, asked))).status_code == 200
+    return code
+
+
+async def complete(client, owner, password=PASSWORD):
+    return await client.post("/platform/setup/complete", headers=auth(owner), json={"current_password": password})
+
+
+@pytest.mark.parametrize("skip", ["phone", "security_question", "character_code", "character_code_confirmation"])
+async def test_completion_refuses_when_any_single_step_is_missing(env, skip):
+    client, outbox = env
+    owner = await make_owner()
+    if skip != "phone":
+        await send_code(client, owner)
+        await verify_code(client, owner, outbox.last_code())
+    if skip != "security_question":
+        await set_question(client, owner)
+    if skip != "character_code":
+        code = await generate(client, owner)
+        if skip != "character_code_confirmation":
+            asked = (await check_positions(client, owner)).json()["positions"]
+            await check(client, owner, answer_for(code, asked))
+
+    res = await complete(client, owner)
+    assert res.status_code == 409, res.text
+    assert res.json()["detail"]["missing"] == [skip]
+    fresh = await row(owner.id)
+    assert fresh.must_complete_security_setup is True and fresh.token_version == 0
+    assert not await events(owner.id, "setup_completed")
+
+
+async def test_completion_requires_the_password(env):
+    client, outbox = env
+    owner = await make_owner()
+    await complete_all_steps(client, outbox, owner)
+    res = await complete(client, owner, password="not-my-password")
+    assert res.status_code == 400
+    assert (await row(owner.id)).must_complete_security_setup is True
+
+
+async def test_full_setup_then_first_challenge_sign_in(env):
+    client, outbox = env
+    owner = await make_owner()
+    old_headers = auth(owner)
+    assert (await client.get("/platform/me", headers=old_headers)).status_code == 403  # gated while pending
+
+    code = await complete_all_steps(client, outbox, owner)
+    assert (await client.get("/platform/setup/status", headers=old_headers)).json()["ready_to_complete"] is True
+    res = await complete(client, owner)
+    assert res.status_code == 200 and res.json() == {"status": "complete", "logout": True}
+
+    fresh = await row(owner.id)
+    assert fresh.must_complete_security_setup is False and fresh.token_version == 1
+    assert fresh.challenge_pending_positions is None and fresh.challenge_pending_jti is None
+    (evt,) = await events(owner.id, "setup_completed")
+    assert PHONE not in str(evt.detail)
+    # Every earlier session is dead, including the one that finished setup.
+    assert (await client.get("/platform/setup/status", headers=old_headers)).status_code == 401
+
+    # The next sign-in is the first with the challenge, and the code shown
+    # during setup answers it.
+    login = await client.post("/platform/auth/login", json={"email": owner.email, "password": PASSWORD})
+    assert login.status_code == 200 and login.json()["challenge_required"] is True
+    body = login.json()
+    res = await client.post("/platform/auth/challenge", json={
+        "challenge_token": body["challenge_token"], "characters": answer_for(code, body["positions"])})
+    assert res.status_code == 200, res.text
+    headers = {"Authorization": f"Bearer {res.json()['access_token']}"}
+    assert (await client.get("/platform/me", headers=headers)).status_code == 200  # gate open
+    # ...and setup can't be re-run from this session.
+    assert (await client.post("/platform/setup/complete", headers=headers, json={"current_password": PASSWORD})).status_code == 409
+    assert (await client.post("/platform/setup/character-code", headers=headers, json={"current_password": PASSWORD})).status_code == 409

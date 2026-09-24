@@ -45,7 +45,7 @@ if FLOW_DB:  # imports that bind the engine only happen when the guard can pass
     from src.db.models import PlatformOwner, PlatformOwnerSecurityEvent
     from src.modules.admin_accounts import notifications as account_notifications
     from src.modules.auth.tokens import platform_owner_token_response
-    from src.modules.platform import owner_lockout
+    from src.modules.platform import character_code, owner_lockout
     from src.modules.platform import routes as platform_routes
     from src.modules.platform.owner_lockout import LOGIN_LOCKOUT_HOURS, LOGIN_MAX_ATTEMPTS
     from src.modules.sms.types import SMSSendResult
@@ -230,6 +230,11 @@ async def test_concurrent_wrong_guesses_each_count(env):
 async def test_password_change_clears_the_login_lock(env):
     client, _ = env
     email = await make_owner()
+    # /platform/me/password is gated on security setup, so this owner has
+    # completed it (with a code on file, which login then challenges for).
+    owner = await row(email)
+    await patch_owner(email, must_complete_security_setup=False,
+                      challenge_hashes=character_code.build_storage(owner.id, character_code.generate_code()))
     # A session opened before the lock (e.g. on another device).
     token = platform_owner_token_response(await row(email)).access_token
     for _ in range(LOGIN_MAX_ATTEMPTS):
@@ -244,7 +249,8 @@ async def test_password_change_clears_the_login_lock(env):
     assert res.status_code == 200, res.text
     owner = await row(email)
     assert (owner.login_attempt_count, owner.login_locked_until) == (0, None)
-    assert (await login(client, email, NEW_PASSWORD)).status_code == 200
+    res = await login(client, email, NEW_PASSWORD)
+    assert res.status_code == 200 and res.json()["challenge_required"] is True
 
 
 # ── Enumeration safety and timing ─────────────────────────────────────────
