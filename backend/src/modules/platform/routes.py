@@ -50,6 +50,7 @@ from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.platform import character_code, owner_lockout
 from src.modules.admin_accounts import platform_reset
 from src.modules.admin_accounts.notifications import send_temp_password_sms
+from src.modules.admin_accounts.security_questions import SECURITY_QUESTIONS
 from src.modules.admin_accounts.provisioning import admin_email_taken, provision_operator_admin
 from src.modules.sms.types import SMSSendResult
 from src.utils.phone import mask_phone
@@ -343,6 +344,13 @@ async def platform_me(owner: PlatformOwner = Depends(get_platform_owner_context)
         "email": owner.email,
         "name": owner.name,
         "last_login_at": owner.last_login_at,
+        # For the Security block in Settings. Masked phone only; the answer is
+        # never returned, just which question it answers.
+        "phone": mask_phone(owner.phone) if owner.phone else None,
+        "phone_verified": bool(owner.phone_verified),
+        "security_question": owner.security_question,
+        "security_question_text": SECURITY_QUESTIONS.get(owner.security_question) if owner.security_question else None,
+        "security_questions": [{"key": key, "question": text} for key, text in SECURITY_QUESTIONS.items()],
     }
 
 

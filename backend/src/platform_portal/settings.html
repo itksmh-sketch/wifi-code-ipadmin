@@ -9,13 +9,6 @@
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
   <link rel="stylesheet" href="/platform/statics/app.css?v=5">
   <style>
-    #toast{position:fixed;top:20px;right:20px;z-index:1000;padding:12px 18px;border-radius:10px;
-      border:1px solid rgba(34,197,94,.35);background:rgba(34,197,94,.16);color:#bbf7d0;font-size:14px;
-      font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(-8px);
-      transition:opacity .2s,transform .2s;pointer-events:none}
-    #toast.show{opacity:1;transform:translateY(0)}
-    #toast.bad{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.16);color:#fca5a5}
-
     .kv{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;font-size:13px;margin-bottom:18px}
     .kv dt{color:var(--muted)}
     .kv dd{margin:0}
@@ -65,6 +58,11 @@
       <p class="text-muted" style="margin:4px 0 12px;font-size:12.5px">Signs you out everywhere else. This browser stays signed in.</p>
       <button class="btn primary" type="submit" id="pw-save-btn">Change password</button>
     </form>
+
+    <div class="spacer"></div>
+    <div class="subhead">Security</div>
+    <p class="help">Your verified phone gets reset codes and security alerts; your security question is a recovery fallback. Changing either needs your current password, and you're texted when it happens.</p>
+    <div id="sec-body"><div class="empty sm">Loading…</div></div>
   </div>
 
   <div class="section-title">Platform Settings</div>
@@ -175,7 +173,56 @@
   <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
 </div>
 
-<div id="toast">Settings saved</div>
+<div class="toast" id="toast" role="status"></div>
+
+<!-- ── Change phone (two steps: new number + password, then its code) ── -->
+<div class="modal-backdrop" id="phone-modal">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="phone-modal-title">
+    <div class="modal-title" id="phone-modal-title">Change your verified phone</div>
+    <div id="phone-modal-msg"></div>
+    <form id="phone-send-form" novalidate>
+      <label for="phone_new">New mobile number (Ghana)</label>
+      <input id="phone_new" type="tel" autocomplete="tel" placeholder="024 000 0000">
+      <label for="phone_pw">Current password</label>
+      <input id="phone_pw" type="password" autocomplete="current-password">
+      <p class="help">We send a code to the new number. Your current number is told once the change is made.</p>
+      <div class="modal-actions">
+        <button class="btn" type="button" data-close>Cancel</button>
+        <button class="btn primary" type="submit" id="phone-send-btn">Send code</button>
+      </div>
+    </form>
+    <form id="phone-verify-form" novalidate>
+      <p class="help" id="phone-sent-note"></p>
+      <label for="phone_code">6-digit code</label>
+      <input id="phone_code" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+      <div class="modal-actions">
+        <button class="btn" type="button" id="phone-back-btn">Use a different number</button>
+        <button class="btn primary" type="submit" id="phone-verify-btn">Verify and change</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Change security question ──────────────────────────────────────── -->
+<div class="modal-backdrop" id="question-modal">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="question-modal-title">
+    <div class="modal-title" id="question-modal-title">Change your security question</div>
+    <div id="question-modal-msg"></div>
+    <form id="question-form" novalidate>
+      <label for="question_key">Security question</label>
+      <select id="question_key"></select>
+      <label for="question_answer">Answer</label>
+      <input id="question_answer" type="text" autocomplete="off">
+      <p class="help">Capitals and extra spaces are ignored. Pick an answer that isn't public.</p>
+      <label for="question_pw">Current password</label>
+      <input id="question_pw" type="password" autocomplete="current-password">
+      <div class="modal-actions">
+        <button class="btn" type="button" data-close>Cancel</button>
+        <button class="btn primary" type="submit" id="question-save-btn">Save question</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <script src="/platform/statics/setup-guard.js?v=5"></script>
 <script>
@@ -222,7 +269,8 @@ let toastTimer = null;
 function showToast(text, bad) {
   const t = document.getElementById('toast');
   t.textContent = text;
-  t.className = bad ? 'bad show' : 'show';
+  t.classList.toggle('bad', !!bad);
+  t.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 2500);
 }
@@ -388,12 +436,189 @@ function accountMsg(id, text, good) {
 async function loadMe() {
   try {
     const res = await api('/api/v1/platform/me');
-    if (!res.ok) return;
+    if (!res.ok) { renderSecurityError(); return; }
     const me = await res.json();
     document.getElementById('me_email').value = me.email || '';
     document.getElementById('me_name').value = me.name || '';
-  } catch (e) { /* the settings form below reports connection problems */ }
+    renderSecurity(me);
+  } catch (e) { renderSecurityError(); /* the settings form below reports connection problems */ }
 }
+
+// ── Security: verified phone and security question ───────────────────────
+let securityQuestions = [];
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function renderSecurityError() {
+  const body = document.getElementById('sec-body');
+  body.replaceChildren(el('div', 'empty sm', 'Could not load your security details. Reload to try again.'));
+}
+
+function renderSecurity(me) {
+  securityQuestions = me.security_questions || [];
+  const kv = el('dl', 'kv');
+  const phone = el('dd', 'mask');
+  if (me.phone && me.phone_verified) phone.textContent = me.phone;
+  else phone.appendChild(el('span', 'dots', 'not set'));
+  const question = el('dd', '', me.security_question_text || 'not set');
+  kv.append(el('dt', '', 'Verified phone'), phone, el('dt', '', 'Security question'), question);
+
+  const actions = el('div', 'actions');
+  const phoneBtn = el('button', 'btn', 'Change phone');
+  phoneBtn.type = 'button';
+  phoneBtn.addEventListener('click', openPhoneModal);
+  const questionBtn = el('button', 'btn', 'Change security question');
+  questionBtn.type = 'button';
+  questionBtn.addEventListener('click', () => openQuestionModal(me.security_question));
+  actions.append(phoneBtn, questionBtn);
+  document.getElementById('sec-body').replaceChildren(kv, actions);
+}
+
+function detailText(body, fallback, status) {
+  if (body && typeof body.detail === 'string') return body.detail;
+  if (status === 429) return 'Too many attempts — try again later.';
+  return fallback;
+}
+
+function modalMsg(id, text) {
+  const box = document.getElementById(id);
+  box.replaceChildren();
+  if (text) box.appendChild(el('div', 'notice bad', text));
+}
+
+let lastFocus = null;
+function openModal(id, focusId) {
+  lastFocus = document.activeElement;
+  document.getElementById(id).classList.add('show');
+  document.getElementById(focusId).focus();
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove('show');
+  if (lastFocus) lastFocus.focus();
+}
+['phone-modal', 'question-modal'].forEach(id => {
+  const modal = document.getElementById(id);
+  modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => closeModal(id)));
+  modal.addEventListener('click', e => { if (e.target === modal) closeModal(id); });
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  ['phone-modal', 'question-modal'].forEach(id => {
+    if (document.getElementById(id).classList.contains('show')) closeModal(id);
+  });
+});
+
+function showPhoneStep(step) {
+  document.getElementById('phone-send-form').hidden = step !== 'send';
+  document.getElementById('phone-verify-form').hidden = step !== 'verify';
+}
+function openPhoneModal() {
+  document.getElementById('phone-send-form').reset();
+  document.getElementById('phone-verify-form').reset();
+  modalMsg('phone-modal-msg', '');
+  showPhoneStep('send');
+  openModal('phone-modal', 'phone_new');
+}
+document.getElementById('phone-back-btn').addEventListener('click', () => {
+  modalMsg('phone-modal-msg', '');
+  showPhoneStep('send');
+  document.getElementById('phone_new').focus();
+});
+
+document.getElementById('phone-send-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = document.getElementById('phone-send-btn');
+  const phone = document.getElementById('phone_new').value.trim();
+  const current_password = document.getElementById('phone_pw').value;
+  if (!phone || !current_password) { modalMsg('phone-modal-msg', 'Enter the new number and your current password.'); return; }
+  modalMsg('phone-modal-msg', '');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  try {
+    const res = await api('/api/v1/platform/me/phone', { method: 'POST', body: JSON.stringify({ phone, current_password }) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { modalMsg('phone-modal-msg', detailText(body, 'Could not send the code.', res.status)); return; }
+    document.getElementById('phone_pw').value = '';
+    document.getElementById('phone-sent-note').textContent = 'We sent a code to ' + body.phone + '. It expires in 10 minutes.';
+    showPhoneStep('verify');
+    document.getElementById('phone_code').focus();
+  } catch (err) {
+    modalMsg('phone-modal-msg', 'Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send code';
+  }
+});
+
+document.getElementById('phone-verify-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = document.getElementById('phone-verify-btn');
+  const code = document.getElementById('phone_code').value.trim();
+  if (!/^\d{6}$/.test(code)) { modalMsg('phone-modal-msg', 'Enter the 6-digit code from the SMS.'); return; }
+  modalMsg('phone-modal-msg', '');
+  btn.disabled = true;
+  btn.textContent = 'Verifying…';
+  try {
+    const res = await api('/api/v1/platform/me/phone/verify', { method: 'POST', body: JSON.stringify({ code }) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { modalMsg('phone-modal-msg', detailText(body, 'That code did not work.', res.status)); return; }
+    closeModal('phone-modal');
+    showToast('Phone changed to ' + body.phone + '. Your old number has been told.');
+    loadMe();
+  } catch (err) {
+    modalMsg('phone-modal-msg', 'Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Verify and change';
+  }
+});
+
+function openQuestionModal(currentKey) {
+  const select = document.getElementById('question_key');
+  select.replaceChildren();
+  securityQuestions.forEach(q => {
+    const opt = el('option', '', q.question);
+    opt.value = q.key;
+    select.appendChild(opt);
+  });
+  if (currentKey) select.value = currentKey;
+  document.getElementById('question_answer').value = '';
+  document.getElementById('question_pw').value = '';
+  modalMsg('question-modal-msg', '');
+  openModal('question-modal', 'question_key');
+}
+
+document.getElementById('question-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = document.getElementById('question-save-btn');
+  const security_question = document.getElementById('question_key').value;
+  const security_answer = document.getElementById('question_answer').value;
+  const current_password = document.getElementById('question_pw').value;
+  if (!security_answer.trim() || !current_password) { modalMsg('question-modal-msg', 'Enter an answer and your current password.'); return; }
+  modalMsg('question-modal-msg', '');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const res = await api('/api/v1/platform/me/security-question', {
+      method: 'POST', body: JSON.stringify({ security_question, security_answer, current_password }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { modalMsg('question-modal-msg', detailText(body, 'Could not save your security question.', res.status)); return; }
+    closeModal('question-modal');
+    showToast('Security question changed.');
+    loadMe();
+  } catch (err) {
+    modalMsg('question-modal-msg', 'Network error. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save question';
+  }
+});
 
 document.getElementById('me-form').addEventListener('submit', async e => {
   e.preventDefault();

@@ -198,6 +198,33 @@ async def send_platform_owner_break_glass_sms(phone: str, *, action_text: str) -
     )
     return await _send(phone, message, kind="platform_owner_break_glass")
 
+async def send_platform_owner_phone_changed_sms(old_phone: str, new_phone_masked: str) -> SMSSendResult:
+    """Tell the platform owner's OLD number that the account's phone was just
+    moved. Same reasoning as send_phone_changed_sms below: the verified phone
+    is the recovery channel, so this is the one alert a session hijacker who
+    re-points it cannot intercept."""
+    login_url = await _login_url("/platform/login")
+    name = await get_platform_name()
+    message = (
+        f"{name} security: the phone number on the platform owner account was just changed to "
+        f"{new_phone_masked}, so alerts and reset codes will no longer come here. "
+        f"If this wasn't you, sign in at {login_url} and change your password immediately."
+    )
+    return await _send(old_phone, message, kind="platform_owner_phone_changed_old_number")
+
+
+async def send_platform_owner_question_changed_sms(phone: str) -> SMSSendResult:
+    """Tell the platform owner's verified phone that the security question was
+    changed (it is a recovery factor)."""
+    login_url = await _login_url("/platform/login")
+    name = await get_platform_name()
+    message = (
+        f"{name} security: the security question on the platform owner account was just changed. "
+        f"If this wasn't you, sign in at {login_url} and change your password immediately."
+    )
+    return await _send(phone, message, kind="platform_owner_question_changed")
+
+
 async def send_phone_changed_sms(old_phone: str, admin: AdminUser) -> SMSSendResult:
     """Tell the OLD number that the account's phone was just moved.
 
