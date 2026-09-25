@@ -186,6 +186,11 @@ textarea{resize:vertical;min-height:80px;padding:var(--sp-2) var(--sp-3);line-he
 input:disabled,select:disabled,textarea:disabled{color:var(--muted);cursor:not-allowed}
 /* A value to copy, not edit (temporary passwords): dashed edge and no fill read as read-only. */
 input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparent;border-style:dashed}
+/* A read-only value with its Copy button: <div class="copy-row"><input class="readout" readonly><button class="btn">Copy</button></div> */
+.copy-row{display:flex;gap:var(--sp-2);align-items:center;margin-bottom:var(--sp-2)}
+.copy-row input{flex:1;min-width:0}
+/* Quiet aside inside a label, e.g. "Contact phone <span class="label-note">(optional)</span>". */
+.label-note{font-weight:400;color:var(--muted)}
 
 .field{margin-bottom:var(--sp-1)}
 .field-row{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-3)}
@@ -256,6 +261,8 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
 /* Checkbox with its label text beside it: <label class="check"><input type="checkbox"> <span>…</span></label> */
 .check{display:flex;gap:var(--sp-2);align-items:flex-start;margin:var(--sp-3) 0 0;font-size:var(--fs-sm);font-weight:400;color:var(--text)}
 .check input{width:auto;margin:2px 0 0;flex:none}
+/* Helper text right after a .check lines up with the label text, not the box. */
+.check + .help{padding-left:calc(13px + var(--sp-2))}
 
 /* ── Key/value list ─────────────────────────────────────────────────────── */
 /* Only margin-bottom is set: dl keeps its default top margin. */

@@ -7,8 +7,8 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=5">
-  <script src="/platform/statics/setup-guard.js?v=5"></script>
+  <link rel="stylesheet" href="/platform/statics/app.css?v=6">
+  <script src="/platform/statics/setup-guard.js?v=6"></script>
   <style>
     /* Layout for this page only. Everything it demonstrates comes from app.css. */
     #shell{display:none}
@@ -47,7 +47,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=5"></script>
+  <script src="/platform/statics/nav.js?v=6"></script>
 
   <div class="section-title">Style guide</div>
   <p class="section-sub">Every token and component in <code>statics/app.css</code>. Token values below are read live from the stylesheet.
@@ -187,8 +187,8 @@
       <!-- Mirrors operators_new.html / operator_detail.html / operators.html -->
       <div class="card-title" style="margin-bottom:6px">Admin created</div>
       <p class="text-muted" style="margin:0 0 14px">Temporary password for the new admin. It is not stored in readable form and cannot be shown again.</p>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-        <input id="sg-readout" readonly class="readout" value="Tmp9#kQ2-vX4" style="flex:1;padding:9px 12px;font-size:14px">
+      <div class="copy-row">
+        <input id="sg-readout" readonly class="readout" value="Tmp9#kQ2-vX4" aria-label="Temporary password">
         <button class="btn" type="button" id="sg-copy">Copy</button>
       </div>
       <p class="sg-note" style="margin:0 0 16px"><code>input.readout</code> — dummy value, not a real credential.</p>

@@ -7,18 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=5">
-  <style>
-    .kv{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;font-size:13px;margin-bottom:18px}
-    .kv dt{color:var(--muted)}
-    .kv dd{margin:0}
-    .mask{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}
-    .mask .dots{color:var(--muted)}
-    .badge.unset{background:rgba(148,163,184,.1);border-color:var(--border);color:var(--muted)}
-    .badge.off{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.45);color:#fcd34d}
-    .badge.db{background:var(--info-tint);border-color:var(--info-border);color:var(--info-text)}
-    .divider{height:1px;background:var(--border);margin:20px 0}
-  </style>
+  <link rel="stylesheet" href="/platform/statics/app.css?v=6">
 </head>
 <body>
 <div class="container">
@@ -26,7 +15,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=5"></script>
+  <script src="/platform/statics/nav.js?v=6"></script>
 
   <!-- ── Your account ─────────────────────────────────────────────────── -->
   <div class="section-title">Your Account</div>
@@ -45,17 +34,17 @@
     </form>
 
     <div class="spacer"></div>
-    <div style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Change password</div>
+    <div class="subhead">Change password</div>
     <div id="pw-msg" class="notice" style="display:none;margin-bottom:16px"></div>
     <form id="pw-form" novalidate>
       <label>Current password</label>
       <input id="pw_current" type="password" autocomplete="current-password">
       <label>New password</label>
       <input id="pw_new" type="password" autocomplete="new-password">
-      <p class="text-muted" style="margin:4px 0 12px;font-size:12.5px">At least 8 characters, with an uppercase letter, a lowercase letter and a number.</p>
+      <p class="help">At least 8 characters, with an uppercase letter, a lowercase letter and a number.</p>
       <label>Confirm new password</label>
       <input id="pw_confirm" type="password" autocomplete="new-password">
-      <p class="text-muted" style="margin:4px 0 12px;font-size:12.5px">Signs you out everywhere else. This browser stays signed in.</p>
+      <p class="help">Signs you out everywhere else. This browser stays signed in.</p>
       <button class="btn primary" type="submit" id="pw-save-btn">Change password</button>
     </form>
 
@@ -83,17 +72,17 @@
 
       <label>Platform Name</label>
       <input id="platform_name" type="text" maxlength="30" placeholder="IpAdmin" autocomplete="off">
-      <p class="text-muted" style="margin:4px 0 12px;font-size:12.5px">Shown to operators as {platform_name} in notification emails and SMS, and at the start of account and security texts. Up to 30 characters.</p>
+      <p class="help">Shown to operators as {platform_name} in notification emails and SMS, and at the start of account and security texts. Up to 30 characters.</p>
 
       <label>Support Email</label>
       <input id="platform_support_email" type="email" placeholder="support@yourplatform.com" autocomplete="off">
 
       <label>Free Trial Length (days)</label>
       <input id="platform_trial_days" type="number" step="1" min="1" max="365" placeholder="14" autocomplete="off">
-      <p class="text-muted" style="margin:4px 0 12px;font-size:12.5px">Applies to operators approved from now on. Each operator's trial end date is fixed when they are approved, so changing this never moves an existing trial.</p>
+      <p class="help">Applies to operators approved from now on. Each operator's trial end date is fixed when they are approved, so changing this never moves an existing trial.</p>
 
       <div class="spacer"></div>
-      <div style="display:flex;gap:10px">
+      <div class="actions">
         <button class="btn primary" type="submit" id="save-btn">Save changes</button>
         <a href="/platform/operators" class="btn">Cancel</a>
       </div>
@@ -101,7 +90,7 @@
   </div>
 
   <!-- ── Operator notification SMS ────────────────────────────────────── -->
-  <div id="notif-loading" style="text-align:center;padding:30px 0;color:var(--muted)">Loading notification SMS…</div>
+  <div id="notif-loading" class="empty">Loading notification SMS…</div>
 
   <div id="notif-card" style="display:none">
     <div class="card" style="max-width:600px;margin-top:16px">
@@ -139,30 +128,30 @@
         <label>Sender ID</label>
         <input id="notif_sender_id" type="text" autocomplete="off" spellcheck="false" placeholder="Registered Arkesel sender ID">
 
-        <label style="display:flex;align-items:center;gap:8px;margin-top:16px">
-          <input id="notif_is_active" type="checkbox" checked style="width:auto;margin:0">
-          <span style="color:var(--text);font-size:13px">Active — send operator notifications through this account</span>
+        <label class="check">
+          <input id="notif_is_active" type="checkbox" checked>
+          <span>Active — send operator notifications through this account</span>
         </label>
 
-        <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
-          <input id="notif_shares_account" type="checkbox" checked style="width:auto;margin:0">
-          <span style="color:var(--text);font-size:13px">This key is on the <strong>same Arkesel account</strong> as the gateway</span>
+        <label class="check">
+          <input id="notif_shares_account" type="checkbox" checked>
+          <span>This key is on the <strong>same Arkesel account</strong> as the gateway</span>
         </label>
-        <p class="text-muted" style="margin:6px 0 0 26px">
+        <p class="help">
           Two keys on one account share a balance, so the reconciliation job cannot separate
           notification spend from metered gateway spend — it reports drift without alerting while
           this is ticked. Untick it once notifications have their own Arkesel account and drift
           alerts become meaningful again on the next run.
         </p>
 
-        <p class="text-muted" style="margin:10px 0 0">
+        <p class="help">
           Encrypted at rest; only the last 4 characters are ever shown again. Both fields are
           required together. With nothing active here, notification SMS is skipped and logged —
           emails still send.
         </p>
 
         <div class="spacer"></div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div class="actions">
           <button class="btn primary" type="submit" id="notif-save-btn">Save keys</button>
           <button class="btn" type="button" id="notif-test-btn">Test connection</button>
         </div>
@@ -170,7 +159,7 @@
     </div>
   </div>
 
-  <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
+  <div id="loading" class="empty lg">Loading…</div>
 </div>
 
 <div class="toast" id="toast" role="status"></div>
@@ -224,18 +213,14 @@
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js?v=5"></script>
+<script src="/platform/statics/setup-guard.js?v=6"></script>
 <script>
 const KEYS = ['wg_server_endpoint', 'platform_app_url', 'webhook_base_url', 'platform_support_email', 'platform_trial_days', 'platform_name'];
 
 const token = localStorage.getItem('platform_access_token');
-if (!token) { window.location.replace('/platform/login'); }
-
-document.getElementById('logout-btn').addEventListener('click', () => {
-  localStorage.removeItem('platform_access_token');
-  localStorage.removeItem('platform_refresh_token');
-  window.location.href = '/platform/login';
-});
+// Stop here when signed out: every API call below would fail and flash an
+// error before the redirect lands. Sign-out itself is handled by nav.js.
+if (!token) { window.location.replace('/platform/login'); throw new Error('Signed out: redirecting to login'); }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {

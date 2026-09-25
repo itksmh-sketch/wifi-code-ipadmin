@@ -7,13 +7,11 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=5">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=6">
   <style>
-    .kv{display:grid;grid-template-columns:130px 1fr;gap:8px 14px;font-size:13px;margin:0 0 16px}
-    .kv dt{color:var(--muted)}
-    .kv dd{margin:0;overflow-wrap:anywhere}
-    .app-message{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13.5px;line-height:1.5;background:var(--surface-input);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0 0 16px;max-height:240px;overflow-y:auto}
-    .app-label{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+    /* The applicant's free-text message: kept as typed, scrolls when long. */
+    .app-message{white-space:pre-wrap;overflow-wrap:anywhere;font-size:var(--fs-sm);line-height:1.5;background:var(--surface-input);color:var(--text);
+      border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--sp-3);margin:0 0 var(--sp-4);max-height:240px;overflow-y:auto}
   </style>
 </head>
 <body>
@@ -22,7 +20,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=5"></script>
+  <script src="/platform/statics/nav.js?v=6"></script>
 
   <div id="main" style="display:none">
     <div class="page-head">
@@ -63,13 +61,13 @@
           <tbody id="apps-tbody"></tbody>
         </table>
       </div>
-      <div id="apps-empty" class="text-muted" style="display:none;padding:20px 0;text-align:center">No applications yet.</div>
+      <div id="apps-empty" class="empty sm" style="display:none">No applications yet.</div>
     </div>
 
     <div class="card">
       <div class="card-header">
         <span class="card-title">All Operators</span>
-        <input id="search" type="search" placeholder="Filter by name or slug…" style="width:220px;padding:8px 12px;font-size:13px">
+        <input id="search" type="search" placeholder="Filter by name or slug…" style="width:220px">
       </div>
       <div id="err-msg" class="notice bad" style="display:none;margin-bottom:12px"></div>
       <div class="table-wrap">
@@ -88,80 +86,76 @@
           <tbody id="tbody"></tbody>
         </table>
       </div>
-      <div id="empty" class="text-muted" style="display:none;padding:20px 0;text-align:center">No operators found.</div>
+      <div id="empty" class="empty sm" style="display:none">No operators found.</div>
     </div>
   </div>
 
-  <div id="loading" style="text-align:center;padding:60px 0;color:var(--muted)">Loading…</div>
+  <div id="loading" class="empty lg">Loading…</div>
 </div>
 
 <!-- Modals -->
-<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:var(--backdrop);z-index:50;align-items:center;justify-content:center;padding:20px">
+<div id="modal-overlay" class="modal-backdrop" style="display:none">
   <!-- Approve -->
-  <div id="modal-approve" class="card" style="display:none;max-width:420px;width:100%;padding:24px">
-    <div class="card-title" style="margin-bottom:6px">Approve application</div>
+  <div id="modal-approve" class="modal-dialog sm" role="dialog" aria-modal="true" style="display:none">
+    <div class="modal-title">Approve application</div>
     <p class="text-muted" id="approve-sub" style="margin:0 0 10px"></p>
     <p class="text-muted" style="margin:0 0 16px">
       The operator is billed the current platform <strong>Default Monthly Fee</strong>. Change an
       individual operator's fee on the Billing page after approval.
     </p>
-    <div style="display:flex;gap:8px;justify-content:flex-end">
+    <div class="modal-actions">
       <button class="btn" onclick="closeModals()">Cancel</button>
       <button class="btn primary" id="approve-submit">Approve operator</button>
     </div>
   </div>
   <!-- Application detail -->
-  <div id="modal-detail" class="card" style="display:none;max-width:560px;width:100%;padding:24px;max-height:90vh;overflow-y:auto">
+  <div id="modal-detail" class="modal-dialog lg" role="dialog" aria-modal="true" style="display:none">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px">
       <div>
-        <div class="card-title" id="detail-title"></div>
+        <div class="modal-title" id="detail-title"></div>
         <div class="text-muted" id="detail-sub"></div>
       </div>
       <span id="detail-status"></span>
     </div>
-    <div class="app-label">Contact</div>
+    <div class="subhead">Contact</div>
     <dl class="kv" id="detail-contact"></dl>
-    <div class="app-label">About the business</div>
+    <div class="subhead">About the business</div>
     <p class="app-message" id="detail-message"></p>
     <div id="detail-review"></div>
-    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap" id="detail-actions"></div>
+    <div class="modal-actions" id="detail-actions"></div>
   </div>
   <!-- Reject -->
-  <div id="modal-reject" class="card" style="display:none;max-width:420px;width:100%;padding:24px">
-    <div class="card-title" style="margin-bottom:6px">Reject application</div>
+  <div id="modal-reject" class="modal-dialog sm" role="dialog" aria-modal="true" style="display:none">
+    <div class="modal-title">Reject application</div>
     <p class="text-muted" id="reject-sub" style="margin:0 0 14px"></p>
-    <label style="display:block;font-size:13px;font-weight:600;margin-bottom:6px">Reason for rejection</label>
-    <textarea id="reject-reason" rows="3" style="width:100%;padding:9px 12px;font-size:14px;margin-bottom:16px" placeholder="Shared with the applicant"></textarea>
-    <div style="display:flex;gap:8px;justify-content:flex-end">
+    <label for="reject-reason">Reason for rejection</label>
+    <textarea id="reject-reason" rows="3" placeholder="Shared with the applicant"></textarea>
+    <div class="modal-actions">
       <button class="btn" onclick="closeModals()">Cancel</button>
       <button class="btn danger" id="reject-submit">Reject application</button>
     </div>
   </div>
   <!-- Temp password -->
-  <div id="modal-password" class="card" style="display:none;max-width:460px;width:100%;padding:24px">
-    <div class="card-title" style="margin-bottom:6px">Operator approved</div>
+  <div id="modal-password" class="modal-dialog" role="dialog" aria-modal="true" style="display:none">
+    <div class="modal-title">Operator approved</div>
     <p class="text-muted" style="margin:0 0 14px">Share this password securely with the operator. It will not be shown again.</p>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-      <input id="temp-password" readonly class="readout" style="flex:1;padding:9px 12px;font-size:14px">
+    <div class="copy-row">
+      <input id="temp-password" readonly class="readout" aria-label="Temporary password">
       <button class="btn" id="copy-password">Copy</button>
     </div>
-    <p class="text-muted" id="password-meta" style="margin:0 0 16px;font-size:13px"></p>
-    <div style="display:flex;justify-content:flex-end">
+    <p class="help" id="password-meta"></p>
+    <div class="modal-actions">
       <button class="btn primary" onclick="closeModals()">Done</button>
     </div>
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js?v=5"></script>
+<script src="/platform/statics/setup-guard.js?v=6"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
-if (!token) { window.location.replace('/platform/login'); }
-
-document.getElementById('logout-btn').addEventListener('click', () => {
-  localStorage.removeItem('platform_access_token');
-  localStorage.removeItem('platform_refresh_token');
-  window.location.href = '/platform/login';
-});
+// Stop here when signed out: every API call below would fail and flash an
+// error before the redirect lands. Sign-out itself is handled by nav.js.
+if (!token) { window.location.replace('/platform/login'); throw new Error('Signed out: redirecting to login'); }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -371,9 +365,9 @@ function openDetail(id) {
       const op = allOperators.find(o => o.id === a.isp_operator_id);
       rows.push(`<dt>Operator</dt><dd><a href="/platform/operators/${a.isp_operator_id}">${escHtml(op ? op.name : 'Open operator')}</a>${op ? ` <span class="text-muted">${escHtml(op.slug)}</span>` : ''}</dd>`);
     }
-    review = `<div class="app-label">Review</div><dl class="kv">${rows.join('')}</dl>`;
+    review = `<div class="subhead">Review</div><dl class="kv">${rows.join('')}</dl>`;
     if (a.status === 'rejected') {
-      review += `<div class="app-label">Rejection reason</div>
+      review += `<div class="subhead">Rejection reason</div>
         <p class="app-message">${a.rejection_reason ? escHtml(a.rejection_reason) : '<span class="text-muted">No reason recorded.</span>'}</p>`;
     }
   }

@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=5">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=6">
 </head>
 <body>
 <div class="container">
@@ -15,7 +15,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=5"></script>
+  <script src="/platform/statics/nav.js?v=6"></script>
 
   <a class="crumb" href="/platform/operators">← Operators</a>
   <div class="section-title">Create New Operator</div>
@@ -25,12 +25,12 @@
     <div id="msg" class="notice" style="display:none;margin-bottom:16px"></div>
 
     <form id="form" novalidate>
-      <div style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Business Info</div>
+      <div class="subhead">Business Info</div>
 
       <label>Business / ISP Name *</label>
       <input id="name" type="text" required placeholder="e.g. AccraNet ISP" minlength="3">
 
-      <label>Slug * <span style="font-weight:400;color:var(--muted)">(URL-safe identifier, auto-filled)</span></label>
+      <label>Slug * <span class="label-note">(URL-safe identifier, auto-filled)</span></label>
       <input id="slug" type="text" required placeholder="e.g. accranet-isp" pattern="^[a-z0-9-]+$">
 
       <div class="field-row">
@@ -45,18 +45,18 @@
       </div>
 
       <div class="spacer"></div>
-      <div style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Billing</div>
+      <div class="subhead">Billing</div>
 
-      <label>Trial Days <span style="font-weight:400;color:var(--muted)">(blank = bill immediately)</span></label>
+      <label>Trial Days <span class="label-note">(blank = bill immediately)</span></label>
       <input id="trial_days" type="number" step="1" min="1" max="365" placeholder="e.g. 14">
 
-      <p class="text-muted" style="margin:8px 0 0">
+      <p class="help">
         The monthly fee is set from the platform <strong>Default Monthly Fee</strong> (change it on the
         Billing page). Adjust an individual operator's fee there after they're created.
       </p>
 
       <div class="spacer"></div>
-      <div style="font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Initial Admin Account</div>
+      <div class="subhead">Initial Admin Account</div>
 
       <div class="field-row">
         <div>
@@ -68,13 +68,13 @@
           <input id="admin_phone" type="tel" required placeholder="0244123456">
         </div>
       </div>
-      <p class="text-muted" style="margin:8px 0 0">
+      <p class="help">
         A temporary password is generated and sent to this number by SMS, and shown to you once.
         On first sign-in the admin must verify this phone and choose their own password.
       </p>
 
       <div class="spacer"></div>
-      <div style="display:flex;gap:10px">
+      <div class="actions">
         <button class="btn primary" type="submit" id="submit-btn">Create Operator</button>
         <a href="/platform/operators" class="btn">Cancel</a>
       </div>
@@ -83,26 +83,22 @@
     <div id="created" style="display:none">
       <div class="card-title" style="margin-bottom:6px">Operator created</div>
       <p class="text-muted" style="margin:0 0 14px">Temporary password for the initial admin. It will not be shown again.</p>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-        <input id="temp-password" readonly class="readout" style="flex:1;padding:9px 12px;font-size:14px">
+      <div class="copy-row">
+        <input id="temp-password" readonly class="readout" aria-label="Temporary password">
         <button class="btn" type="button" id="copy-password">Copy</button>
       </div>
-      <p class="text-muted" id="password-meta" style="margin:0 0 16px;font-size:13px"></p>
+      <p class="help" id="password-meta"></p>
       <a href="/platform/operators" class="btn primary">Done</a>
     </div>
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js?v=5"></script>
+<script src="/platform/statics/setup-guard.js?v=6"></script>
 <script>
   const token = localStorage.getItem('platform_access_token');
-  if (!token) { window.location.replace('/platform/login'); }
-
-  document.getElementById('logout-btn').addEventListener('click', () => {
-    localStorage.removeItem('platform_access_token');
-    localStorage.removeItem('platform_refresh_token');
-    window.location.href = '/platform/login';
-  });
+  // Stop here when signed out: every API call below would fail and flash an
+  // error before the redirect lands. Sign-out itself is handled by nav.js.
+  if (!token) { window.location.replace('/platform/login'); throw new Error('Signed out: redirecting to login'); }
 
   // Auto-generate slug from name
   document.getElementById('name').addEventListener('input', e => {
