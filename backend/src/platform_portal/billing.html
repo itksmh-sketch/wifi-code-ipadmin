@@ -7,43 +7,20 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=6">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=7">
   <style>
-    #toast{position:fixed;top:20px;right:20px;z-index:1000;padding:12px 18px;border-radius:10px;
-      border:1px solid rgba(34,197,94,.35);background:rgba(34,197,94,.16);color:#bbf7d0;font-size:14px;
-      font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(-8px);
-      transition:opacity .2s,transform .2s;pointer-events:none}
-    #toast.show{opacity:1;transform:translateY(0)}
-    #toast.bad{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.16);color:#fca5a5}
-
-    .notice.warn{border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.10);color:#fcd34d}
-    .notice.warn strong{color:#fde68a}
-
-    .kv{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;font-size:13px;margin-bottom:18px}
-    .kv dt{color:var(--muted)}
-    .kv dd{margin:0}
-    .mask{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}
-    .mask .dots{color:var(--muted)}
-    .badge.env{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.35);color:#fcd34d}
-    .badge.db{background:var(--info-tint);border-color:var(--info-border);color:var(--info-text)}
-    .badge.unset{background:rgba(148,163,184,.1);border-color:var(--border);color:var(--muted)}
-    .badge.off{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.45);color:#fcd34d}
-    .divider{height:1px;background:var(--border);margin:20px 0}
-
-    /* Invoice-status badges reuse the operator-status palette already in app.css:
+    /* Toast, modal, pager, key/value list, .notice.warn, disabled buttons and the
+       key-source badges come from app.css. Only billing's own pieces are here. */
+    /* Invoice-status badges reuse the operator-status palette:
        paid→active, issued→pending, overdue→past_due, draft/waived→cancelled. */
+    .badge.env{background:var(--warning-tint);border-color:var(--warning-border);color:var(--warning-text)}
     .num{font-variant-numeric:tabular-nums}
-    .fee-cell{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-    .fee-cell input{width:104px;padding:6px 9px;font-size:13px}
+    /* Inline fee editor: the input is sized to sit level with the small buttons. */
+    .fee-cell{display:flex;gap:var(--sp-2);align-items:center;flex-wrap:wrap}
+    .fee-cell input{width:104px;padding:var(--sp-1) var(--sp-2);font-size:var(--fs-sm)}
     .fee-err{width:100%;margin-top:2px}
-    td .amt-owed{color:#fca5a5;font-weight:600}
-    .modal-overlay{position:fixed;inset:0;background:rgba(4,7,14,.6);z-index:60;display:none;
-      align-items:center;justify-content:center;padding:20px}
-    .modal-overlay.show{display:flex}
-    .modal{max-width:440px;width:100%}
-    .inv-pager{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:12px}
-    .btn:disabled{opacity:.4;cursor:not-allowed}
-    .btn:disabled:hover{background:var(--surface-raised)}
+    .fee-value{font-size:var(--fs-lg);font-weight:700}
+    td .amt-owed{color:var(--danger-text);font-weight:600}
   </style>
 </head>
 <body>
@@ -52,7 +29,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=6"></script>
+  <script src="/platform/statics/nav.js?v=7"></script>
 
   <div class="section-title">Billing</div>
   <p class="section-sub">
@@ -78,7 +55,7 @@
     </div>
     <div id="df-err" class="notice bad" style="display:none;margin-bottom:12px"></div>
     <div id="df-view" class="fee-cell">
-      <span class="num" id="df-value" style="font-size:20px;font-weight:700">—</span>
+      <span class="num fee-value" id="df-value">—</span>
       <button class="btn sm" type="button" id="df-edit">Edit</button>
     </div>
     <div id="df-editor" class="fee-cell" style="display:none">
@@ -87,7 +64,7 @@
       <button class="btn sm" type="button" id="df-cancel">Cancel</button>
       <div class="notice bad fee-err" id="df-editor-err" style="display:none"></div>
     </div>
-    <p class="text-muted" style="margin:12px 0 0">
+    <p class="help">
       New operators are created with this fee — set it once here instead of per operator, on both
       onboarding paths (add directly, or approve an application). Changing it does <strong>not</strong>
       re-price existing operators; use an operator's <strong>Edit</strong> or <strong>Reset to
@@ -97,12 +74,11 @@
 
   <!-- ── Operators ─────────────────────────────────────────────────────────── -->
   <div class="card" style="margin-bottom:18px">
-    <div class="card-header" style="flex-wrap:wrap;gap:10px">
+    <div class="card-header">
       <span class="card-title">Operator billing</span>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <input id="ops-search" type="search" placeholder="Filter by name or slug…"
-               style="width:190px;padding:7px 11px;font-size:13px">
-        <select id="ops-status" style="width:auto;padding:7px 11px;font-size:13px">
+      <div class="actions">
+        <input id="ops-search" type="search" placeholder="Filter by name or slug…" aria-label="Filter operators" style="width:190px">
+        <select id="ops-status" aria-label="Billing status" style="width:auto">
           <option value="">All statuses</option>
           <option value="trial">Trial</option>
           <option value="active">Active</option>
@@ -121,18 +97,18 @@
             <th>Status</th>
             <th>Monthly fee</th>
             <th>Trial ends</th>
-            <th>Outstanding</th>
+            <th class="qty">Outstanding</th>
             <th>Next due</th>
             <th>Last paid</th>
           </tr>
         </thead>
         <tbody id="ops-tbody">
-          <tr><td colspan="7" class="text-muted" style="padding:20px 0;text-align:center">Loading…</td></tr>
+          <tr><td colspan="7" class="empty">Loading…</td></tr>
         </tbody>
       </table>
     </div>
-    <div id="ops-empty" class="text-muted" style="display:none;padding:20px 0;text-align:center">No operators yet.</div>
-    <p class="text-muted" style="margin:12px 0 0">
+    <div id="ops-empty" class="empty sm" style="display:none">No operators yet.</div>
+    <p class="help">
       The monthly fee is what the operator is invoiced each month. Use <strong>0</strong> to exempt an
       operator from billing; otherwise it must be at least <strong>GHS 1.00</strong> — Paystack cannot
       charge less, so a smaller invoice could never be paid.
@@ -153,7 +129,7 @@
             <th>Invoice #</th>
             <th>Operator</th>
             <th>Period</th>
-            <th>Amount</th>
+            <th class="qty">Amount</th>
             <th>Status</th>
             <th>Due</th>
             <th>Paid</th>
@@ -161,24 +137,24 @@
           </tr>
         </thead>
         <tbody id="inv-tbody">
-          <tr><td colspan="8" class="text-muted" style="padding:20px 0;text-align:center">Loading…</td></tr>
+          <tr><td colspan="8" class="empty">Loading…</td></tr>
         </tbody>
       </table>
     </div>
-    <div id="inv-empty" class="text-muted" style="display:none;padding:20px 0;text-align:center">No invoices yet.</div>
-    <div id="inv-pager" class="inv-pager" style="display:none">
+    <div id="inv-empty" class="empty sm" style="display:none">No invoices yet.</div>
+    <div id="inv-pager" class="pager" style="display:none">
       <button class="btn sm" type="button" id="inv-prev">← Previous</button>
-      <span class="text-muted" id="inv-pageinfo"></span>
+      <span id="inv-pageinfo"></span>
       <button class="btn sm" type="button" id="inv-next">Next →</button>
     </div>
-    <p class="text-muted" style="margin:12px 0 0">
+    <p class="help">
       Invoices are generated automatically by the monthly billing job — there is no manual trigger, as
       invoice numbering is not safe against a manual run racing the cron.
     </p>
   </div>
 
   <!-- ── Payment Keys (Phase 1 — markup and logic unchanged) ───────────────── -->
-  <div id="keys-loading" style="text-align:center;padding:40px 0;color:var(--muted)">Loading payment keys…</div>
+  <div id="keys-loading" class="empty">Loading payment keys…</div>
 
   <div id="keys-card-body" style="display:none">
     <div class="card" style="max-width:720px">
@@ -218,25 +194,25 @@
         <label>Paystack Secret Key</label>
         <input id="secret_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk_test_…">
 
-        <label>Webhook Secret <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+        <label>Webhook Secret <span class="label-note">(optional)</span></label>
         <input id="webhook_secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="Leave blank to clear">
 
-        <label style="display:flex;align-items:center;gap:8px;margin-top:16px">
-          <input id="is_active" type="checkbox" checked style="width:auto;margin:0">
-          <span style="color:var(--text);font-size:13px">Active — use these keys for platform billing</span>
+        <label class="check">
+          <input id="is_active" type="checkbox" checked>
+          <span>Active — use these keys for platform billing</span>
         </label>
-        <p class="text-muted" style="margin:6px 0 0 26px">
+        <p class="help">
           Leave unticked to store keys without putting them in use — e.g. staging a new provider's
           keys before switching over. Stored-but-inactive keys charge nothing.
         </p>
 
-        <p class="text-muted" style="margin:10px 0 0">
+        <p class="help">
           Keys are encrypted at rest and never shown again in full — only the last 4 characters.
           Re-enter both keys to change either one.
         </p>
 
         <div class="spacer"></div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div class="actions">
           <button class="btn primary" type="submit" id="save-btn">Save keys</button>
           <button class="btn" type="button" id="test-btn">Test connection</button>
         </div>
@@ -245,34 +221,30 @@
   </div>
 </div>
 
-<div id="toast"></div>
+<div id="toast" class="toast" role="status"></div>
 
 <!-- Waive confirmation -->
-<div class="modal-overlay" id="waive-overlay">
-  <div class="card modal">
-    <div class="card-title" style="margin-bottom:6px">Waive invoice</div>
+<div class="modal-backdrop" id="waive-overlay">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="waive-title">
+    <div class="modal-title" id="waive-title">Waive invoice</div>
     <p class="text-muted" id="waive-sub" style="margin:0 0 8px"></p>
     <p style="margin:0 0 16px;font-size:13px">
       The invoice is marked <strong>waived</strong> and will never be charged. A billing event is
       recorded against the operator. This cannot be undone.
     </p>
-    <div style="display:flex;gap:8px;justify-content:flex-end">
+    <div class="modal-actions">
       <button class="btn" id="waive-cancel">Cancel</button>
       <button class="btn danger" id="waive-confirm">Waive invoice</button>
     </div>
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js?v=6"></script>
+<script src="/platform/statics/setup-guard.js?v=7"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
-if (!token) { window.location.replace('/platform/login'); }
-
-document.getElementById('logout-btn').addEventListener('click', () => {
-  localStorage.removeItem('platform_access_token');
-  localStorage.removeItem('platform_refresh_token');
-  window.location.href = '/platform/login';
-});
+// Stop here when signed out: every API call below would fail and flash an
+// error before the redirect lands. Sign-out itself is handled by nav.js.
+if (!token) { window.location.replace('/platform/login'); throw new Error('Signed out: redirecting to login'); }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -326,7 +298,7 @@ let toastTimer = null;
 function showToast(text, bad) {
   const t = document.getElementById('toast');
   t.textContent = text;
-  t.className = bad ? 'bad show' : 'show';
+  t.className = bad ? 'toast bad show' : 'toast show';
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 3000);
 }
@@ -523,7 +495,7 @@ function renderOperators() {
       <td>${opStatusBadge(op.billing_status)}</td>
       <td data-fee-slot>${feeCellHtml(op)}</td>
       <td>${fmtDay(op.trial_ends_at)}</td>
-      <td>${owedText}</td>
+      <td class="qty">${owedText}</td>
       <td>${fmtDay(op.next_due_at)}</td>
       <td>${fmtDay(op.last_paid_at)}</td>
     </tr>`;
@@ -670,7 +642,7 @@ function renderInvoices() {
         <div class="text-muted">${esc(inv.operator_slug)}</div>
       </td>
       <td>${fmtDay(inv.period_start)} – ${fmtDay(inv.period_end)}</td>
-      <td class="num">${esc(fmtMoney(inv.amount_ghs))}</td>
+      <td class="num qty">${esc(fmtMoney(inv.amount_ghs))}</td>
       <td>${invStatusBadge(inv.status)}</td>
       <td>${fmtDay(inv.due_at)}</td>
       <td>${fmtDay(inv.paid_at)}</td>
@@ -732,10 +704,17 @@ document.getElementById('inv-next').addEventListener('click', () => {
 // ── Waive flow ──────────────────────────────────────────────────────────────
 let pendingWaive = null;
 
-function openWaive(id, number) {
+// The button that opened the dialog gets focus back on close. It is passed in
+// rather than read from document.activeElement, because Safari does not focus
+// a button on click.
+let waiveOpener = null;
+function openWaive(id, number, opener) {
   pendingWaive = id;
+  waiveOpener = opener || null;
   document.getElementById('waive-sub').textContent = `Invoice ${number}`;
   document.getElementById('waive-overlay').classList.add('show');
+  // Start on Cancel, not on the destructive button.
+  document.getElementById('waive-cancel').focus();
 }
 function closeWaive() {
   pendingWaive = null;
@@ -743,16 +722,23 @@ function closeWaive() {
   const btn = document.getElementById('waive-confirm');
   btn.disabled = false;
   btn.textContent = 'Waive invoice';
+  // After a successful waive the table re-renders and that button is gone.
+  if (waiveOpener && document.contains(waiveOpener)) waiveOpener.focus();
+  waiveOpener = null;
 }
 
 document.getElementById('inv-tbody').addEventListener('click', ev => {
   const btn = ev.target.closest('button[data-waive]');
   if (!btn) return;
-  openWaive(btn.getAttribute('data-inv-id'), btn.getAttribute('data-inv-num'));
+  openWaive(btn.getAttribute('data-inv-id'), btn.getAttribute('data-inv-num'), btn);
 });
 document.getElementById('waive-cancel').addEventListener('click', closeWaive);
 document.getElementById('waive-overlay').addEventListener('click', ev => {
   if (ev.target.id === 'waive-overlay') closeWaive();
+});
+// Escape does exactly what Cancel does.
+document.addEventListener('keydown', ev => {
+  if (ev.key === 'Escape' && document.getElementById('waive-overlay').classList.contains('show')) closeWaive();
 });
 
 document.getElementById('waive-confirm').addEventListener('click', async () => {

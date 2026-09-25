@@ -7,12 +7,11 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=6">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=7">
   <style>
     /* Toast and switch come from app.css. */
     .mono{font-family:var(--mono);font-size:var(--fs-xs);color:var(--muted)}
     .num{font-variant-numeric:tabular-nums}
-    .pager{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:14px;font-size:13px;color:var(--muted)}
     .filters{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
     .filters label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
     .filters select,.filters input{min-width:170px;padding:7px 10px;font-size:13px}
@@ -25,7 +24,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=6"></script>
+  <script src="/platform/statics/nav.js?v=7"></script>
 
   <div class="section-title">Transactions</div>
   <p class="section-sub">
@@ -121,7 +120,7 @@
 
 <div id="toast" class="toast" role="status"></div>
 
-<script src="/platform/statics/setup-guard.js?v=6"></script>
+<script src="/platform/statics/setup-guard.js?v=7"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
 // Stop here when signed out: every API call below would fail and flash an
