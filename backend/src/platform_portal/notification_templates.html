@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=8">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=9">
   <style>
     /* The page stays hidden until an authenticated load succeeds, so nothing
        renders for a visitor without a valid platform-owner token. */
@@ -24,40 +24,51 @@
       color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;
       justify-content:center;gap:6px}
     .ch-btn:hover{background:var(--surface-raised-hover);color:var(--text)}
-    .ch-btn.on{background:var(--accent-fill);border-color:transparent;color:#fff}
+    .ch-btn.on{background:var(--accent-fill);border-color:transparent;color:var(--text-on-accent)}
     /* The "edited" marker is the shared .dot.warn; on the selected button it turns white. */
     .ch-btn.on .dot{background:var(--text-on-accent);box-shadow:none}
 
     .ph{display:inline-block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
-      padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:var(--surface-input);color:var(--accent2);
+      padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:var(--surface-input);color:var(--link);
       cursor:pointer;margin:0 6px 6px 0}
-    .ph:hover{border-color:rgba(99,102,241,.6)}
-    .ph.req{border-color:rgba(245,158,11,.5);color:#fcd34d}
+    .ph:hover{border-color:rgba(var(--accent-rgb),.6)}
+    .ph.req{border-color:rgba(var(--warning-rgb),.5);color:var(--warning-text)}
+    .ph-key{color:var(--link)}
 
     .stat{background:var(--surface-input);border:1px solid var(--border);border-radius:9px;padding:8px 13px;min-width:92px}
     .stat-k{font-size:11px;color:var(--muted);margin-bottom:2px}
     .stat-v{font-size:17px;font-weight:800}
-    .stat.ok .stat-v{color:#4ade80}
-    .stat.warn .stat-v{color:#fca5a5}
+    .stat.ok .stat-v{color:var(--success-text)}
+    /* .warn is the over-the-limit state, shown red. */
+    .stat.warn .stat-v{color:var(--danger-text)}
 
     .rendered{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:var(--surface-input);
       border:1px solid var(--border);border-radius:9px;padding:12px;white-space:pre-wrap;word-break:break-word;
       line-height:1.55}
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    .rendered.subject{margin-bottom:var(--sp-3)}
+    /* White on purpose: email clients render on white. */
     iframe.mail{width:100%;height:340px;border:1px solid var(--border);border-radius:9px;background:#fff}
+
+    /* Editor. #ed-msg takes an id rule because showMsg() replaces its className. */
+    #ed-msg{margin-bottom:14px}
+    #ed-body-text{min-height:130px}
+    #ed-body-html{min-height:160px}
+    .preview-section{border-top:1px solid var(--border);padding-top:var(--sp-4)}
+    .preview-title{font-size:var(--fs-base);font-weight:600;margin:0 0 3px}
+    #ed-counts{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:var(--sp-3)}
 
   </style>
 </head>
 <body>
 
-<div id="gate" style="text-align:center;padding:80px 0;color:var(--muted)">Loading…</div>
+<div id="gate" class="empty lg">Loading…</div>
 
 <div id="shell" class="container">
   <nav class="nav" id="platform-nav" aria-label="Platform">
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=8"></script>
+  <script src="/platform/statics/nav.js?v=9"></script>
 
   <div class="section-title">Notification Templates</div>
   <p class="section-sub">
@@ -81,7 +92,7 @@
         <span class="badge" id="ed-badge">—</span>
       </div>
 
-      <div id="ed-msg" class="notice" style="display:none;margin-bottom:14px"></div>
+      <div id="ed-msg" class="notice" style="display:none"></div>
 
       <div id="ed-subject-wrap">
         <label for="ed-subject">Subject</label>
@@ -89,7 +100,7 @@
       </div>
 
       <label for="ed-body-text" id="ed-body-label">Message</label>
-      <textarea id="ed-body-text" rows="6" class="mono" style="min-height:130px"></textarea>
+      <textarea id="ed-body-text" rows="6" class="mono"></textarea>
 
       <div id="ed-html-wrap">
         <label for="ed-body-html">HTML body</label>
@@ -97,39 +108,39 @@
           The page chrome around this is added automatically. Values are escaped when they are
           substituted, so an operator name containing &lt; or &amp; cannot break the markup.
         </p>
-        <textarea id="ed-body-html" rows="8" class="mono" style="min-height:160px"></textarea>
+        <textarea id="ed-body-html" rows="8" class="mono"></textarea>
       </div>
 
-      <label style="margin-top:16px">Insert a placeholder</label>
+      <label>Insert a placeholder</label>
       <div id="ed-placeholders"></div>
       <div id="ed-ph-help" class="help"></div>
 
       <div class="spacer"></div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <div class="actions">
         <button class="btn primary" id="ed-save">Save</button>
         <button class="btn" id="ed-discard">Discard changes</button>
         <button class="btn danger" id="ed-reset">Reset to default</button>
-        <span class="text-muted" id="ed-checking" style="font-size:12px;display:none">Checking…</span>
+        <span class="meta" id="ed-checking" style="display:none">Checking…</span>
       </div>
 
       <div class="spacer"></div>
-      <div style="border-top:1px solid var(--border);padding-top:16px">
-        <h3 style="font-size:14px;font-weight:600;margin:0 0 3px">Preview</h3>
+      <div class="preview-section">
+        <h3 class="preview-title">Preview</h3>
         <p class="help">
           Rendered with realistic sample values — the same ones the save-time length check uses.
         </p>
-        <div id="ed-counts" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px"></div>
+        <div id="ed-counts"></div>
         <div id="ed-preview"></div>
       </div>
     </div>
   </div>
 
-  <div id="list-loading" style="text-align:center;padding:40px 0;color:var(--muted)">Loading templates…</div>
+  <div id="list-loading" class="empty">Loading templates…</div>
 </div>
 
 <div id="toast" class="toast" role="status">Saved</div>
 
-<script src="/platform/statics/setup-guard.js?v=8"></script>
+<script src="/platform/statics/setup-guard.js?v=9"></script>
 <script>
 const DEBOUNCE_MS = 400;
 
@@ -254,8 +265,8 @@ function fillEditor(t) {
     b.addEventListener('click', () => insertPlaceholder(b.dataset.ph)));
 
   $('ed-ph-help').innerHTML = t.placeholders.map(p =>
-    `<div><span class="mono" style="color:var(--accent2)">{${esc(p.key)}}</span> — ${esc(p.description)}${
-      p.required ? ' <strong style="color:#fcd34d">(required — cannot be removed)</strong>' : ''}</div>`).join('');
+    `<div><span class="mono ph-key">{${esc(p.key)}}</span> — ${esc(p.description)}${
+      p.required ? ' <strong class="text-warn">(required — cannot be removed)</strong>' : ''}</div>`).join('');
 
   $('ed-reset').disabled = t.is_default;
   hideMsg();
@@ -376,7 +387,7 @@ function measure(preview, error) {
     + stat('Plain text', preview.character_count + ' chars');
   // sandbox="" keeps the previewed HTML inert — no scripts, no navigation.
   out.innerHTML =
-    `<div class="rendered" style="margin-bottom:12px"><strong>Subject:</strong> ${esc(preview.subject)}</div>`
+    `<div class="rendered subject"><strong>Subject:</strong> ${esc(preview.subject)}</div>`
     + `<iframe class="mail" sandbox="" srcdoc="${esc(preview.body_html)}" title="Email preview"></iframe>`
     + `<p class="help">Plain-text alternative</p>`
     + `<div class="rendered">${esc(preview.body_text)}</div>`;

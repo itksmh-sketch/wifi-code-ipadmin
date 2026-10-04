@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=8">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=9">
   <style>
     .count-grid{display:grid;gap:var(--sp-3);grid-template-columns:repeat(4,minmax(0,1fr))}
     @media(max-width:760px){.count-grid{grid-template-columns:repeat(2,1fr)}}
@@ -20,8 +20,6 @@
     .access-line .k{color:var(--muted);font-size:var(--fs-sm)}
     .router-row{display:flex;gap:var(--sp-3);flex-wrap:wrap}
     .router-row .stat-card{flex:1;min-width:140px}
-    .stat-value.online{color:var(--success-text)}
-    .stat-value.offline{color:var(--danger-text)}
   </style>
 </head>
 <body>
@@ -30,7 +28,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=8"></script>
+  <script src="/platform/statics/nav.js?v=9"></script>
 
   <div class="section-title">Analytics</div>
   <p class="section-sub">
@@ -95,11 +93,11 @@
     <div class="router-row">
       <div class="stat-card">
         <div class="stat-label">Online</div>
-        <div class="stat-value online" id="r-online">—</div>
+        <div class="stat-value good" id="r-online">—</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Offline</div>
-        <div class="stat-value offline" id="r-offline">—</div>
+        <div class="stat-value bad" id="r-offline">—</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Total</div>
@@ -113,7 +111,7 @@
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js?v=8"></script>
+<script src="/platform/statics/setup-guard.js?v=9"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
 // Stop here when signed out: every API call below would fail and flash an

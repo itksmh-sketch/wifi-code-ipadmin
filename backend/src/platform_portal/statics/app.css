@@ -172,6 +172,10 @@ a:hover{text-decoration:underline}
 .stat-card{background:var(--surface-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--sp-4)}
 .stat-label{font-size:var(--fs-xs);font-weight:500;color:var(--muted);margin-bottom:var(--sp-2)}
 .stat-value{font-size:var(--fs-xl);font-weight:700;letter-spacing:-.02em;line-height:1.15;font-variant-numeric:tabular-nums}
+/* State of the number: up/online, degraded, down/offline. */
+.stat-value.good{color:var(--success-text)}
+.stat-value.warn{color:var(--warning-text)}
+.stat-value.bad{color:var(--danger-text)}
 
 label{display:block;font-size:var(--fs-sm);font-weight:500;color:var(--muted);margin:var(--sp-4) 0 6px}
 /* Inputs: 36px at 14px text (1.43 line ≈ 20px + 2×7px + 2×1px). Unitless so the
@@ -232,6 +236,11 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
 .strong{font-weight:600}
 .text-good{color:var(--success-text)}
 .text-bad{color:var(--danger-text)}
+.text-warn{color:var(--warning-text)}
+/* Font only, so it can sit on inputs and textareas; pages add their own size/colour. */
+.mono{font-family:var(--mono)}
+/* Tabular digits (dates, invoice numbers, amounts). Right-alignment is .table .qty. */
+.num{font-variant-numeric:tabular-nums}
 /* Small helper text under a field or a card. */
 .help{color:var(--muted);font-size:var(--fs-xs);margin:var(--sp-1) 0 var(--sp-3)}
 .card > .help:last-child{margin-bottom:0}
@@ -273,8 +282,7 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
 .check + .help{padding-left:calc(13px + var(--sp-2))}
 
 /* ── Key/value list ─────────────────────────────────────────────────────── */
-/* Only margin-bottom is set: dl keeps its default top margin. */
-.kv{display:grid;grid-template-columns:170px 1fr;gap:var(--sp-2) var(--sp-4);font-size:var(--fs-sm);margin-bottom:var(--sp-4)}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:var(--sp-2) var(--sp-4);font-size:var(--fs-sm);margin:0 0 var(--sp-4)}
 .kv dt{color:var(--muted)}
 .kv dd{margin:0;overflow-wrap:anywhere}
 .mask{font-family:var(--mono);letter-spacing:.04em}

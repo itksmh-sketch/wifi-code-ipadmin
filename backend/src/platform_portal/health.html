@@ -7,15 +7,12 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=8">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=9">
   <style>
     .svc-name{display:flex;align-items:center;gap:var(--sp-2);font-weight:600;white-space:nowrap}
     .svc-detail{color:var(--muted);font-size:12.5px}
     .group-row td{padding:14px 12px 6px;color:var(--muted);font-size:11px;font-weight:600;
       letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--border)}
-    .stat-value.up{color:#86efac}
-    .stat-value.degraded{color:#fcd34d}
-    .stat-value.down{color:#fca5a5}
     .stat-value.stale{color:var(--warning)}
     .meta-line{color:var(--muted);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
     .refresh-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
@@ -30,7 +27,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=8"></script>
+  <script src="/platform/statics/nav.js?v=9"></script>
 
   <div class="section-title">Service Health</div>
   <p class="section-sub">
@@ -39,9 +36,9 @@
   </p>
 
   <div class="stats-grid">
-    <div class="stat-card"><div class="stat-label">Up</div><div class="stat-value up" id="s-up">—</div></div>
-    <div class="stat-card"><div class="stat-label">Degraded</div><div class="stat-value degraded" id="s-degraded">—</div></div>
-    <div class="stat-card"><div class="stat-label">Down</div><div class="stat-value down" id="s-down">—</div></div>
+    <div class="stat-card"><div class="stat-label">Up</div><div class="stat-value good" id="s-up">—</div></div>
+    <div class="stat-card"><div class="stat-label">Degraded</div><div class="stat-value warn" id="s-degraded">—</div></div>
+    <div class="stat-card"><div class="stat-label">Down</div><div class="stat-value bad" id="s-down">—</div></div>
     <div class="stat-card">
       <div class="stat-label">Last checked</div>
       <div class="stat-value" id="s-age" style="font-size:20px">—</div>
@@ -87,7 +84,7 @@
   </p>
 </div>
 
-<script src="/platform/statics/setup-guard.js?v=8"></script>
+<script src="/platform/statics/setup-guard.js?v=9"></script>
 <script>
 const GROUPS = {
   app: 'Application',

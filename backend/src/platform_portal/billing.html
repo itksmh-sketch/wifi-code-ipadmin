@@ -7,14 +7,13 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=8">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=9">
   <style>
     /* Toast, modal, pager, key/value list, .notice.warn, disabled buttons and the
        key-source badges come from app.css. Only billing's own pieces are here. */
     /* Invoice-status badges reuse the operator-status palette:
        paid→active, issued→pending, overdue→past_due, draft/waived→cancelled. */
     .badge.env{background:var(--warning-tint);border-color:var(--warning-border);color:var(--warning-text)}
-    .num{font-variant-numeric:tabular-nums}
     /* Inline fee editor: the input is sized to sit level with the small buttons. */
     .fee-cell{display:flex;gap:var(--sp-2);align-items:center;flex-wrap:wrap}
     .fee-cell input{width:104px;padding:var(--sp-1) var(--sp-2);font-size:var(--fs-sm)}
@@ -29,7 +28,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=8"></script>
+  <script src="/platform/statics/nav.js?v=9"></script>
 
   <div class="section-title">Billing</div>
   <p class="section-sub">
@@ -239,7 +238,7 @@
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js?v=8"></script>
+<script src="/platform/statics/setup-guard.js?v=9"></script>
 <script>
 const token = localStorage.getItem('platform_access_token');
 // Stop here when signed out: every API call below would fail and flash an
@@ -489,7 +488,7 @@ function renderOperators() {
       : '<span class="text-muted">—</span>';
     return `<tr data-op-id="${esc(op.id)}">
       <td>
-        <div style="font-weight:600"><a href="/platform/operators/${esc(op.id)}">${esc(op.name)}</a></div>
+        <div class="strong"><a href="/platform/operators/${esc(op.id)}">${esc(op.name)}</a></div>
         <div class="text-muted">${esc(op.slug)}</div>
       </td>
       <td>${opStatusBadge(op.billing_status)}</td>
