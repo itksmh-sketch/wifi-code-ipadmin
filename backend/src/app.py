@@ -32,6 +32,8 @@ from src.modules.webhooks.routes import router as webhooks_router
 from src.radius.routes import router as radius_router
 from src.portal.routes import router as portal_router
 from src.middleware.auth import TenantContext, get_admin_tenant_context
+from src.middleware.security_headers import SecurityHeadersMiddleware
+from src.modules.security.csp_report import router as csp_report_router
 from src.modules.resellers.routes import router as reseller_router
 from src.modules.resellers.admin_routes import router as admin_reseller_router
 from src.modules.mikrotik.routes import router as mikrotik_router
@@ -80,6 +82,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Security headers on every response, by path prefix (see the module). Added
+# after CORS so it is the outermost layer and sees every response, preflights
+# and errors included.
+app.add_middleware(SecurityHeadersMiddleware)
+
 # Include routers
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(admin_accounts_router, prefix="/api/v1")
@@ -115,6 +122,7 @@ app.include_router(applications_platform_router, prefix="/api/v1")
 app.include_router(billing_router, prefix="/api/v1")
 app.include_router(analytics_router, prefix="/api/v1")
 app.include_router(platform_billing_webhook_router)
+app.include_router(csp_report_router)
 
 
 @app.get("/api/v1/health")
