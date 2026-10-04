@@ -292,6 +292,9 @@ async def portal_sites(
     ]
 
 
+PORTAL_CARD_REFUSED = "Card payment isn't available here. Please pay with mobile money (MTN MoMo, Telecel Cash or AirtelTigo Cash)."
+
+
 @router.post("/portal/initiate-payment", response_model=PortalInitiatePaymentResponse)
 async def portal_initiate_payment(
     request: Request,
@@ -301,6 +304,15 @@ async def portal_initiate_payment(
 ):
     client_ip = request.client.host if request.client else "unknown"
     await enforce_rate_limit(client_ip, "portal:initiate", limit=10, window_seconds=60)
+
+    # Captive-portal purchases are mobile money only. A card payment can't
+    # finish from behind the hotspot: the walled garden blocks the provider's
+    # checkout and 3-D Secure pages, and the return journey isn't built (see
+    # the "Card payment on the captive portal (removed)" backlog note). The
+    # option is gone from pay.html; this refuses a hand-crafted request before
+    # anything is created. The provider code stays, unreachable from here.
+    if body.payment_method.value == PaymentMethod.CARD.value:
+        raise HTTPException(status_code=400, detail=PORTAL_CARD_REFUSED)
 
     operator_id, gateway_site_id = await _resolve_operator(db, body.rt, body.gateway)
 
