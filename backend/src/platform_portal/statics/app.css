@@ -227,6 +227,11 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
 
 .spacer{height:var(--sp-3)}
 .text-muted{color:var(--muted);font-size:var(--fs-sm)}
+/* Secondary inline detail (an address, "inactive", a note beside a name). */
+.meta{color:var(--muted);font-size:var(--fs-xs)}
+.strong{font-weight:600}
+.text-good{color:var(--success-text)}
+.text-bad{color:var(--danger-text)}
 /* Small helper text under a field or a card. */
 .help{color:var(--muted);font-size:var(--fs-xs);margin:var(--sp-1) 0 var(--sp-3)}
 .card > .help:last-child{margin-bottom:0}
