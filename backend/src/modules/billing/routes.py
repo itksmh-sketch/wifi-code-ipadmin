@@ -1,4 +1,7 @@
 from __future__ import annotations
+import base64
+import hashlib
+import html
 import uuid
 from datetime import datetime, timezone
 from typing import List
@@ -284,20 +287,39 @@ async def get_onboarding_checklist(
     return await get_checklist(db, tenant.isp_operator_id)
 
 
+# The return page's only style, and its CSP hash: the policy allows exactly
+# this stylesheet and nothing else (no script, no other source of any kind).
+_CALLBACK_STYLE = "body{font-family:sans-serif;text-align:center;padding:60px}"
+_CALLBACK_CSP = (
+    "default-src 'none'; "
+    f"style-src 'sha256-{base64.b64encode(hashlib.sha256(_CALLBACK_STYLE.encode()).digest()).decode()}'; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
+
+
 @router.get("/payment-callback", response_class=HTMLResponse)
 async def payment_callback(request: Request):
-    # Paystack redirects here after payment; actual confirmation via webhook.
+    """Where Paystack sends the payer's browser after an invoice payment.
+
+    The query string is attacker-controlled (anyone can craft this link), and
+    this page shares an origin with /admin and /platform, whose tokens live in
+    localStorage: the reference is escaped, and the CSP forbids any script.
+    It says nothing about the outcome either: the redirect proves nothing (the
+    payer may have cancelled or the charge failed). The invoice changes only on
+    the verified webhook.
+    """
     reference = request.query_params.get("trxref") or request.query_params.get("reference", "")
+    reference_line = f"<p>Reference: <code>{html.escape(reference)}</code></p>\n" if reference else ""
     return HTMLResponse(
         content=f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<title>Payment Processing</title>
+<title>Returning to billing</title>
 <meta http-equiv="refresh" content="3;url=/admin/billing">
-<style>body{{font-family:sans-serif;text-align:center;padding:60px}}</style>
+<style>{_CALLBACK_STYLE}</style>
 </head><body>
-<h2>Payment received!</h2>
-<p>Reference: <code>{reference}</code></p>
-<p>Your account will be updated shortly. Redirecting to billing page...</p>
+<h2>Returning to your billing page</h2>
+{reference_line}<p>If your payment went through, your invoice will show as paid once the payment provider confirms it. Redirecting to billing...</p>
 </body></html>""",
         status_code=200,
+        headers={"Content-Security-Policy": _CALLBACK_CSP},
     )
