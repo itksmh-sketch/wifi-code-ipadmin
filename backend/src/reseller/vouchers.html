@@ -87,6 +87,10 @@
       const search = document.getElementById("search");
       let rows = [];
 
+      // Operator-entered text, on the platform's main domain: escape before innerHTML.
+      function escapeHtml(s){
+        return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+      }
       function fmtDate(s){
         if (!s) return "—";
         try { return new Date(s).toLocaleString(); } catch { return s; }
@@ -94,7 +98,7 @@
 
       function pill(status){
         const cls = (status === "unused" || status === "active") ? "good" : "bad";
-        return `<span class="pill ${cls}">${status}</span>`;
+        return `<span class="pill ${cls}">${escapeHtml(status)}</span>`;
       }
 
       function render(){
@@ -106,14 +110,14 @@
           const canMark = !r.sold_at;
           return `
             <tr>
-              <td class="no-print"><input type="checkbox" class="pick" data-code="${r.code}"></td>
-              <td><b>${r.code}</b></td>
-              <td>${r.plan.name}</td>
-              <td>${fmtDate(r.allocated_at)}</td>
+              <td class="no-print"><input type="checkbox" class="pick" data-code="${escapeHtml(r.code)}"></td>
+              <td><b>${escapeHtml(r.code)}</b></td>
+              <td>${escapeHtml(r.plan.name)}</td>
+              <td>${escapeHtml(fmtDate(r.allocated_at))}</td>
               <td>${pill(r.status)}</td>
               <td>${soldCell}</td>
               <td class="no-print">
-                ${canMark ? `<button class="btn" data-action="sold" data-id="${r.allocation_id}">Mark as sold</button>` : ""}
+                ${canMark ? `<button class="btn" data-action="sold" data-id="${escapeHtml(r.allocation_id)}">Mark as sold</button>` : ""}
               </td>
             </tr>
           `;

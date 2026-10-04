@@ -179,8 +179,8 @@
                             });
                     });
 
-                    // Plan names are operator-entered text, and this page also loads on
-                    // the platform's main domain: escape before it goes into innerHTML.
+                    // Plan, site and town names are operator-entered text, and this page
+                    // also loads on the platform's main domain: escape before innerHTML.
                     function escapeHtml(s) {
                         return String(s).replace(/[&<>"']/g, function(c) {
                             return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
@@ -284,7 +284,7 @@
                             siteSelect.innerHTML =
                                 '<option value="">Select location</option>' +
                                 sites.map(function(site) {
-                                    return '<option value="' + site.id + '">' + site.town_name + ' - ' + site.name + '</option>';
+                                    return '<option value="' + escapeHtml(site.id) + '">' + escapeHtml(site.town_name) + ' - ' + escapeHtml(site.name) + '</option>';
                                 }).join("");
                             siteSelect.addEventListener("change", function() {
                                 siteId = siteSelect.value;

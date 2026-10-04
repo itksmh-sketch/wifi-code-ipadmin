@@ -89,12 +89,17 @@
         total.textContent = ResellerApp.money(p.unit_cost_ghs * q);
       }
 
+      // Operator-entered text, on the platform's main domain: escape before innerHTML.
+      function escapeHtml(s){
+        return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+      }
+
       (async () => {
         const wallet = await ResellerApp.API.request("/api/v1/reseller/wallet");
         balanceEl.textContent = ResellerApp.money(wallet.balance_ghs);
 
         plans = await ResellerApp.API.request("/api/v1/reseller/plans");
-        planSel.innerHTML = plans.map(p => `<option value="${p.id}">${p.name} — GHS ${ResellerApp.money(p.price_ghs)}</option>`).join("");
+        planSel.innerHTML = plans.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} — GHS ${escapeHtml(ResellerApp.money(p.price_ghs))}</option>`).join("");
         recalc();
       })().catch(() => window.location.href="/reseller/login");
 

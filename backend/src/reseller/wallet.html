@@ -76,6 +76,10 @@
       let offset = 0;
       const limit = 20;
 
+      // Operator-entered text, on the platform's main domain: escape before innerHTML.
+      function escapeHtml(s){
+        return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+      }
       function fmtDate(s){
         if (!s) return "—";
         try { return new Date(s).toLocaleString(); } catch { return s; }
@@ -91,11 +95,11 @@
         const body = document.getElementById("txBody");
         body.innerHTML = txs.map(t => `
           <tr>
-            <td>${fmtDate(t.created_at)}</td>
-            <td><span class="pill">${t.type}</span></td>
-            <td>${ResellerApp.money(t.amount_ghs)}</td>
-            <td>${ResellerApp.money(t.balance_after_ghs)}</td>
-            <td>${t.description || ""}</td>
+            <td>${escapeHtml(fmtDate(t.created_at))}</td>
+            <td><span class="pill">${escapeHtml(t.type)}</span></td>
+            <td>${escapeHtml(ResellerApp.money(t.amount_ghs))}</td>
+            <td>${escapeHtml(ResellerApp.money(t.balance_after_ghs))}</td>
+            <td>${escapeHtml(t.description || "")}</td>
           </tr>
         `).join("");
       }
