@@ -32,7 +32,14 @@
       const params = new URLSearchParams(window.location.search);
       const codes = (params.get("codes") || "").split(",").map(s => s.trim()).filter(Boolean);
       const grid = document.getElementById("grid");
-      grid.innerHTML = codes.map(c => `<div class="print-code">${c}</div>`).join("");
+      // The codes come from the URL, which anyone can craft, and this page shares
+      // an origin with /admin and /platform: text nodes only, never HTML.
+      for (const c of codes) {
+        const cell = document.createElement("div");
+        cell.className = "print-code";
+        cell.textContent = c;
+        grid.appendChild(cell);
+      }
     </script>
   </body>
 </html>

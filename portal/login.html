@@ -179,6 +179,13 @@
                             });
                     });
 
+                    // Plan names are operator-entered text, and this page also loads on
+                    // the platform's main domain: escape before it goes into innerHTML.
+                    function escapeHtml(s) {
+                        return String(s).replace(/[&<>"']/g, function(c) {
+                            return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
+                        });
+                    }
                     function fmtSpeed(kbps) {
                         var mbps = (kbps || 0) / 1000;
                         return (mbps % 1 === 0 ? mbps.toFixed(0) : mbps.toFixed(1)) + " Mbps";
@@ -211,7 +218,7 @@
                             var price = Number(plan.price_ghs || 0).toFixed(2);
                             return (
                                 '<div class="plan-card">' +
-                                    '<div class="plan-name">' + (plan.name || "Plan") + '</div>' +
+                                    '<div class="plan-name">' + escapeHtml(plan.name || "Plan") + '</div>' +
                                     '<div class="plan-meta">' + speed + '</div>' +
                                     (cap ? ('<div class="plan-meta">' + cap + '</div>') : '') +
                                     '<button class="btn btn-outline plan-btn" data-plan="' + plan.id + '">Buy - GHS ' + price + '</button>' +

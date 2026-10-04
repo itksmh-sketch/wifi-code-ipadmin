@@ -44,6 +44,13 @@
         var rt = params.get("rt") || "";
         try { rt = rt || sessionStorage.getItem("portal.rt") || ""; } catch(e) {}
         function qs(id){ return document.getElementById(id); }
+        // Plan names are operator-entered text, and this page also loads on the
+        // platform's main domain: escape before it goes into innerHTML.
+        function escapeHtml(s){
+            return String(s).replace(/[&<>"']/g, function(c){
+                return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+            });
+        }
         function fmtSpeed(kbps){ var mbps=(kbps||0)/1000; return (mbps%1===0?mbps.toFixed(0):mbps.toFixed(1))+" Mbps"; }
         function fmtCap(p){
             if(!p) return "";
@@ -128,7 +135,7 @@
                         var cap = fmtCap(p);
                         var speed = fmtSpeed(p.download_speed_kbps)+" down / "+fmtSpeed(p.upload_speed_kbps)+" up";
                         qs("planInfo").innerHTML =
-                            '<div class="plan-name">'+(p.name||"Plan")+'</div>'+
+                            '<div class="plan-name">'+escapeHtml(p.name||"Plan")+'</div>'+
                             '<div class="plan-meta">'+speed+'</div>'+
                             (cap?('<div class="plan-meta">'+cap+'</div>'):'');
                     } else {
