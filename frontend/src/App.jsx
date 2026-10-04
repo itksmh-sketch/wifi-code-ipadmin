@@ -18,6 +18,7 @@ import Billing from './pages/Billing';
 import Security from './pages/Security';
 import Sidebar from './components/Sidebar';
 import SuspensionBanner from './components/SuspensionBanner';
+import { signOutEverywhere } from './signOut';
 
 const API_BASE = '/api/v1';
 
@@ -152,10 +153,11 @@ export default function App() {
         } catch (e) {}
     };
 
+    // The sidebar's sign-out: ends the session on the server too (every
+    // device), without ever waiting on it. See signOut.js.
     const logout = () => {
-        localStorage.removeItem('access_token');
         setUser(null);
-        window.location.href = '/admin/login';
+        signOutEverywhere();
     };
 
     return (

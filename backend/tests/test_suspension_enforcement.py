@@ -112,6 +112,7 @@ EXEMPTION_CHAIN = [
     ("POST",   f"{API}/plans/{{plan_id}}/deactivate"),
     ("DELETE", f"{API}/admin/routers/{{router_id}}/wireguard"),
     # Account self-service — blocking any of it risks lockout.
+    ("POST",   f"{API}/auth/logout"),
     ("POST",   f"{API}/auth/me/password"),
     ("POST",   f"{API}/auth/reset/request"),
     ("POST",   f"{API}/auth/reset/set-password"),

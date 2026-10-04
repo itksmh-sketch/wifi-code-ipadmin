@@ -1,8 +1,13 @@
+import logging
+import uuid
+from typing import Optional
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
-from src.db.models import AdminUser
+from src.db.models import AdminSecurityEvent, AdminUser
 from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.admin_accounts import lockout
 from src.schemas import LoginRequest, TokenResponse, RefreshRequest, ErrorResponse
@@ -13,9 +18,10 @@ from src.utils.auth import (
 )
 from src.middleware.auth import token_version_matches, update_last_login
 from src.modules.auth.tokens import admin_token_response
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger("auth.routes")
 
 # Every failure mode of admin login answers with exactly this — wrong password,
 # unknown email, inactive account, and locked-out alike. A distinct "your
@@ -86,6 +92,11 @@ async def login(
 
     # A correct password ends the run of failures, lapsed lock and all.
     lockout.clear(user, lockout.LOGIN)
+    # PIN elevation is stored on the account, not the token, so without this a
+    # new sign-in inside someone else's 15-minute window would inherit it:
+    # the password alone would open the PIN-gated areas. Every sign-in starts
+    # unelevated. (Committed by update_last_login below, as lockout.clear is.)
+    user.pin_verified_until = None
     await update_last_login(user.id, db)
     return admin_token_response(user)
 
@@ -105,3 +116,81 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
     return admin_token_response(user)
+
+
+class AdminLogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    request: Request,
+    body: Optional[AdminLogoutRequest] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Sign out everywhere: bumping token_version ends every session this
+    admin has, on every device, at once (it is checked on every request and at
+    refresh). Only this admin's: the version is a column on their own row, so
+    colleagues stay signed in. The PIN elevation is cleared with it, since it
+    lives on the row too.
+
+    Reads the token itself rather than depending on get_authenticated_admin /
+    get_current_user, so no gate stands in front of it: it works mid-onboarding
+    (temp password, unverified phone, no security question), for an operator
+    that is suspended (it is in the suspension exemption chain), and for a
+    live session of an account whose login is locked. Takes the access token
+    (Authorization header) or a refresh token (body), as the platform-owner
+    sign-out does.
+
+    Always 204. A bad, expired or already-revoked token has no session left to
+    end, and the dashboard signs out locally whatever the answer. The bump only
+    applies while the token's version is still current, so a replayed sign-out
+    is a no-op rather than a second bump."""
+    client_ip = request.client.host if request.client else "unknown"
+    await enforce_rate_limit(client_ip, "admin:logout", limit=20, window_seconds=60)
+
+    candidates = []
+    scheme, _, credentials = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer" and credentials.strip():
+        candidates.append((credentials.strip(), "access"))
+    if body is not None and body.refresh_token:
+        candidates.append((body.refresh_token, "refresh"))
+
+    for token, kind in candidates:
+        payload = verify_token(token)
+        if payload is None or payload.get("type") != kind:
+            continue
+        version = payload.get("tv")
+        if not isinstance(version, int) or isinstance(version, bool):
+            continue
+        try:
+            admin_id = uuid.UUID(str(payload.get("sub")))
+            operator_id = uuid.UUID(str(payload.get("isp_operator_id")))
+        except ValueError:
+            continue
+        signed_out = (
+            await db.execute(
+                update(AdminUser)
+                .where(
+                    AdminUser.id == admin_id,
+                    AdminUser.isp_operator_id == operator_id,
+                    AdminUser.is_active == True,
+                    AdminUser.token_version == version,
+                )
+                .values(token_version=AdminUser.token_version + 1, pin_verified_until=None)
+                .returning(AdminUser.id)
+            )
+        ).scalar_one_or_none()
+        if signed_out is None:
+            await db.rollback()
+            continue
+        db.add(AdminSecurityEvent(
+            admin_user_id=admin_id,
+            isp_operator_id=operator_id,
+            event_type="signed_out",
+            detail={"via": kind, "client_ip": client_ip},
+        ))
+        await db.commit()
+        logger.info("admin_logout admin_id=%s via=%s", admin_id, kind)
+        break
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

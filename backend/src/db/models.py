@@ -916,7 +916,8 @@ class AdminSecurityEvent(Base):
     admin_user_id = Column(UUID(as_uuid=True), ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False)
     isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id"), nullable=False)
     # "phone_changed" | "phone_reverified" | "pin_set" | "pin_changed" |
-    # "pin_lockout" | "login_lockout" | "security_question_changed". A plain
+    # "pin_lockout" | "login_lockout" | "security_question_changed" |
+    # "signed_out". A plain
     # string with no CHECK, like AdminPasswordResetEvent.mode: the list grows,
     # and a CHECK would mean a migration every time it does.
     # "phone_changed" is load-bearing beyond audit — it is what the rolling

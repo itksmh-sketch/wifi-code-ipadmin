@@ -9,6 +9,7 @@ import {
     passwordMeetsPolicy,
     readError,
 } from '../components/AuthFrame';
+import { signOutEverywhere } from '../signOut';
 
 // First sign-in on a temporary password. The API refuses everything else until
 // this is finished: verify a phone by SMS code, then choose a password and a
@@ -238,6 +239,16 @@ export default function Onboarding() {
                 </AuthCard>
             )}
 
+            {/* The API serves this account nothing but onboarding, so this is
+                the only way out short of finishing. Ends the session on the
+                server too; see signOut.js. */}
+            <p className="auth-fine-print" style={{ marginTop: 14, textAlign: 'center' }}>
+                Not you, or finishing later?{' '}
+                <button type="button" className="auth-label-aside" style={{ background: 'none', border: 0, cursor: 'pointer', textDecoration: 'underline' }}
+                    onClick={signOutEverywhere}>
+                    Sign out
+                </button>
+            </p>
         </AuthFrame>
     );
 }
