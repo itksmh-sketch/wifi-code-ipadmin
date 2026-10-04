@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=9">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=10">
 </head>
 <body>
 <div class="container">
@@ -15,7 +15,7 @@
     <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
     <button class="nav-link" type="button" id="logout-btn">Sign out</button>
   </nav>
-  <script src="/platform/statics/nav.js?v=9"></script>
+  <script src="/platform/statics/nav.js?v=10"></script>
 
   <!-- ── Your account ─────────────────────────────────────────────────── -->
   <div class="section-title">Your Account</div>
@@ -213,7 +213,7 @@
   </div>
 </div>
 
-<script src="/platform/statics/setup-guard.js?v=9"></script>
+<script src="/platform/statics/setup-guard.js?v=10"></script>
 <script>
 const KEYS = ['wg_server_endpoint', 'platform_app_url', 'webhook_base_url', 'platform_support_email', 'platform_trial_days', 'platform_name'];
 
@@ -656,9 +656,9 @@ document.getElementById('pw-form').addEventListener('submit', async e => {
       return;
     }
     // The response carries a fresh token pair: every other session is now
-    // invalid, so this tab must keep the new tokens to stay signed in.
+    // invalid, so this tab must keep the new access token to stay signed in.
+    // (The refresh token is not kept: the portal never refreshes.)
     localStorage.setItem('platform_access_token', body.access_token);
-    localStorage.setItem('platform_refresh_token', body.refresh_token);
     document.getElementById('pw-form').reset();
     accountMsg('pw-msg', 'Password changed. Other sessions have been signed out.', true);
   } catch (err) {

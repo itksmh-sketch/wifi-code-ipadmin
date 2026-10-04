@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=9">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=10">
   <style>
     /* Setup-only pieces. .char-row, .check and .actions come from app.css. */
     .setup-card{max-width:560px}
@@ -73,6 +73,29 @@ function signOut(next = '/platform/login') {
   localStorage.removeItem('platform_access_token');
   localStorage.removeItem('platform_refresh_token');
   window.location.replace(next);
+}
+// The Sign out button: also ends the session on the server (every device),
+// without waiting on it, as nav.js does on the other pages. The other
+// signOut() callers follow a 401 or setup completion, where the server has
+// already ended the session.
+let signingOut = false;
+function signOutEverywhere() {
+  if (signingOut) return;
+  signingOut = true;
+  const token = localStorage.getItem('platform_access_token');
+  localStorage.removeItem('platform_access_token');
+  localStorage.removeItem('platform_refresh_token');
+  let left = false;
+  const leave = () => { if (!left) { left = true; signOut(); } };
+  if (!token) return leave();
+  setTimeout(leave, 3000);
+  try {
+    fetch('/api/v1/platform/auth/logout', {
+      method: 'POST', keepalive: true, headers: {'Authorization': 'Bearer ' + token},
+    }).then(leave, leave);
+  } catch (e) {
+    leave();
+  }
 }
 
 async function api(path, opts = {}) {
@@ -277,7 +300,7 @@ async function load() {
   await render();
 }
 
-document.getElementById('logout-btn').addEventListener('click', () => signOut());
+document.getElementById('logout-btn').addEventListener('click', signOutEverywhere);
 load();
 </script>
 </body>

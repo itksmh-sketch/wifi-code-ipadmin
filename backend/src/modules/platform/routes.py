@@ -2,8 +2,8 @@
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
-from sqlalchemy import func, nulls_last, or_, select
+from fastapi.responses import JSONResponse, Response
+from sqlalchemy import func, nulls_last, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
@@ -295,6 +295,67 @@ async def platform_auth_refresh(body: RefreshRequest, db: AsyncSession = Depends
     if not token_version_matches(payload, owner):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
     return platform_owner_token_response(owner)
+
+
+class PlatformLogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def platform_auth_logout(
+    request: Request,
+    body: Optional[PlatformLogoutRequest] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Sign out everywhere. Bumping token_version ends every session on every
+    device at once: the version is checked on every request and at refresh.
+
+    Reads the token itself instead of depending on
+    get_authenticated_platform_owner, so it is not behind the setup gate (an
+    owner with setup pending can sign out from /platform/setup) and the setup
+    gate's route walk does not count it as an owner route. Takes the access
+    token (Authorization header) or the refresh token (body), so a page left
+    open past the access token's lifetime can still sign out.
+
+    Always 204. A bad, expired or already-revoked token has no session left to
+    end, and the portal signs out locally whatever the answer. The bump only
+    applies while the token's version is still current, so a replayed sign-out
+    is a no-op rather than a second bump."""
+    client_ip = request.client.host if request.client else "unknown"
+    await enforce_rate_limit(client_ip, "platform:logout", limit=20, window_seconds=60)
+
+    candidates = []
+    scheme, _, credentials = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer" and credentials.strip():
+        candidates.append((credentials.strip(), "access"))
+    if body is not None and body.refresh_token:
+        candidates.append((body.refresh_token, "refresh"))
+
+    for token, kind in candidates:
+        payload = verify_platform_owner_token(token)
+        if payload is None or payload.get("type") != kind:
+            continue
+        version = payload.get("tv")
+        if not isinstance(version, int) or isinstance(version, bool):
+            continue
+        try:
+            owner_id = uuid.UUID(str(payload.get("sub")))
+        except ValueError:
+            continue
+        result = await db.execute(
+            update(PlatformOwner)
+            .where(
+                PlatformOwner.id == owner_id,
+                PlatformOwner.is_active == True,
+                PlatformOwner.token_version == version,
+            )
+            .values(token_version=PlatformOwner.token_version + 1)
+        )
+        await db.commit()
+        if result.rowcount:
+            logger.info("platform_owner_logout owner_id=%s via=%s", owner_id, kind)
+            break
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 async def _operator_row(db: AsyncSession, operator: ISPOperator) -> dict:

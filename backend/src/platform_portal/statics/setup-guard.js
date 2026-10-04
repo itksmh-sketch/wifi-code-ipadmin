@@ -11,10 +11,15 @@
 // redirect to /platform/login in a race with this redirect. Leaving the
 // caller waiting means none of its error handling runs.
 //
+// It also removes any leftover platform_refresh_token (see below).
+//
 // Load it with a plain <script src> BEFORE the page's inline script.
 (function () {
   if (window.__platformSetupGuard) return;
   window.__platformSetupGuard = true;
+  // The portal never refreshes (an expired session means signing in again),
+  // so it no longer keeps the refresh token. Clear one left by an older login.
+  try { localStorage.removeItem('platform_refresh_token'); } catch (e) {}
   var originalFetch = window.fetch.bind(window);
   var redirecting = false;
   window.fetch = function () {

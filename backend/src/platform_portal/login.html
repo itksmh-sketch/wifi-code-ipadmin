@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=9">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=10">
 </head>
 <body>
 <div class="login-wrap">
@@ -66,8 +66,9 @@
     return fallback;
   }
   function finishSignIn(data) {
+    // Only the access token is kept: the portal never refreshes, so a stored
+    // refresh token would just be a 7-day credential sitting in localStorage.
     localStorage.setItem('platform_access_token', data.access_token);
-    localStorage.setItem('platform_refresh_token', data.refresh_token);
     window.location.href = '/platform/operators';
   }
   function showPasswordStep(errorText) {

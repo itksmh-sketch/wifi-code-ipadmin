@@ -15,8 +15,13 @@
 // on purpose: each page's own script does
 // getElementById('logout-btn').addEventListener(...) at top level, and if that
 // button were missing (say this file failed to load) the whole page script
-// would throw. Sign-out is also handled here, so the nav does not depend on
-// the page's copy; both do the same thing, so running both is harmless.
+// would throw. Sign-out is handled here, and only here.
+//
+// Sign-out ends the session on the server (POST /api/v1/platform/auth/logout,
+// which signs the owner out on every device) but never waits on it: the token
+// is cleared first, and the redirect happens when the call settles or after
+// SIGN_OUT_TIMEOUT_MS, whichever comes first. keepalive lets the call finish
+// after the page has gone.
 (function () {
   var nav = document.getElementById('platform-nav');
   if (!nav || nav.getAttribute('data-ready')) return;
@@ -72,10 +77,31 @@
   }
   logout.className = 'nav-link';
   account.appendChild(logout);  // moves it out of the shell if it was there
+  var SIGN_OUT_TIMEOUT_MS = 3000;
+  var signingOut = false;
   logout.addEventListener('click', function () {
+    if (signingOut) return;
+    signingOut = true;
+    var token = localStorage.getItem('platform_access_token');
     localStorage.removeItem('platform_access_token');
     localStorage.removeItem('platform_refresh_token');
-    window.location.href = '/platform/login';
+    var left = false;
+    function leave() {
+      if (left) return;
+      left = true;
+      window.location.replace('/platform/login');
+    }
+    if (!token) return leave();
+    setTimeout(leave, SIGN_OUT_TIMEOUT_MS);
+    try {
+      fetch('/api/v1/platform/auth/logout', {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'Authorization': 'Bearer ' + token },
+      }).then(leave, leave);
+    } catch (e) {
+      leave();
+    }
   });
 
   menu.appendChild(main);
