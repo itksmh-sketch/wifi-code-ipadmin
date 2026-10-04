@@ -128,8 +128,8 @@
     <div class="modal-title" id="modal-operator-title">Edit operator</div>
     <p class="text-muted" style="margin:0 0 14px">Business name and billing contact details. The URL slug, billing and status are changed elsewhere.</p>
     <div id="operator-msg" class="notice bad" style="display:none;margin-bottom:12px"></div>
-    <label>Business name</label>
-    <input id="op-name" type="text" required>
+    <label for="op-edit-name">Business name</label>
+    <input id="op-edit-name" type="text" required>
     <label for="op-contact-email">Contact email</label>
     <input id="op-contact-email" type="email" required>
     <p class="help">Used for invoices, trial and suspension notices, and as the payer email when this operator pays an invoice online — keep it a real, monitored address.</p>
@@ -560,7 +560,7 @@ function operatorMsg(text) {
 
 document.getElementById('edit-operator-btn').addEventListener('click', () => {
   if (!currentOperator) return;
-  document.getElementById('op-name').value = currentOperator.name || '';
+  document.getElementById('op-edit-name').value = currentOperator.name || '';
   document.getElementById('op-contact-email').value = currentOperator.contact_email || '';
   document.getElementById('op-contact-phone').value = currentOperator.contact_phone || '';
   operatorMsg('');
@@ -569,7 +569,7 @@ document.getElementById('edit-operator-btn').addEventListener('click', () => {
 
 document.getElementById('operator-submit').addEventListener('click', async () => {
   const btn = document.getElementById('operator-submit');
-  const name = document.getElementById('op-name').value.trim();
+  const name = document.getElementById('op-edit-name').value.trim();
   const contact_email = document.getElementById('op-contact-email').value.trim();
   const contact_phone = document.getElementById('op-contact-phone').value.trim();
 
