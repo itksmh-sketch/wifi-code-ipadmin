@@ -17,7 +17,7 @@ from src.modules.payments.types import (
     PaymentNextAction,
     PaymentStatus,
 )
-from src.modules.webhooks.urls import build_webhook_url
+from src.modules.webhooks.urls import build_webhook_url, webhook_base_url
 from src.modules.platform.platform_sms_rate import (
     PlatformSMSRateNotConfigured,
     get_current_platform_sms_rate,
@@ -503,5 +503,5 @@ class PaymentService:
 
         operator = await db.get(ISPOperator, tx.isp_operator_id)
         slug = operator.slug if operator else ""
-        callback_url = build_webhook_url(provider_key, slug)
+        callback_url = build_webhook_url(await webhook_base_url(), provider_key, slug)
         return build_payment_provider(provider_key, credentials, callback_url=callback_url)
