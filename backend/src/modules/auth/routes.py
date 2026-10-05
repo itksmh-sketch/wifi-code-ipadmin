@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
 from src.db.models import AdminSecurityEvent, AdminUser
 from src.middleware.rate_limit import enforce_rate_limit
+from src.modules import audit
 from src.modules.admin_accounts import lockout
 from src.schemas import LoginRequest, TokenResponse, RefreshRequest, ErrorResponse
 from src.utils.auth import (
@@ -38,7 +39,42 @@ INVALID_CREDENTIALS = "Invalid email or password"
 _DUMMY_HASH = hash_password("dummy-password-for-timing-equalisation")
 
 
-@router.post("/login", response_model=TokenResponse, responses={401: {"model": ErrorResponse}})
+def _login_rejected(background_tasks: BackgroundTasks, user: AdminUser, reason: str) -> JSONResponse:
+    """The 401 for a failed sign-in to a real account, with the attempt
+    audited. Only accounts that exist are audited (an unknown email never
+    reaches here), and the row is written as a background task, after the
+    response has gone: an insert on this path but not on the unknown-email one
+    would be a timing difference, which is the oracle the shared message and
+    _DUMMY_HASH exist to remove.
+
+    Returned, not raised, for the reason given at the lockout branch below:
+    background tasks only run when attached to the response the handler
+    returns. Same status and body as the raise.
+    """
+    background_tasks.add_task(
+        audit.record_detached,
+        "auth.login_failed",
+        actor=audit.Actor.system(),
+        isp_operator_id=user.isp_operator_id,
+        target_type="admin_user",
+        target_id=user.id,
+        summary=f"Failed sign-in for {user.email}",
+        detail={"reason": reason},
+        request_info=audit.current_request_info(),
+    )
+    return JSONResponse(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        content={"detail": INVALID_CREDENTIALS},
+        background=background_tasks,
+    )
+
+
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    responses={401: {"model": ErrorResponse}},
+    dependencies=[Depends(audit.audited)],
+)
 async def login(
     body: LoginRequest,
     request: Request,
@@ -68,7 +104,7 @@ async def login(
         # lockout SMS to one per lock: no increment, so no further threshold
         # crossing, so no repeat send while this lock holds.
         verify_password(body.password, _DUMMY_HASH)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS)
+        return _login_rejected(background_tasks, user, "locked")
 
     if not verify_password(body.password, user.password_hash):
         event_id = await lockout.register_failure(db, user, lockout.LOGIN, client_ip=client_ip)
@@ -77,18 +113,13 @@ async def login(
             # before this response, and an Arkesel round trip must not be on
             # the critical path of a login.
             background_tasks.add_task(lockout.send_lockout_notification, user.id, lockout.LOGIN, event_id)
-            # RETURNED, not raised. FastAPI attaches background tasks to the
-            # response the handler returns; when a handler raises, the
-            # exception handler builds a fresh response and the tasks are
-            # silently dropped — the lockout SMS would never be sent. The body
-            # is byte-identical to the raise below, so this stays invisible to
-            # callers.
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": INVALID_CREDENTIALS},
-                background=background_tasks,
-            )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS)
+        # RETURNED, not raised. FastAPI attaches background tasks to the
+        # response the handler returns; when a handler raises, the exception
+        # handler builds a fresh response and the tasks are silently dropped —
+        # the lockout SMS and the audit row would never be written. The body
+        # is byte-identical to the raise on the unknown-email path, so this
+        # stays invisible to callers.
+        return _login_rejected(background_tasks, user, "wrong_password")
 
     # A correct password ends the run of failures, lapsed lock and all.
     lockout.clear(user, lockout.LOGIN)
@@ -97,6 +128,8 @@ async def login(
     # the password alone would open the PIN-gated areas. Every sign-in starts
     # unelevated. (Committed by update_last_login below, as lockout.clear is.)
     user.pin_verified_until = None
+    # Committed with the last-login stamp by update_last_login.
+    audit.record(db, "auth.login", actor=audit.Actor.for_admin(user), target_type="admin_user", target_id=user.id)
     await update_last_login(user.id, db)
     return admin_token_response(user)
 
@@ -122,7 +155,7 @@ class AdminLogoutRequest(BaseModel):
     refresh_token: Optional[str] = None
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(audit.audited)])
 async def logout(
     request: Request,
     body: Optional[AdminLogoutRequest] = None,
@@ -178,9 +211,9 @@ async def logout(
                     AdminUser.token_version == version,
                 )
                 .values(token_version=AdminUser.token_version + 1, pin_verified_until=None)
-                .returning(AdminUser.id)
+                .returning(AdminUser.id, AdminUser.email)
             )
-        ).scalar_one_or_none()
+        ).one_or_none()
         if signed_out is None:
             await db.rollback()
             continue
@@ -190,6 +223,14 @@ async def logout(
             event_type="signed_out",
             detail={"via": kind, "client_ip": client_ip},
         ))
+        audit.record(
+            db,
+            "auth.logout",
+            actor=audit.Actor(audit.OPERATOR_USER, admin_id, signed_out.email, operator_id),
+            target_type="admin_user",
+            target_id=admin_id,
+            detail={"via": kind},
+        )
         await db.commit()
         logger.info("admin_logout admin_id=%s via=%s", admin_id, kind)
         break

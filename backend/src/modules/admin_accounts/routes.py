@@ -60,6 +60,7 @@ from src.modules.admin_accounts.notifications import OTP_TTL_MINUTES, send_otp_s
 from src.modules.admin_accounts.passwords import password_policy_error
 from src.modules.admin_accounts.pins import PIN_ELEVATION_MINUTES, pin_policy_error
 from src.modules.auth.tokens import admin_token_response
+from src.modules import audit
 from src.modules.admin_accounts.security_questions import (
     ANSWER_MIN_LENGTH,
     SECURITY_QUESTIONS,
@@ -530,7 +531,8 @@ class ResetPinRequest(BaseModel):
 
 
 def _record_event(db: AsyncSession, admin: AdminUser, event_type: str, **detail) -> AdminSecurityEvent:
-    """Add an audit row. Caller commits. Detail must stay free of secrets."""
+    """Add a security event, and its audit_log row, in the caller's
+    transaction. Caller commits. Detail must stay free of secrets."""
     kept = {k: v for k, v in detail.items() if v is not None}
     row = AdminSecurityEvent(
         admin_user_id=admin.id,
@@ -539,6 +541,14 @@ def _record_event(db: AsyncSession, admin: AdminUser, event_type: str, **detail)
         detail=kept or None,
     )
     db.add(row)
+    audit.record(
+        db,
+        f"security.{event_type}",
+        isp_operator_id=admin.isp_operator_id,
+        target_type="admin_user",
+        target_id=admin.id,
+        detail=kept or None,
+    )
     return row
 
 
@@ -589,7 +599,7 @@ def _attempts_remaining(admin: AdminUser) -> int:
     return max(0, lockout.PIN_MAX_ATTEMPTS - int(admin.pin_attempt_count or 0))
 
 
-@router.post("/me/pin")
+@router.post("/me/pin", dependencies=[Depends(audit.audited)])
 async def set_my_pin(
     body: SetPinRequest,
     request: Request,
@@ -645,7 +655,7 @@ async def set_my_pin(
     return {"status": "saved", "verified_until": until.isoformat()}
 
 
-@router.post("/me/pin/verify")
+@router.post("/me/pin/verify", dependencies=[Depends(audit.audited)])
 async def verify_my_pin(
     body: VerifyPinRequest,
     request: Request,
@@ -718,7 +728,7 @@ async def forgot_my_pin(
     return {"status": "sent", "phone": mask_phone(admin.phone), "expires_in_seconds": OTP_TTL_MINUTES * 60}
 
 
-@router.post("/me/pin/reset")
+@router.post("/me/pin/reset", dependencies=[Depends(audit.audited)])
 async def reset_my_pin(
     body: ResetPinRequest,
     request: Request,
@@ -909,7 +919,7 @@ async def request_phone_change(
     }
 
 
-@router.post("/me/phone/verify", dependencies=[Depends(require_recent_pin)])
+@router.post("/me/phone/verify", dependencies=[Depends(audit.audited), Depends(require_recent_pin)])
 async def verify_phone_change(
     body: OtpVerifyRequest,
     request: Request,
@@ -969,7 +979,7 @@ async def verify_phone_change(
     }
 
 
-@router.post("/me/security-question", dependencies=[Depends(require_recent_pin)])
+@router.post("/me/security-question", dependencies=[Depends(audit.audited), Depends(require_recent_pin)])
 async def change_my_security_question(
     body: ChangeSecurityQuestionRequest,
     request: Request,

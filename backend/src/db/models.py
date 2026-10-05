@@ -972,6 +972,46 @@ class AdminSecurityEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class AuditLog(Base):
+    """Append-only trail of who changed what, across every tenant and the
+    platform owner. Written only through src.modules.audit; a database trigger
+    refuses UPDATE, DELETE and TRUNCATE (see migration 055). No foreign keys,
+    so history outlives the rows it describes."""
+
+    __tablename__ = "audit_log"
+    __table_args__ = (
+        CheckConstraint(
+            "actor_type IN ('operator_user', 'platform_owner', 'system')",
+            name="ck_audit_log_actor_type",
+        ),
+        Index("ix_audit_log_operator_created", "isp_operator_id", text("created_at DESC"), text("id DESC")),
+        Index("ix_audit_log_created", text("created_at DESC"), text("id DESC")),
+        Index("ix_audit_log_actor_created", "actor_id", text("created_at DESC")),
+        Index("ix_audit_log_action_created", "action", text("created_at DESC")),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # NULL for platform-wide actions; operators only ever see their own rows.
+    isp_operator_id = Column(UUID(as_uuid=True), nullable=True)
+    actor_type = Column(String(20), nullable=False)
+    actor_id = Column(UUID(as_uuid=True), nullable=True)
+    # The actor's email at the time of the action.
+    actor_label = Column(String(255), nullable=True)
+    action = Column(String(64), nullable=False)
+    target_type = Column(String(40), nullable=True)
+    target_id = Column(String(255), nullable=True)
+    summary = Column(Text, nullable=True)
+    # Redacted by modules.audit.redact: values only for allow-listed fields.
+    # none_as_null: an absent value is SQL NULL, not the JSON value null, so
+    # "changes IS NULL" finds every row without changes.
+    changes = Column(JSONB(none_as_null=True), nullable=True)
+    detail = Column(JSONB(none_as_null=True), nullable=True)
+    ip = Column(INET, nullable=True)
+    user_agent = Column(String(256), nullable=True)
+    request_id = Column(String(64), nullable=True)
+
+
 class PaymentTransaction(Base):
     __tablename__ = "payment_transactions"
 

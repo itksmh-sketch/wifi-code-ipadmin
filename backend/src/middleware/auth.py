@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from src.db.models import AdminUser, PlatformOwner
 from src.db.base import get_db
 from src.middleware.rate_limit import enforce_rate_limit
+from src.modules.audit.context import Actor, bind_actor
 from src.utils.auth import verify_platform_owner_token, verify_token
 
 security = HTTPBearer()
@@ -74,6 +75,9 @@ async def get_authenticated_admin(
     if not token_version_matches(payload, user):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is no longer valid. Please sign in again.")
 
+    # Only once every check has passed: an audit row's actor is someone the
+    # API actually let in.
+    bind_actor(Actor.for_admin(user))
     return user
 
 
@@ -180,6 +184,7 @@ async def get_authenticated_platform_owner(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Platform owner not found or inactive")
     if not token_version_matches(payload, owner):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session is no longer valid. Please sign in again.")
+    bind_actor(Actor.for_platform_owner(owner))
     return owner
 
 

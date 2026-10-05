@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import async_session_factory
 from src.db.models import AdminSecurityEvent, AdminUser
+from src.modules import audit
 
 logger = logging.getLogger("admin_accounts.lockout")
 
@@ -139,6 +140,16 @@ async def register_failure(
         detail={"attempts": count, "client_ip": client_ip, "locked_for_hours": LOCKOUT_HOURS},
     )
     db.add(event)
+    # Actor: the signed-in admin for a PIN lock; nobody (system) for a login
+    # lock, which the context reflects because login resolves no actor.
+    audit.record(
+        db,
+        f"security.{event_type}",
+        isp_operator_id=admin.isp_operator_id,
+        target_type="admin_user",
+        target_id=admin.id,
+        detail=event.detail,
+    )
     await db.commit()
     logger.warning(
         "admin_%s admin_id=%s attempts=%s locked_until=%s", event_type, admin.id, count, getattr(admin, lock_attr)
