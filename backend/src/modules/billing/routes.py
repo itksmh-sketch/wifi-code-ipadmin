@@ -17,6 +17,7 @@ from src.db.models import (
     OperatorInvoice,
     OperatorInvoiceLineItem,
     PaymentTransaction,
+    SMSMessage,
     SMSUsageRecord,
     Voucher,
 )
@@ -221,6 +222,37 @@ async def list_transactions(
     }
 
 
+# Arkesel statuses that mean the message will never arrive.
+_UNDELIVERED = {"NOT_DELIVERED", "UNDELIVERED", "EXPIRED", "PROHIBITED", "REJECTED", "FAILED"}
+
+
+def _delivery(msg: SMSMessage | None) -> dict | None:
+    """What the SMS Usage tab shows about one message. None = not tracked
+    (sent before delivery tracking began)."""
+    if msg is None:
+        return None
+    status = (msg.provider_status or "").upper()
+    if status == "DELIVERED":
+        state = "delivered"
+    elif status in _UNDELIVERED:
+        state = "not_delivered"
+    elif msg.provider_sent_at is not None:
+        state = "sent_to_network"
+    else:
+        state = "waiting"
+    delay = None
+    if msg.provider_sent_at is not None and msg.accepted_at is not None:
+        delay = max(0, int((msg.provider_sent_at - msg.accepted_at).total_seconds()))
+    return {
+        "state": state,
+        "provider_status": msg.provider_status,
+        "accepted_at": msg.accepted_at.isoformat() if msg.accepted_at else None,
+        "sent_to_network_at": msg.provider_sent_at.isoformat() if msg.provider_sent_at else None,
+        "network_delay_seconds": delay,
+        "final_status_at": msg.final_status_at.isoformat() if msg.final_status_at else None,
+    }
+
+
 @router.get("/sms-usage")
 async def list_sms_usage(
     page: int = 1,
@@ -232,7 +264,11 @@ async def list_sms_usage(
 
     The invoice a record landed on is two hops away (usage record -> line item
     -> invoice), so both joins are outer: an unbilled record has no line item
-    and therefore no invoice, which is a normal state, not missing data."""
+    and therefore no invoice, which is a normal state, not missing data.
+
+    Delivery status comes from sms_messages (migration 054), matched on the
+    provider's message id; also an outer join, since records sent before
+    delivery tracking began (2026-10-05) have no row there."""
     scope = (
         SMSUsageRecord.isp_operator_id == tenant.isp_operator_id,
         SMSUsageRecord.is_diagnostic.is_(False),
@@ -245,7 +281,13 @@ async def list_sms_usage(
 
     rows = (
         await db.execute(
-            select(SMSUsageRecord, OperatorInvoice.invoice_number, OperatorInvoice.issued_at)
+            select(SMSUsageRecord, OperatorInvoice.invoice_number, OperatorInvoice.issued_at, SMSMessage)
+            .outerjoin(
+                SMSMessage,
+                (SMSMessage.provider == "arkesel_platform")
+                & (SMSMessage.provider_reference == SMSUsageRecord.provider_reference)
+                & (SMSMessage.isp_operator_id == SMSUsageRecord.isp_operator_id),
+            )
             .outerjoin(
                 OperatorInvoiceLineItem,
                 OperatorInvoiceLineItem.id == SMSUsageRecord.invoice_line_item_id,
@@ -268,8 +310,9 @@ async def list_sms_usage(
                 "amount_ghs": float(rec.amount_ghs),
                 "invoice_number": invoice_number,
                 "invoice_issued_at": issued_at.isoformat() if issued_at else None,
+                "delivery": _delivery(msg),
             }
-            for rec, invoice_number, issued_at in rows
+            for rec, invoice_number, issued_at, msg in rows
         ],
         "page": page,
         "page_size": page_size,
