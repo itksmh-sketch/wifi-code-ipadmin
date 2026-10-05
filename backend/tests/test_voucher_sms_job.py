@@ -56,6 +56,21 @@ class _Db:
         return _R()
 
 
+@pytest.fixture(autouse=True)
+def recorded(monkeypatch):
+    """sms_messages rows tracked_send would write (no database here)."""
+    from src.modules.sms import status_tracking
+
+    rows = []
+
+    async def _record(**kw):
+        rows.append(kw)
+        return True
+
+    monkeypatch.setattr(status_tracking, "record_accepted", _record)
+    return rows
+
+
 @pytest.fixture
 def sender(monkeypatch):
     s = _Sender()
@@ -79,6 +94,19 @@ async def test_deliver_sends_through_operators_provider(monkeypatch, sender):
     assert out == "sent"
     assert sender.sent[0][0] == "233551234987"
     assert "ABCD" in sender.sent[0][1]
+
+
+@pytest.mark.asyncio
+async def test_deliver_records_the_accepted_message(monkeypatch, sender, recorded):
+    _provider(monkeypatch, "hubtel")
+    tx_id = uuid.uuid4()
+    await voucher_delivery.deliver_voucher_sms(
+        _Db(), operator_id=OP, to="233551234987", code="ABCD", plan=_plan(), payment_transaction_id=tx_id)
+    assert len(recorded) == 1
+    r = recorded[0]
+    assert (r["purpose"], r["provider_key"], r["credential_scope"]) == ("voucher_purchase", "hubtel", "operator")
+    assert r["operator_id"] == OP and r["payment_transaction_id"] == tx_id and r["provider_reference"] == "m1"
+    assert r["callback_token"] is None  # callbacks are Arkesel-only
 
 
 @pytest.mark.asyncio
@@ -120,7 +148,7 @@ async def test_deliver_platform_gateway_meters_after_accepted_send(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_deliver_rejected_send_is_not_metered(monkeypatch):
+async def test_deliver_rejected_send_is_not_metered(monkeypatch, recorded):
     _provider(monkeypatch, "arkesel_platform")
     s = _Sender(result=SMSSendResult(success=False, error="arkesel_status_error: bad sender"))
     monkeypatch.setattr(voucher_delivery, "build_sms_provider", lambda k, c: s)
@@ -132,6 +160,7 @@ async def test_deliver_rejected_send_is_not_metered(monkeypatch):
     monkeypatch.setattr(voucher_delivery, "record_platform_sms_usage", lambda **kw: pytest.fail("metered a failed send"))
     out = await voucher_delivery.deliver_voucher_sms(_Db(), operator_id=OP, to="233551234987", code="ABCD", plan=_plan())
     assert out == "failed"
+    assert recorded == []  # nothing recorded for a send the provider refused
 
 
 @pytest.mark.asyncio
@@ -184,7 +213,8 @@ async def test_job_delivers_for_a_paid_transaction(monkeypatch, job_db):
     monkeypatch.setattr(voucher_sms, "deliver_voucher_sms", _deliver)
     out = await voucher_sms.send_voucher_sms({"job_try": 1}, str(tx.id))
     assert out == "sent"
-    assert calls == [{"operator_id": OP, "to": "233551234987", "code": "WXYZ-1234", "plan": db.plan}]
+    assert calls == [{"operator_id": OP, "to": "233551234987", "code": "WXYZ-1234", "plan": db.plan,
+                      "payment_transaction_id": tx.id}]
 
 
 @pytest.mark.asyncio

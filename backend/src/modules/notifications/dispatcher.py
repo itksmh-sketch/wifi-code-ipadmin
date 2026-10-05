@@ -72,7 +72,12 @@ async def _send_sms(to: str, message: str) -> None:
         provider = ArkeselSMSProvider(
             api_key=credentials["api_key"], sender_id=credentials["sender_id"]
         )
-        result = await provider.send(to=to, message=message)
+        from src.modules.sms.status_tracking import SCOPE_PLATFORM_NOTIFICATION, tracked_send
+
+        result = await tracked_send(
+            provider, to=to, message=message, purpose="notification", provider_key="arkesel",
+            credential_scope=SCOPE_PLATFORM_NOTIFICATION,
+        )
         if result is not None and not result.success:
             logger.error("notification_sms_failed to=%s error=%s", to, result.error)
     except Exception as exc:

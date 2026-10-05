@@ -58,8 +58,13 @@ async def _send(to: str, message: str, *, kind: str) -> SMSSendResult:
             logger.error("admin_sms_not_configured kind=%s to=%s", kind, mask_phone(to))
             return SMSSendResult(success=False, error="sms_not_configured")
         _, credentials = resolved
+        from src.modules.sms.status_tracking import SCOPE_PLATFORM_NOTIFICATION, tracked_send
+
         provider = ArkeselSMSProvider(api_key=credentials["api_key"], sender_id=credentials["sender_id"])
-        result = await provider.send(to=to, message=message)
+        result = await tracked_send(
+            provider, to=to, message=message, purpose=kind, provider_key="arkesel",
+            credential_scope=SCOPE_PLATFORM_NOTIFICATION,
+        )
     except Exception as exc:  # a send must never break the request that triggered it
         logger.error("admin_sms_error kind=%s to=%s error=%s", kind, mask_phone(to), exc)
         return SMSSendResult(success=False, error="sms_send_error")

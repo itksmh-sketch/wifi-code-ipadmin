@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
@@ -11,6 +13,12 @@ from src.modules.sms.providers.base import SMSProvider, http_client, key_fingerp
 from src.modules.sms.types import SMSSendResult
 
 logger = logging.getLogger("sms.providers.arkesel")
+
+
+@dataclass(frozen=True)
+class MessageStatus:
+    status: str                    # raw, upper-cased: SUBMITTED, DELIVERED, ...
+    sent_at: datetime | None       # handed to the network (UTC)
 
 
 def _clip(text: str, limit: int = 200) -> str:
@@ -166,11 +174,46 @@ class ArkeselSMSProvider(SMSProvider):
                     return None
         return None
 
-    async def send(self, to: str, message: str) -> SMSSendResult:
+    async def get_message_status(self, message_id: str) -> MessageStatus:
+        """GET /api/v2/sms/{id}: Arkesel's own record of one message. No cost,
+        no SMS. Confirmed live 2026-10-05: {"status": "success", "data":
+        {"ID", "status": "DELIVERED", "sent_at_time": "2026-10-05 15:00:34",
+        ...}}. sent_at_time is UTC (Ghana time) and is when Arkesel handed
+        the message to the network; there is no delivered-at time. Raises
+        ValueError on any failure."""
+        try:
+            async with self._http() as client:
+                resp = await client.get(
+                    f"/api/v2/sms/{message_id}", headers={"api-key": self.api_key, "Accept": "application/json"}
+                )
+        except Exception as e:  # noqa: BLE001
+            raise ValueError(f"Could not reach Arkesel: {_clip(str(e))}") from e
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = None
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if resp.status_code != 200 or not isinstance(data, dict) or not data.get("status"):
+            reason = (payload or {}).get("message") if isinstance(payload, dict) else None
+            raise ValueError(f"Arkesel status lookup failed: HTTP {resp.status_code} {_clip(str(reason or resp.text), 120)}")
+        sent_at = None
+        raw = data.get("sent_at_time")
+        if raw:
+            try:
+                sent_at = datetime.strptime(str(raw), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except ValueError:
+                sent_at = None
+        return MessageStatus(status=str(data["status"]).upper()[:32], sent_at=sent_at)
+
+    async def send(self, to: str, message: str, callback_url: str | None = None) -> SMSSendResult:
         if not (self.api_key and self.sender_id):
             return SMSSendResult(success=False, error="arkesel_not_configured")
 
         body = {"sender": self.sender_id, "message": message, "recipients": [_gh_msisdn(to)]}
+        if callback_url:
+            # Arkesel then calls this URL with ?sms_id=&status= (per its docs;
+            # the callback is only a trigger, see sms.status_tracking).
+            body["callback_url"] = callback_url
         headers = {"api-key": self.api_key, "Accept": "application/json"}
         ctx = self._log_ctx(to)
         try:

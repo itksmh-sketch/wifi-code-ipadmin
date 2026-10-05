@@ -87,4 +87,5 @@ async def send_voucher_sms(ctx, payment_tx_id: str) -> str:
             return "skipped_not_eligible"
         return await deliver_voucher_sms(
             db, operator_id=tx.isp_operator_id, to=tx.phone_number, code=voucher.code, plan=plan,
+            payment_transaction_id=tx.id,
         )

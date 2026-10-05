@@ -373,6 +373,47 @@ class SMSUsageRecord(Base):
     )
 
 
+class SMSMessage(Base):
+    """One SMS a provider accepted, and what the provider later says happened
+    to it (migration 054). Operational only — billing stays in
+    [[SMSUsageRecord]]. Status is only ever read back from the provider's API
+    (src/modules/sms/status_tracking.py); a delivery callback just triggers
+    that read."""
+    __tablename__ = "sms_messages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=text("gen_random_uuid()"))
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id", ondelete="CASCADE"), nullable=True)
+    payment_transaction_id = Column(
+        UUID(as_uuid=True), ForeignKey("payment_transactions.id", ondelete="SET NULL"), nullable=True
+    )
+    purpose = Column(String(32), nullable=False)
+    provider = Column(String(32), nullable=False)
+    credential_scope = Column(String(24), nullable=False)
+    credential_fp = Column(String(12), nullable=False)
+    sender_id = Column(String(32), nullable=False)
+    recipient_masked = Column(String(16), nullable=False)
+    provider_reference = Column(Text, nullable=True)
+    callback_token_hash = Column(String(64), nullable=True)
+    accepted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    provider_status = Column(String(32), nullable=True)
+    provider_sent_at = Column(DateTime(timezone=True), nullable=True)
+    final_status_at = Column(DateTime(timezone=True), nullable=True)
+    status_source = Column(String(8), nullable=True)
+    last_checked_at = Column(DateTime(timezone=True), nullable=True)
+    check_count = Column(Integer, nullable=False, server_default="0")
+
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_reference", name="uq_sms_messages_provider_reference"),
+        CheckConstraint(
+            "credential_scope IN ('platform_gateway', 'platform_notification', 'operator')",
+            name="ck_sms_messages_credential_scope",
+        ),
+        CheckConstraint("status_source IN ('callback', 'poll')", name="ck_sms_messages_status_source"),
+        Index("ix_sms_messages_operator_accepted_at", "isp_operator_id", "accepted_at"),
+        Index("ix_sms_messages_pending_accepted_at", "accepted_at", postgresql_where=text("final_status_at IS NULL")),
+    )
+
+
 class PlatformPaymentCredential(Base):
     """The platform's own payment keys — how operator subscriptions are collected.
 

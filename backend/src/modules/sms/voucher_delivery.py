@@ -29,6 +29,11 @@ from src.modules.sms.provider_resolver import (
 from src.modules.sms.providers.registry import build_sms_provider
 from src.modules.sms.segmentation import count_sms_segments
 from src.modules.sms.service import build_voucher_sms_message
+from src.modules.sms.status_tracking import (
+    SCOPE_OPERATOR,
+    SCOPE_PLATFORM_GATEWAY,
+    tracked_send,
+)
 
 __all__ = ["deliver_voucher_sms"]
 
@@ -36,7 +41,13 @@ logger = logging.getLogger("sms.voucher_delivery")
 
 
 async def deliver_voucher_sms(
-    db: AsyncSession, *, operator_id: uuid.UUID, to: str, code: str, plan: Plan
+    db: AsyncSession,
+    *,
+    operator_id: uuid.UUID,
+    to: str,
+    code: str,
+    plan: Plan,
+    payment_transaction_id: uuid.UUID | None = None,
 ) -> str:
     """Send one voucher SMS. Returns the outcome (``sent``, ``failed``,
     ``skipped_no_provider``, ``skipped_no_rate``, ``exception``) for the job
@@ -82,7 +93,16 @@ async def deliver_voucher_sms(
             template=getattr(operator, "voucher_sms_template", None),
             operator_name=getattr(operator, "name", "") or "",
         )
-        result = await build_sms_provider(provider_key, credentials).send(to=to, message=message)
+        result = await tracked_send(
+            build_sms_provider(provider_key, credentials),
+            to=to,
+            message=message,
+            purpose="voucher_purchase",
+            provider_key=provider_key,
+            credential_scope=SCOPE_PLATFORM_GATEWAY if provider_key == PLATFORM_GATEWAY_PROVIDER_KEY else SCOPE_OPERATOR,
+            operator_id=operator_id,
+            payment_transaction_id=payment_transaction_id,
+        )
         if result is not None and not result.success:
             logger.error(
                 "voucher_sms_send_failed operator=%s provider=%s to=%s error=%s",
