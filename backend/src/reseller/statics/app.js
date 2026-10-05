@@ -52,3 +52,12 @@ function logout() {
 
 window.ResellerApp = { API, money, requireAuth, loadNav, logout };
 
+// The nav's Logout button (no inline handler: CSP). Only "logout" is handled
+// here; other data-action values belong to the page's own listeners.
+document.addEventListener("click", (e) => {
+  const el = e.target.closest('[data-action="logout"]');
+  if (!el) return;
+  e.preventDefault();
+  logout();
+});
+

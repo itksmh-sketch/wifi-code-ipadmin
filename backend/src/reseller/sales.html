@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-    <link rel="stylesheet" href="/reseller/statics/app.css" />
+    <link rel="stylesheet" href="/reseller/statics/app.css?v=2" />
   </head>
   <body>
     <div class="container">
@@ -21,7 +21,7 @@
           <a class="btn" href="/reseller/buy">Buy vouchers</a>
           <a class="btn" href="/reseller/vouchers">My vouchers</a>
           <a class="btn" href="/reseller/wallet">Wallet</a>
-          <button class="btn danger" onclick="ResellerApp.logout()">Logout</button>
+          <button class="btn danger" data-action="logout">Logout</button>
         </div>
       </div>
 
@@ -54,7 +54,7 @@
       </div>
     </div>
 
-    <script src="/reseller/statics/app.js"></script>
+    <script src="/reseller/statics/app.js?v=2"></script>
     <script>
       ResellerApp.requireAuth();
       ResellerApp.loadNav();

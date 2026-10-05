@@ -6,13 +6,18 @@ the app and fails on anything the headers break: CSP violations (Report-Only
 or enforced), framing refused by X-Frame-Options / frame-ancestors, COOP or
 Permissions-Policy errors, and nosniff MIME refusals. It also runs the two
 journeys most at risk: the admin Branding page's portal-preview iframe, and
-the admin Billing "Pay Now" redirect to Paystack checkout.
+the admin Billing "Pay Now" redirect to Paystack checkout. Then it clicks
+through the buttons whose inline handlers phase B replaced (operators,
+operator detail, reseller Logout and Print) and the one confirm() in scope
+(notification templates, Reset to default), checking each still does what it
+did: the right fixture call, dialog, or navigation.
 
 Safe against any instance, production included, because it never touches the
 API or real data: every /api/v1/* request the browser makes is intercepted
 and answered from the fixtures below (pages get fake tokens, which never
-leave the browser), and the Paystack checkout navigation is intercepted too,
-so nothing reaches Paystack. The pages themselves (HTML, JS, CSS) and their
+leave the browser), any other request that is not a GET/HEAD is refused
+before it leaves the browser, and the Paystack checkout navigation is
+intercepted too, so nothing reaches Paystack. The pages themselves (HTML, JS, CSS) and their
 response headers come from the instance, which is the point. Portal pages'
 own non-API calls (/portal/sites, /portal/branding/...) do reach it: read-only.
 
@@ -60,6 +65,36 @@ try {{
 }} catch (e) {{}}
 """
 
+# Click-through fixture ids.
+OP_PENDING = "22222222-0000-0000-0000-000000000001"
+OP_APPROVED = "22222222-0000-0000-0000-000000000002"
+OP_SUSPENDED = "22222222-0000-0000-0000-000000000003"
+APP_PENDING = "33333333-0000-0000-0000-000000000001"
+APP_DECIDED = "33333333-0000-0000-0000-000000000002"
+ADMIN_ID = "44444444-0000-0000-0000-000000000001"
+
+
+def operator(op_id: str, name: str, status: str) -> dict:
+    return {"id": op_id, "name": name, "slug": name.lower().replace(" ", "-"), "contact_email": "precheck@example.test",
+            "status": status, "billing_status": "active", "admin_count": 1, "monthly_revenue_this_month": "0",
+            "created_at": "2026-10-01T00:00:00Z"}
+
+
+def application(app_id: str, name: str, status: str, operator_id: str | None = None) -> dict:
+    return {"id": app_id, "isp_name": name, "contact_name": "Precheck Contact", "email": "precheck@example.test",
+            "phone": "0244000000", "region": "Greater Accra", "expected_sites": 2, "message": "precheck",
+            "status": status, "created_at": "2026-10-01T00:00:00Z", "reviewed_at": None if status == "pending"
+            else "2026-10-02T00:00:00Z", "isp_operator_id": operator_id, "rejection_reason": None}
+
+
+EMAIL_TEMPLATE = {
+    "event": "precheck_event", "channel": "email", "label": "Precheck event", "description": "precheck",
+    "subject": "Precheck subject", "body_text": "Hello precheck", "is_default": False, "placeholders": [],
+    "body_html": '<p style="color:#123456">Hello <b>precheck</b></p>', "max_sms_segments": 3,
+    "preview": {"channel": "email", "subject": "Precheck subject", "body_text": "Hello precheck",
+                "body_html": '<p style="color:#123456">Hello <b>precheck</b></p>', "character_count": 14},
+}
+
 # (method, path) -> JSON body. Anything not listed: GET -> [], others -> {}.
 FIXTURES = {
     ("GET", "/api/v1/billing/invoices"): [{
@@ -74,6 +109,36 @@ FIXTURES = {
     ("GET", "/api/v1/platform/me"): {"name": "Precheck", "email": "precheck@example.test"},
     ("GET", "/api/v1/reseller/me"): {"email": "precheck@example.test"},
     ("GET", "/api/v1/reseller/wallet"): {"balance_ghs": "0", "lifetime_topped_up_ghs": "0", "lifetime_spent_ghs": "0"},
+    # /platform/operators click-through
+    ("GET", "/api/v1/platform/operators"): [operator(OP_PENDING, "Precheck Pending", "pending"),
+                                            operator(OP_APPROVED, "Precheck Approved", "approved"),
+                                            operator(OP_SUSPENDED, "Precheck Suspended", "suspended")],
+    ("PUT", f"/api/v1/platform/operators/{OP_PENDING}/status"): operator(OP_PENDING, "Precheck Pending", "approved"),
+    ("PUT", f"/api/v1/platform/operators/{OP_APPROVED}/status"): operator(OP_APPROVED, "Precheck Approved", "suspended"),
+    ("PUT", f"/api/v1/platform/operators/{OP_SUSPENDED}/status"): operator(OP_SUSPENDED, "Precheck Suspended", "approved"),
+    ("GET", "/api/v1/platform/applications"): [application(APP_PENDING, "Precheck Applicant", "pending"),
+                                               application(APP_DECIDED, "Precheck Decided", "approved", OP_APPROVED)],
+    ("PUT", f"/api/v1/platform/applications/{APP_PENDING}/approve"): {
+        "temp_password": "precheck-temp", "slug": "precheck-applicant", "admin_email": "precheck@example.test",
+        "temp_password_sms_sent": True},
+    ("PUT", f"/api/v1/platform/applications/{APP_PENDING}/reject"): {},
+    # /platform/operators/{id} click-through
+    ("GET", f"/api/v1/platform/operators/{ZERO}"): operator(ZERO, "Precheck Detail", "approved"),
+    ("GET", f"/api/v1/platform/operators/{ZERO}/infrastructure"): {
+        "operator": operator(ZERO, "Precheck Detail", "approved"), "towns": [], "unassigned_routers": [],
+        "unassigned_sites": [], "totals": {"towns": 0, "sites": 0, "routers": 0, "routers_online": 0, "plans": 0,
+                                           "plans_active": 0}},
+    ("GET", f"/api/v1/platform/operators/{ZERO}/admins"): [{
+        "id": ADMIN_ID, "email": "precheck-admin@example.test", "role": "admin", "phone": "0244000000",
+        "phone_verified": True, "is_active": True, "created_at": "2026-10-01T00:00:00Z"}],
+    ("POST", f"/api/v1/platform/operators/{ZERO}/admins"): {
+        "email": "precheck-new@example.test", "role": "admin", "temp_password": "precheck-temp",
+        "temp_password_sms_sent": True, "phone": "0244000001"},
+    ("POST", f"/api/v1/platform/operators/{ZERO}/admins/{ADMIN_ID}/reset-password"): {
+        "email": "precheck-admin@example.test", "sms_sent": True, "phone": "0244000000", "mode": "reset"},
+    # /platform/notification-templates click-through
+    ("GET", "/api/v1/platform/notification-templates"): {"templates": [EMAIL_TEMPLATE]},
+    ("POST", "/api/v1/platform/notification-templates/precheck_event/email/reset"): {**EMAIL_TEMPLATE, "is_default": True},
 }
 
 PAGES = [
@@ -145,7 +210,10 @@ class Chrome:
                     else:
                         self.events.put(msg)
 
-    def send(self, method: str, params: dict | None = None, session: str | None = None, timeout: float = 15):
+    def send(self, method: str, params: dict | None = None, session: str | None = None, timeout: float = 15,
+             on_event=None):
+        """on_event: handle events while waiting (a navigation or evaluate can
+        depend on a paused request that only the event handler releases)."""
         with self._lock:
             self._id += 1
             mid = self._id
@@ -154,7 +222,19 @@ class Chrome:
         if session:
             msg["sessionId"] = session
         os.write(self._to_chrome_w, json.dumps(msg).encode() + b"\0")
-        reply = self._replies[mid].get(timeout=timeout)
+        end = time.time() + timeout
+        while True:
+            try:
+                reply = self._replies[mid].get(timeout=0.05 if on_event else timeout)
+                break
+            except queue.Empty:
+                if not on_event or time.time() > end:
+                    raise TimeoutError(f"{method}: no reply in {timeout}s")
+                while True:
+                    try:
+                        on_event(self.events.get_nowait())
+                    except queue.Empty:
+                        break
         del self._replies[mid]
         if "error" in reply:
             raise RuntimeError(f"{method}: {reply['error']}")
@@ -180,20 +260,36 @@ class Page:
         self.s = chrome.send("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
         for domain in ("Page", "Runtime", "Log", "Network"):
             chrome.send(f"{domain}.enable", session=self.s)
-        chrome.send("Fetch.enable", {"patterns": [{"urlPattern": "*/api/v1/*"}, {"urlPattern": "https://checkout.paystack.com/*"}]},
-                    session=self.s)
+        # Every request is paused: /api/v1/* is answered from FIXTURES, a
+        # non-GET/HEAD anywhere else is refused, the rest (pages, assets) goes on.
+        chrome.send("Fetch.enable", {"patterns": [{"urlPattern": "*"}]}, session=self.s)
         chrome.send("Page.addScriptToEvaluateOnNewDocument", {"source": SEED_TOKENS}, session=self.s)
+        # Out-of-process frames (the sandboxed email preview) get their own
+        # session; attach to each so its console messages are seen too.
+        self.children: dict[str, dict] = {}
+        chrome.send("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True},
+                    session=self.s)
         self.messages: list[str] = []
         self.exceptions: list[str] = []
         self.navigations: list[str] = []
         self.doc_headers: dict[str, str] = {}
         self.paystack_hits = 0
+        self.api_calls: list[tuple[str, str, str]] = []   # (method, path, body), all answered by FIXTURES
+        self.refused: list[str] = []                       # non-API writes stopped in the browser
+        self.dialogs: list[tuple[str, str]] = []           # (type, message) of alert/confirm/prompt
+        self.dialog_accept = True
 
     def _handle(self, ev: dict):
-        if ev.get("sessionId") != self.s:
+        if ev.get("sessionId") != self.s and ev.get("sessionId") not in self.children:
             return
         m, p = ev.get("method"), ev.get("params", {})
-        if m == "Fetch.requestPaused":
+        if m == "Target.attachedToTarget":
+            child = p["sessionId"]
+            self.children[child] = p["targetInfo"]
+            for domain in ("Runtime", "Log"):
+                self.c.send(f"{domain}.enable", session=child)
+            self.c.send("Runtime.runIfWaitingForDebugger", session=child)
+        elif m == "Fetch.requestPaused":
             url, method = p["request"]["url"], p["request"]["method"]
             if url.startswith("https://checkout.paystack.com/"):
                 self.paystack_hits += 1
@@ -203,6 +299,15 @@ class Page:
                             "body": base64.b64encode(body).decode()}, session=self.s)
                 return
             path = "/" + url.split("://", 1)[1].split("/", 1)[1].split("?", 1)[0]
+            if not path.startswith("/api/v1/"):
+                if method in ("GET", "HEAD"):
+                    self.c.send("Fetch.continueRequest", {"requestId": p["requestId"]}, session=self.s)
+                else:
+                    self.refused.append(f"{method} {url}")
+                    self.c.send("Fetch.failRequest", {"requestId": p["requestId"], "errorReason": "BlockedByClient"},
+                                session=self.s)
+                return
+            self.api_calls.append((method, path, p["request"].get("postData", "")))
             data = FIXTURES.get((method, path), [] if method == "GET" else {})
             self.c.send("Fetch.fulfillRequest", {"requestId": p["requestId"], "responseCode": 200,
                         "responseHeaders": [{"name": "Content-Type", "value": "application/json"}],
@@ -218,6 +323,9 @@ class Page:
         elif m == "Runtime.exceptionThrown":
             d = p.get("exceptionDetails", {})
             self.exceptions.append((d.get("exception") or {}).get("description", d.get("text", "")).split("\n")[0])
+        elif m == "Page.javascriptDialogOpening":
+            self.dialogs.append((p.get("type", ""), p.get("message", "")))
+            self.c.send("Page.handleJavaScriptDialog", {"accept": self.dialog_accept}, session=self.s)
         elif m == "Page.frameNavigated":
             self.navigations.append(p["frame"].get("url", ""))
         elif m == "Network.responseReceived" and p.get("type") == "Document" and not self.doc_headers:
@@ -232,13 +340,13 @@ class Page:
                 pass
 
     def goto(self, path: str, settle: float = 4.0):
-        self.c.send("Page.navigate", {"url": self.base + path}, session=self.s)
+        self.c.send("Page.navigate", {"url": self.base + path}, session=self.s, on_event=self._handle)
         self.pump(settle)
 
     def js(self, expression: str):
         # Evaluating from DevTools is not subject to the page's CSP.
         r = self.c.send("Runtime.evaluate", {"expression": expression, "returnByValue": True, "awaitPromise": True},
-                        session=self.s)
+                        session=self.s, on_event=self._handle)
         self.pump(0.2)
         return r.get("result", {}).get("value")
 
@@ -247,6 +355,205 @@ class Page:
             self.c.send("Target.closeTarget", {"targetId": self.target})
         except Exception:
             pass
+
+
+# ── Click-through scenarios ─────────────────────────────────────────────────
+# Each clicks real buttons by their visible text (so the same scenario runs
+# against the old inline-handler pages and the new data-action ones) and checks
+# what followed: the fixture calls made, dialogs shown, overlay state, URL.
+# Clicks go through setTimeout so a confirm()/alert() can't block the
+# evaluate call; the dialog is answered from the event pump.
+
+FIND = """((scope, rowText, label) => {
+  const roots = scope ? [...document.querySelectorAll(scope)] : [document];
+  for (const root of roots) {
+    const rows = rowText ? [...root.querySelectorAll('tr, .modal-dialog, div')].filter(r => r.textContent.includes(rowText))
+                         : [root];
+    for (const r of rows.reverse()) {
+      const el = [...r.querySelectorAll('button, a')].find(b => b.textContent.trim() === label && b.offsetParent !== null);
+      if (el) return el;
+    }
+  }
+  return null;
+})"""
+
+
+class Steps:
+    def __init__(self, page: Page):
+        self.page, self.results = page, []
+
+    def click(self, label: str, scope: str = "", row: str = "", accept: bool = True, settle: float = 1.0):
+        self.page.dialog_accept = accept
+        mark = (len(self.page.api_calls), len(self.page.dialogs))
+        found = self.page.js(f"""(() => {{ const el = {FIND}({json.dumps(scope)}, {json.dumps(row)}, {json.dumps(label)});
+            if (!el) return false; setTimeout(() => el.click(), 0); return true; }})()""")
+        self.page.pump(settle)
+        calls = [c for c in self.page.api_calls[mark[0]:] if c[1] != "/api/v1/csp-report"]
+        return found, calls, self.page.dialogs[mark[1]:]
+
+    def visible(self, element_id: str) -> bool:
+        return bool(self.page.js(f"""(() => {{ const el = document.getElementById({json.dumps(element_id)});
+            return !!el && el.offsetParent !== null; }})()"""))
+
+    def check(self, name: str, ok: bool, detail: str = ""):
+        self.results.append((name, bool(ok), detail))
+
+
+def writes(calls):
+    return [(m, p) for m, p, _ in calls if m != "GET"]
+
+
+def scenario_operators(page: Page) -> Steps:
+    st = Steps(page)
+    for label, row, op_id, status in (("Suspend", "Precheck Approved", OP_APPROVED, "suspended"),
+                                      ("Unsuspend", "Precheck Suspended", OP_SUSPENDED, "approved"),
+                                      ("Approve", "Precheck Pending", OP_PENDING, "approved")):
+        found, calls, dialogs = st.click(label, "#tbody", row)
+        want = ("PUT", f"/api/v1/platform/operators/{op_id}/status")
+        body = next((json.loads(b or "{}") for m, p, b in calls if (m, p) == want), None)
+        st.check(f"operator row {label}: PUT status={status}, dialogs={dialogs or 'none'}",
+                 found and writes(calls) == [want] and body == {"status": status}, f"calls={writes(calls)} body={body}")
+
+    url_before = page.js("location.href")
+    found, calls, _ = st.click("Precheck Applicant", "#apps-tbody")
+    st.check("application name link opens the detail dialog, URL unchanged (no '#')",
+             found and st.visible("modal-detail") and page.js("location.href") == url_before and not writes(calls))
+    found, calls, _ = st.click("Close", "#detail-actions")
+    st.check("detail dialog Close (pending) closes it", found and not st.visible("modal-overlay") and not writes(calls))
+
+    found, calls, _ = st.click("View", "#apps-tbody", "Precheck Applicant")
+    st.check("application row View opens the detail dialog", found and st.visible("modal-detail") and not writes(calls))
+    found, calls, _ = st.click("Reject", "#detail-actions")
+    st.check("detail dialog Reject opens the reject dialog, no API write", found and st.visible("modal-reject") and not writes(calls))
+    found, calls, _ = st.click("Cancel", "#modal-reject")
+    st.check("reject dialog Cancel closes it", found and not st.visible("modal-overlay") and not writes(calls))
+
+    st.click("View", "#apps-tbody", "Precheck Applicant")
+    found, calls, _ = st.click("Approve", "#detail-actions")
+    st.check("detail dialog Approve opens the approve dialog, no API write", found and st.visible("modal-approve") and not writes(calls))
+    found, calls, _ = st.click("Cancel", "#modal-approve")
+    st.check("approve dialog Cancel closes it", found and not st.visible("modal-overlay") and not writes(calls))
+
+    found, calls, _ = st.click("Approve", "#apps-tbody", "Precheck Applicant")
+    st.check("application row Approve opens the approve dialog and does not approve yet",
+             found and st.visible("modal-approve") and not writes(calls), f"calls={writes(calls)}")
+    found, calls, _ = st.click("Approve operator", "#modal-approve")
+    st.check("approve dialog submit: PUT approve, then the one-time password dialog",
+             found and writes(calls) == [("PUT", f"/api/v1/platform/applications/{APP_PENDING}/approve")]
+             and st.visible("modal-password"), f"calls={writes(calls)}")
+    found, calls, _ = st.click("Done", "#modal-password")
+    st.check("password dialog Done closes it", found and not st.visible("modal-overlay") and not writes(calls))
+
+    found, calls, _ = st.click("Reject", "#apps-tbody", "Precheck Applicant")
+    st.check("application row Reject opens the reject dialog and does not reject yet",
+             found and st.visible("modal-reject") and not writes(calls))
+    found, calls, dialogs = st.click("Reject application", "#modal-reject")
+    st.check("reject submit with no reason: alert shown, no API write",
+             found and dialogs == [("alert", "Enter a rejection reason.")] and not writes(calls), f"dialogs={dialogs}")
+    page.js("document.getElementById('reject-reason').value = 'precheck reason'")
+    found, calls, dialogs = st.click("Reject application", "#modal-reject")
+    st.check("reject submit with a reason: PUT reject, dialog closes",
+             found and writes(calls) == [("PUT", f"/api/v1/platform/applications/{APP_PENDING}/reject")]
+             and not st.visible("modal-overlay"), f"calls={writes(calls)}")
+
+    found, calls, _ = st.click("View", "#apps-tbody", "Precheck Decided")
+    st.check("decided application View opens the detail dialog", found and st.visible("modal-detail"))
+    found, calls, _ = st.click("Close", "#detail-actions")
+    st.check("detail dialog Close (decided) closes it", found and not st.visible("modal-overlay") and not writes(calls))
+    return st
+
+
+def scenario_operator_detail(page: Page) -> Steps:
+    st = Steps(page)
+    found, calls, _ = st.click("Edit")
+    st.check("Edit opens the operator dialog", found and st.visible("modal-operator"))
+    found, calls, _ = st.click("Cancel", "#modal-operator")
+    st.check("operator dialog Cancel closes it", found and not st.visible("modal-overlay") and not writes(calls))
+
+    page.js("document.getElementById('add-admin-btn').click()")
+    page.pump(0.5)
+    found, calls, _ = st.click("Cancel", "#modal-admin")
+    st.check("add-admin dialog Cancel closes it", found and not st.visible("modal-overlay") and not writes(calls))
+    page.js("""document.getElementById('add-admin-btn').click();
+        document.getElementById('admin-email').value = 'precheck-new@example.test';
+        document.getElementById('admin-phone').value = '0244000001';""")
+    page.pump(0.5)
+    found, calls, _ = st.click("Create admin", "#modal-admin")
+    st.check("Create admin: POST admins, then the result dialog",
+             found and writes(calls) == [("POST", f"/api/v1/platform/operators/{ZERO}/admins")]
+             and st.visible("modal-admin-done"), f"calls={writes(calls)}")
+    found, calls, _ = st.click("Done", "#modal-admin-done")
+    st.check("admin-created dialog Done closes it", found and not st.visible("modal-overlay") and not writes(calls))
+
+    found, calls, _ = st.click("Reset password", "#admins-body")
+    st.check("row Reset password opens the confirmation dialog, no API write",
+             found and st.visible("modal-reset") and not writes(calls))
+    found, calls, _ = st.click("Cancel", "#modal-reset")
+    st.check("reset dialog Cancel closes it", found and not st.visible("modal-overlay") and not writes(calls))
+    st.click("Reset password", "#admins-body")
+    found, calls, _ = st.click("Reset password", "#modal-reset")
+    st.check("reset dialog submit: POST reset-password, then the result dialog",
+             found and writes(calls) == [("POST", f"/api/v1/platform/operators/{ZERO}/admins/{ADMIN_ID}/reset-password")]
+             and st.visible("modal-reset-done"), f"calls={writes(calls)}")
+    found, calls, _ = st.click("Done", "#modal-reset-done")
+    st.check("reset result dialog Done closes it", found and not st.visible("modal-overlay") and not writes(calls))
+    return st
+
+
+def scenario_notification_templates(page: Page) -> Steps:
+    st = Steps(page)
+    # The sandboxed srcdoc frame runs out of process: evaluate in its own session.
+    child = next((sid for sid, info in page.children.items() if info.get("url") == "about:srcdoc"), None)
+    shown = None
+    if child:
+        r = page.c.send("Runtime.evaluate", {"expression": "document.body.innerText + ' | ' + "
+                        "getComputedStyle(document.querySelector('p')).color", "returnByValue": True}, session=child)
+        shown = r.get("result", {}).get("value")
+    st.check("email preview iframe renders the fixture HTML, style attribute applied",
+             shown == "Hello precheck | rgb(18, 52, 86)", f"frame={bool(child)} shown={shown!r}")
+    found, calls, dialogs = st.click("Reset to default", accept=False)
+    st.check("Reset to default: confirm() fires; dismissing it makes no API write",
+             found and [d[0] for d in dialogs] == ["confirm"] and not writes(calls), f"dialogs={dialogs} calls={writes(calls)}")
+    found, calls, dialogs = st.click("Reset to default", accept=True)
+    st.check("Reset to default: accepting the confirm() makes the POST reset",
+             found and [d[0] for d in dialogs] == ["confirm"]
+             and writes(calls) == [("POST", "/api/v1/platform/notification-templates/precheck_event/email/reset")],
+             f"dialogs={dialogs} calls={writes(calls)}")
+    return st
+
+
+def scenario_reseller_logout(page: Page) -> Steps:
+    st = Steps(page)
+    nav_mark = len(page.navigations)
+    token_after = page.js(f"""(() => {{ const el = {FIND}('', '', 'Logout'); if (!el) return 'no-button';
+        el.click(); return sessionStorage.getItem('reseller_access_token'); }})()""")
+    page.pump(2.0)
+    landed = any(u.split("?")[0].endswith("/reseller/login") for u in page.navigations[nav_mark:])
+    st.check("Logout clears the token and lands on /reseller/login", token_after is None and landed,
+             f"token={token_after!r} landed={landed}")
+    return st
+
+
+def scenario_reseller_print(page: Page) -> Steps:
+    st = Steps(page)
+    page.js("window.__printed = 0; window.print = () => { window.__printed += 1; }")
+    found, calls, _ = st.click("Print")
+    printed = page.js("window.__printed")
+    st.check("Print calls window.print", found and printed == 1, f"printed={printed}")
+    return st
+
+
+SCENARIOS = {
+    "/platform/operators": scenario_operators,
+    f"/platform/operators/{ZERO}": scenario_operator_detail,
+    "/platform/notification-templates": scenario_notification_templates,
+    "/reseller/dashboard": scenario_reseller_logout,
+    "/reseller/buy": scenario_reseller_logout,
+    "/reseller/vouchers": scenario_reseller_logout,
+    "/reseller/wallet": scenario_reseller_logout,
+    "/reseller/sales": scenario_reseller_logout,
+    "/reseller/print?codes=PRECHECK-1": scenario_reseller_print,
+}
 
 
 def find_chrome() -> str | None:
@@ -259,6 +566,7 @@ def main() -> int:
     ap.add_argument("--base", required=True, help="e.g. http://127.0.0.1:18000")
     ap.add_argument("--chrome", default=find_chrome())
     ap.add_argument("--only", default="", help="only pages starting with this prefix")
+    ap.add_argument("--no-clicks", action="store_true", help="page loads only, skip the click-through scenarios")
     args = ap.parse_args()
     if not args.chrome or not os.path.exists(args.chrome):
         print("Chromium not found; pass --chrome", file=sys.stderr)
@@ -266,6 +574,7 @@ def main() -> int:
 
     chrome = Chrome(args.chrome)
     failures, exceptions_seen = [], 0
+    clicks_total, api_writes, refused = 0, [], []
     try:
         chrome.send("Browser.getVersion")
         for path in [p for p in PAGES if p.startswith(args.only)]:
@@ -293,6 +602,19 @@ def main() -> int:
                     extra = f"Pay Now clicked={clicked}, checkout navigation={landed}"
                     if not (clicked and landed and page.paystack_hits):
                         problems.append(f"Paystack redirect did not happen ({extra})")
+                if path in SCENARIOS and not args.no_clicks:
+                    steps = SCENARIOS[path](page)
+                    problems += [m for m in page.messages if m not in problems]
+                    for name, ok, detail in steps.results:
+                        clicks_total += 1
+                        extra += ("\n     " if extra else "") + f"{'click ok' if ok else 'CLICK FAIL'}: {name}" + \
+                                 ("" if ok else f" ({detail})")
+                        if not ok:
+                            problems.append(f"click-through failed: {name} ({detail})")
+                api_writes += [f"{m} {p}" for m, p, _ in page.api_calls if m != "GET" and p != "/api/v1/csp-report"]
+                if page.refused:
+                    refused += page.refused
+                    problems.append(f"non-API write refused in the browser: {page.refused}")
                 h = page.doc_headers
                 summary = " ".join(f"{k}={'y' if k in h else '-'}" for k in (
                     "x-content-type-options", "x-frame-options", "referrer-policy", "permissions-policy",
@@ -314,7 +636,11 @@ def main() -> int:
         return 2
     finally:
         chrome.close()
-    print(f"\n{len(failures)} page(s) with problems" + (f": {', '.join(failures)}" if failures else ""))
+    print(f"\nclick-through checks: {clicks_total}; API writes made, every one answered by a fixture: "
+          f"{len(api_writes)}; non-API writes refused in the browser: {len(refused)}")
+    for w in api_writes:
+        print(f"     fixture: {w}")
+    print(f"{len(failures)} page(s) with problems" + (f": {', '.join(failures)}" if failures else ""))
     return 1 if failures else 0
 
 

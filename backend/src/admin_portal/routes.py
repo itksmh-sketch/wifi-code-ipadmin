@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
+
+from src.middleware.csp_pages import serve_page
 
 router = APIRouter(tags=["admin-portal"])
 
@@ -29,5 +31,5 @@ async def legacy_login_redirect():
 
 
 @router.get("/apply")
-async def operator_apply_page():
-    return FileResponse(_STATIC_DIR / "apply.html")
+async def operator_apply_page(request: Request):
+    return serve_page(_STATIC_DIR / "apply.html", request)

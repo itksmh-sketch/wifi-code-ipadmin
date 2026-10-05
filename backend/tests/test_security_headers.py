@@ -2,8 +2,10 @@
 endpoint (POST /api/v1/csp-report).
 
 Phase A of the CSP rollout: the non-CSP headers are enforced everywhere, CSP is
-enforced on API responses, and /admin's CSP is Report-Only. The other areas get
-no CSP yet; a test pins that, so turning one on is a deliberate change here.
+enforced on API responses, and /admin's CSP is Report-Only. /platform,
+/reseller and /apply get a hash-based Report-Only CSP from their routes (phase
+B, tests/test_csp_inline_guard.py). The portal gets no CSP yet; a test pins
+that, so turning it on is a deliberate change here.
 
 Pure unit tests: only routes that need no database are requested. No server,
 no DB, no Redis.
@@ -120,8 +122,8 @@ async def test_admin_assets_carry_no_csp():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["/platform/login", "/reseller/login", "/apply", "/portal/statics/style.css"])
-async def test_other_areas_have_no_csp_yet(path):
+@pytest.mark.parametrize("path", ["/portal/statics/style.css"])
+async def test_the_portal_has_no_csp_yet(path):
     res = await request("GET", path)
     assert "content-security-policy" not in res.headers
     assert "content-security-policy-report-only" not in res.headers

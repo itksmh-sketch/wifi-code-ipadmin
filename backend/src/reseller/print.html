@@ -7,14 +7,14 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-    <link rel="stylesheet" href="/reseller/statics/app.css" />
+    <link rel="stylesheet" href="/reseller/statics/app.css?v=2" />
   </head>
   <body>
     <div class="container">
       <div class="nav no-print">
         <div class="muted">Print page</div>
         <div class="links">
-          <button class="btn primary" onclick="window.print()">Print</button>
+          <button class="btn primary" id="printBtn">Print</button>
           <a class="btn" href="/reseller/vouchers">Back</a>
         </div>
       </div>
@@ -29,6 +29,7 @@
     </div>
 
     <script>
+      document.getElementById("printBtn").addEventListener("click", () => window.print());
       const params = new URLSearchParams(window.location.search);
       const codes = (params.get("codes") || "").split(",").map(s => s.trim()).filter(Boolean);
       const grid = document.getElementById("grid");

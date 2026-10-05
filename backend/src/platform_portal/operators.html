@@ -104,7 +104,7 @@
       individual operator's fee on the Billing page after approval.
     </p>
     <div class="modal-actions">
-      <button class="btn" onclick="closeModals()">Cancel</button>
+      <button class="btn" data-action="close-modals">Cancel</button>
       <button class="btn primary" id="approve-submit">Approve operator</button>
     </div>
   </div>
@@ -131,7 +131,7 @@
     <label for="reject-reason">Reason for rejection</label>
     <textarea id="reject-reason" rows="3" placeholder="Shared with the applicant"></textarea>
     <div class="modal-actions">
-      <button class="btn" onclick="closeModals()">Cancel</button>
+      <button class="btn" data-action="close-modals">Cancel</button>
       <button class="btn danger" id="reject-submit">Reject application</button>
     </div>
   </div>
@@ -145,7 +145,7 @@
     </div>
     <p class="help" id="password-meta"></p>
     <div class="modal-actions">
-      <button class="btn primary" onclick="closeModals()">Done</button>
+      <button class="btn primary" data-action="close-modals">Done</button>
     </div>
   </div>
 </div>
@@ -212,9 +212,9 @@ function renderTable(rows) {
       <td>${fmtDate(op.created_at)}</td>
       <td>
         <div class="actions">
-          ${op.status === 'pending' ? `<button class="btn sm primary" onclick="setStatus('${op.id}','approved')">Approve</button>` : ''}
-          ${op.status === 'approved' ? `<button class="btn sm danger" onclick="setStatus('${op.id}','suspended')">Suspend</button>` : ''}
-          ${op.status === 'suspended' ? `<button class="btn sm" onclick="setStatus('${op.id}','approved')">Unsuspend</button>` : ''}
+          ${op.status === 'pending' ? `<button class="btn sm primary" data-action="set-status" data-id="${escHtml(op.id)}" data-status="approved">Approve</button>` : ''}
+          ${op.status === 'approved' ? `<button class="btn sm danger" data-action="set-status" data-id="${escHtml(op.id)}" data-status="suspended">Suspend</button>` : ''}
+          ${op.status === 'suspended' ? `<button class="btn sm" data-action="set-status" data-id="${escHtml(op.id)}" data-status="approved">Unsuspend</button>` : ''}
         </div>
       </td>
     </tr>
@@ -294,7 +294,7 @@ function renderApps() {
   tbody.innerHTML = allApps.map(a => `
     <tr>
       <td>
-        <div class="strong"><a href="#" onclick="openDetail('${a.id}');return false">${escHtml(a.isp_name)}</a></div>
+        <div class="strong"><a href="#" data-action="open-detail" data-id="${escHtml(a.id)}">${escHtml(a.isp_name)}</a></div>
         <div class="text-muted">${escHtml(a.contact_name)}</div>
       </td>
       <td>${escHtml(a.email)}</td>
@@ -305,10 +305,10 @@ function renderApps() {
       <td>${fmtDate(a.created_at)}</td>
       <td>
         <div class="actions">
-          <button class="btn sm" onclick="openDetail('${a.id}')">View</button>
+          <button class="btn sm" data-action="open-detail" data-id="${escHtml(a.id)}">View</button>
           ${a.status === 'pending'
-            ? `<button class="btn sm primary" onclick="openApprove('${a.id}')">Approve</button>
-               <button class="btn sm danger" onclick="openReject('${a.id}')">Reject</button>`
+            ? `<button class="btn sm primary" data-action="open-approve" data-id="${escHtml(a.id)}">Approve</button>
+               <button class="btn sm danger" data-action="open-reject" data-id="${escHtml(a.id)}">Reject</button>`
             : ''}
         </div>
       </td>
@@ -329,6 +329,22 @@ function closeModals() {
   document.getElementById('modal-overlay').style.display = 'none';
   currentAppId = null;
 }
+
+// One delegated listener for every [data-action] button and link, including
+// the rows and dialog buttons rebuilt by innerHTML (no inline handlers: CSP).
+const ACTIONS = {
+  'close-modals': () => closeModals(),
+  'set-status':   el => setStatus(el.dataset.id, el.dataset.status),
+  'open-detail':  el => openDetail(el.dataset.id),
+  'open-approve': el => openApprove(el.dataset.id),
+  'open-reject':  el => openReject(el.dataset.id),
+};
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (!el || !ACTIONS[el.dataset.action]) return;
+  e.preventDefault();
+  ACTIONS[el.dataset.action](el);
+});
 
 function fmtDateTime(s) {
   if (!s) return '—';
@@ -374,10 +390,10 @@ function openDetail(id) {
   document.getElementById('detail-review').innerHTML = review;
 
   document.getElementById('detail-actions').innerHTML = a.status === 'pending'
-    ? `<button class="btn" onclick="closeModals()">Close</button>
-       <button class="btn danger" onclick="openReject('${a.id}')">Reject</button>
-       <button class="btn primary" onclick="openApprove('${a.id}')">Approve</button>`
-    : `<button class="btn primary" onclick="closeModals()">Close</button>`;
+    ? `<button class="btn" data-action="close-modals">Close</button>
+       <button class="btn danger" data-action="open-reject" data-id="${escHtml(a.id)}">Reject</button>
+       <button class="btn primary" data-action="open-approve" data-id="${escHtml(a.id)}">Approve</button>`
+    : `<button class="btn primary" data-action="close-modals">Close</button>`;
   showOverlay('modal-detail');
 }
 

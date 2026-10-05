@@ -6,9 +6,10 @@ origin, so a script injected into any of them could read the others' tokens;
 these headers are the backstop if escaping ever slips again.
 
 Rollout (see the CSP plan): every non-CSP header below is enforced now. CSP
-is enforced on JSON API responses, and is Report-Only on /admin; the other
-areas get theirs once their inline handlers are gone (phase B) and the portal
-once it has nonces (phase C). Violations are POSTed to /api/v1/csp-report.
+is enforced on JSON API responses, and is Report-Only on /admin. /platform,
+/reseller and /apply get a hash-based Report-Only CSP from their page routes
+(csp_pages.py), since the hashes are per page; the portal gets one once it has
+nonces (phase C). Violations are POSTed to /api/v1/csp-report.
 
 Headers a route sets itself win (the payment-callback page has its own
 stricter CSP): this only fills in what is missing.
@@ -99,7 +100,7 @@ def area_for(path: str) -> Area:
 REPORT_SUFFIX = f"; report-uri {CSP_REPORT_PATH}; report-to {CSP_REPORT_GROUP}"
 
 
-def _reporting_endpoints(scope) -> str:
+def reporting_endpoints(scope) -> str:
     # Reporting-Endpoints wants an absolute URL. Built from the request, so it
     # names whichever host the page was served from (nginx passes Host and
     # X-Forwarded-Proto).
@@ -121,7 +122,7 @@ def headers_for(path: str, content_type: str, scope) -> dict[str, str]:
             out["Content-Security-Policy"] = area.csp
         if area.csp_report_only:
             out["Content-Security-Policy-Report-Only"] = area.csp_report_only + REPORT_SUFFIX
-            endpoints = _reporting_endpoints(scope)
+            endpoints = reporting_endpoints(scope)
             if endpoints:
                 out["Reporting-Endpoints"] = endpoints
     return out
