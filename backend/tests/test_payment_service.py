@@ -136,49 +136,48 @@ def _paid_tx_and_plan(phone: str | None):
 
 
 @pytest.mark.asyncio
-async def test_voucher_sms_uses_operators_active_provider(monkeypatch):
+async def test_successful_payment_enqueues_voucher_sms_instead_of_sending(request, monkeypatch):
     tx, plan = _paid_tx_and_plan("233551234987")
-    sent = {}
-
-    class _FakeSMS:
-        async def send(self, *, to, message):
-            sent["to"], sent["message"] = to, message
-            from src.modules.sms.types import SMSSendResult
-            return SMSSendResult(success=True, provider_reference="m1")
-
-    async def _fake_resolve(_db, _operator_id):
-        return ("hubtel", {"client_id": "a", "client_secret": "b", "from": "SID"})
-
-    monkeypatch.setattr("src.modules.payments.service.resolve_active_sms_provider", _fake_resolve)
-    monkeypatch.setattr("src.modules.payments.service.build_sms_provider", lambda k, c: _FakeSMS())
-
-    await _service().resolve_successful_payment(
-        FakeDb([tx, plan]), internal_reference=tx.internal_reference, trigger_source="webhook"
-    )
-    assert sent["to"] == "233551234987"
-    assert "voucher" in sent["message"].lower()
-
-
-@pytest.mark.asyncio
-async def test_voucher_sms_skipped_when_operator_has_no_sms_provider(monkeypatch):
-    tx, plan = _paid_tx_and_plan("233551234987")
-    built = {"n": 0}
-
-    async def _fake_resolve(_db, _operator_id):
-        return None
-
-    monkeypatch.setattr("src.modules.payments.service.resolve_active_sms_provider", _fake_resolve)
     monkeypatch.setattr(
-        "src.modules.payments.service.build_sms_provider",
-        lambda *a, **k: built.__setitem__("n", built["n"] + 1),
+        "src.modules.sms.voucher_delivery.build_sms_provider",
+        lambda *a, **k: pytest.fail("the request path must not send the SMS itself"),
     )
 
     updated = await _service().resolve_successful_payment(
         FakeDb([tx, plan]), internal_reference=tx.internal_reference, trigger_source="webhook"
     )
     assert updated.status == PaymentStatus.SUCCESS.value
+    assert request.node.voucher_sms_enqueued == [tx.id]
+
+
+@pytest.mark.asyncio
+async def test_no_voucher_sms_enqueued_without_a_phone_number(request):
+    tx, plan = _paid_tx_and_plan(None)
+
+    updated = await _service().resolve_successful_payment(
+        FakeDb([tx, plan]), internal_reference=tx.internal_reference, trigger_source="webhook"
+    )
+    assert updated.status == PaymentStatus.SUCCESS.value
+    assert request.node.voucher_sms_enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_enqueue_failure_never_fails_the_payment(monkeypatch):
+    tx, plan = _paid_tx_and_plan("233551234987")
+
+    async def _redis_down():
+        raise ConnectionError("redis down")
+
+    # The real enqueue helper, with Redis unreachable.
+    from src.jobs import voucher_sms
+    monkeypatch.setattr(voucher_sms, "get_redis_pool", _redis_down)
+    monkeypatch.setattr("src.modules.payments.service.enqueue_voucher_sms", voucher_sms.enqueue_voucher_sms)
+
+    updated = await _service().resolve_successful_payment(
+        FakeDb([tx, plan]), internal_reference=tx.internal_reference, trigger_source="portal_poll"
+    )
+    assert updated.status == PaymentStatus.SUCCESS.value
     assert updated.voucher_id is not None
-    assert built["n"] == 0
 
 
 @pytest.mark.asyncio

@@ -2,12 +2,13 @@ import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import ISPOperator, PaymentTransaction, Plan, Voucher
+from src.jobs.voucher_sms import enqueue_voucher_sms
 from src.modules.payments.providers.base import PaymentProvider
 from src.modules.payments.providers.registry import build_payment_provider
 from src.modules.payments.provider_resolver import resolve_active_payment_provider
@@ -18,17 +19,6 @@ from src.modules.payments.types import (
     PaymentStatus,
 )
 from src.modules.webhooks.urls import build_webhook_url, webhook_base_url
-from src.modules.platform.platform_sms_rate import (
-    PlatformSMSRateNotConfigured,
-    get_current_platform_sms_rate,
-)
-from src.modules.sms.metering import record_platform_sms_usage
-from src.modules.sms.provider_resolver import resolve_active_sms_provider
-from src.modules.sms.providers.registry import build_sms_provider
-from src.modules.sms.segmentation import count_sms_segments
-from src.modules.sms.service import build_voucher_sms_message
-
-PLATFORM_GATEWAY_PROVIDER_KEY = "arkesel_platform"
 from src.modules.vouchers.engine import (
     generate_voucher_code,
     generate_voucher_password,
@@ -348,7 +338,7 @@ class PaymentService:
         internal_reference: str,
         trigger_source: str,
     ) -> PaymentTransaction:
-        sms_payload: tuple[str, str, Plan] | None = None
+        send_sms = False
         tx_ctx = db.begin() if not db.in_transaction() else None
         if tx_ctx:
             await tx_ctx.__aenter__()
@@ -401,92 +391,22 @@ class PaymentService:
             tx.display_message = "Payment successful."
             self._log_status_change(tx, old_status, tx.status, trigger_source)
 
-            if tx.phone_number:
-                sms_payload = (tx.phone_number, voucher.code, plan)
+            send_sms = bool(tx.phone_number)
         finally:
             if tx_ctx:
                 await tx_ctx.__aexit__(None, None, None)
 
         await db.refresh(tx)
-        if sms_payload:
-            to, code, plan = sms_payload
-            resolved = await resolve_active_sms_provider(db, tx.isp_operator_id)
-            if resolved is None:
-                # No SMS gateway configured for this operator — deliver the
-                # voucher on the success page only (matches the old
-                # sms_provider='' no-op). Never blocks the payment.
-                logger.info(
-                    "voucher_sms_skipped operator=%s reason=no_active_sms_provider",
-                    tx.isp_operator_id,
-                )
-            else:
-                provider_key, credentials = resolved
-                # Resolved BEFORE sending, not after: a send we can't price must
-                # not happen at all — never bill for a send we can't confirm,
-                # and never send one we can't bill for.
-                platform_rate = None
-                if provider_key == PLATFORM_GATEWAY_PROVIDER_KEY:
-                    try:
-                        platform_rate = await get_current_platform_sms_rate(db)
-                    except PlatformSMSRateNotConfigured:
-                        logger.error(
-                            "platform_sms_rate_not_configured operator=%s to=%s — send skipped",
-                            tx.isp_operator_id, to,
-                        )
-                if provider_key == PLATFORM_GATEWAY_PROVIDER_KEY and platform_rate is None:
-                    pass  # already logged above
-                else:
-                    try:
-                        # The operator's own template is a nicety; failing to read
-                        # it must never cost the buyer their voucher SMS, so this
-                        # degrades to the platform default rather than skipping.
-                        operator = None
-                        try:
-                            operator = await db.get(ISPOperator, tx.isp_operator_id)
-                        except Exception as exc:
-                            logger.warning(
-                                "voucher_sms_template_lookup_failed operator=%s error=%s",
-                                tx.isp_operator_id, exc,
-                            )
-                        message = build_voucher_sms_message(
-                            code=code,
-                            plan=plan,
-                            template=getattr(operator, "voucher_sms_template", None),
-                            operator_name=getattr(operator, "name", "") or "",
-                        )
-                        result = await build_sms_provider(provider_key, credentials).send(to=to, message=message)
-                        if result is not None and not result.success:
-                            logger.error(
-                                "voucher_sms_send_failed operator=%s provider=%s to=%s error=%s",
-                                tx.isp_operator_id, provider_key, to, result.error,
-                            )
-                        else:
-                            logger.info(
-                                "voucher_sms_sent operator=%s provider=%s to=%s",
-                                tx.isp_operator_id, provider_key, to,
-                            )
-                            if provider_key == PLATFORM_GATEWAY_PROVIDER_KEY:
-                                segment_info = count_sms_segments(message)
-                                amount = (
-                                    Decimal(segment_info.segment_count) * platform_rate
-                                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                                metered = await record_platform_sms_usage(
-                                    isp_operator_id=tx.isp_operator_id,
-                                    provider_reference=result.provider_reference if result else None,
-                                    segment_count=segment_info.segment_count,
-                                    rate_ghs_per_segment=platform_rate,
-                                    amount_ghs=amount,
-                                )
-                                if not metered:
-                                    logger.error(
-                                        "platform_sms_usage_unrecoverable_after_retries operator=%s to=%s",
-                                        tx.isp_operator_id, to,
-                                    )
-                    except Exception:
-                        logger.exception(
-                            "voucher_sms_exception operator=%s provider=%s to=%s",
-                            tx.isp_operator_id, provider_key, to,
-                        )
+        if send_sms:
+            # Sent by the worker, not here: the provider call used to block this
+            # request (the portal's payment-status poll) for up to 10 s. Only the
+            # caller that flipped the row to success gets here, so a poll racing
+            # a webhook enqueues once; see src/jobs/voucher_sms.py.
+            if tx_ctx is None:
+                # Joined the caller's transaction: commit so the worker can see
+                # the paid row (the onboarding step below commits it anyway).
+                await db.commit()
+            await enqueue_voucher_sms(tx.id)
         try:
             from src.modules.onboarding import mark_checklist
             # A diagnostic payment is a test run, not a sale — the same

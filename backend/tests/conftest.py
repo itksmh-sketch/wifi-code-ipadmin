@@ -157,3 +157,38 @@ def pytest_collection_modifyitems(config, items):
         f"  ({_OPT_IN_ENV}=1 is set) — this WILL write rows to that DB with no cleanup.\n"
         + "!" * 74 + "\n\n"
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_voucher_sms_enqueue(request, monkeypatch):
+    """Inside the backend container REDIS_URL is production Redis, so a test
+    that resolves a payment must never queue a real send_voucher_sms job.
+    Records the would-be enqueues instead (``request.node.voucher_sms_enqueued``).
+    A test that needs the real enqueue (the throwaway-Redis race test) marks
+    itself ``real_voucher_sms_enqueue``."""
+    if request.node.get_closest_marker("real_voucher_sms_enqueue"):
+        yield
+        return
+    enqueued: list = []
+
+    async def _record(payment_tx_id):
+        enqueued.append(payment_tx_id)
+        return True
+
+    async def _refuse():
+        raise AssertionError("test tried to open a real Redis pool for send_voucher_sms")
+
+    # Only modules the test session already imported: importing them here would
+    # bind the DB engine early for the throwaway-DB flow suites.
+    if "src.modules.payments.service" in sys.modules:
+        monkeypatch.setattr("src.modules.payments.service.enqueue_voucher_sms", _record)
+    if "src.jobs.voucher_sms" in sys.modules:
+        monkeypatch.setattr("src.jobs.voucher_sms.get_redis_pool", _refuse)
+    request.node.voucher_sms_enqueued = enqueued
+    yield
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "real_voucher_sms_enqueue: let the test enqueue send_voucher_sms for real"
+    )
