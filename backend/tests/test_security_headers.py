@@ -4,8 +4,9 @@ endpoint (POST /api/v1/csp-report).
 Phase A of the CSP rollout: the non-CSP headers are enforced everywhere, CSP is
 enforced on API responses, and /admin's CSP is Report-Only. /platform,
 /reseller and /apply get a hash-based Report-Only CSP from their routes (phase
-B, tests/test_csp_inline_guard.py). The portal gets no CSP yet; a test pins
-that, so turning it on is a deliberate change here.
+B, tests/test_csp_inline_guard.py). The portal's three pages get a
+nonce-based Report-Only CSP from their routes (phase C, tests/test_portal_csp.py);
+its statics still get none.
 
 Pure unit tests: only routes that need no database are requested. No server,
 no DB, no Redis.
@@ -110,6 +111,21 @@ async def test_reporting_endpoint_follows_the_forwarded_scheme():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/admin/login", "/platform/login"])
+async def test_plain_http_origin_gets_report_uri_only(path):
+    """The Reporting API only accepts secure endpoints, and a browser that
+    honours report-to may skip report-uri, so the bare-IP http origin keeps
+    report-uri alone."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://34.122.11.114") as client:
+        res = await client.get(path)
+    policy = res.headers["content-security-policy-report-only"]
+    assert "report-uri /api/v1/csp-report" in policy
+    assert "report-to" not in policy
+    assert "reporting-endpoints" not in res.headers
+
+
+@pytest.mark.asyncio
 async def test_admin_assets_carry_no_csp():
     """CSP only means something on documents."""
     res = await request("GET", "/admin/login")
@@ -123,7 +139,7 @@ async def test_admin_assets_carry_no_csp():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/portal/statics/style.css"])
-async def test_the_portal_has_no_csp_yet(path):
+async def test_portal_statics_have_no_csp(path):
     res = await request("GET", path)
     assert "content-security-policy" not in res.headers
     assert "content-security-policy-report-only" not in res.headers

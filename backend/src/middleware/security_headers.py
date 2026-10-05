@@ -8,8 +8,9 @@ these headers are the backstop if escaping ever slips again.
 Rollout (see the CSP plan): every non-CSP header below is enforced now. CSP
 is enforced on JSON API responses, and is Report-Only on /admin. /platform,
 /reseller and /apply get a hash-based Report-Only CSP from their page routes
-(csp_pages.py), since the hashes are per page; the portal gets one once it has
-nonces (phase C). Violations are POSTed to /api/v1/csp-report.
+(csp_pages.py), since the hashes are per page; the portal's three pages get a
+nonce-based Report-Only CSP from their routes (phase C). Violations are
+POSTed to /api/v1/csp-report.
 
 Headers a route sets itself win (the payment-callback page has its own
 stricter CSP): this only fills in what is missing.
@@ -96,18 +97,36 @@ def area_for(path: str) -> Area:
     return DEFAULT_AREA
 
 
-# report-uri for every browser; report-to (Reporting API) where supported.
-REPORT_SUFFIX = f"; report-uri {CSP_REPORT_PATH}; report-to {CSP_REPORT_GROUP}"
+def _request_headers(scope) -> dict[str, str]:
+    return {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+
+
+def is_https(scope) -> bool:
+    # nginx's HTTPS site (ip-admin.duckdns.org) sends X-Forwarded-Proto; the
+    # hotspot site on the bare IP sends none, so that origin is plain http.
+    proto = _request_headers(scope).get("x-forwarded-proto") or scope.get("scheme", "http")
+    return proto.split(",")[0].strip().lower() == "https"
+
+
+def report_suffix(scope) -> str:
+    """report-uri for every browser; report-to (Reporting API) only on HTTPS.
+    The Reporting API ignores an http:// endpoint, and a browser that honours
+    report-to may then skip report-uri, so on the plain-http IP origin (the
+    captive portal) the page keeps report-uri alone."""
+    suffix = f"; report-uri {CSP_REPORT_PATH}"
+    if is_https(scope):
+        suffix += f"; report-to {CSP_REPORT_GROUP}"
+    return suffix
 
 
 def reporting_endpoints(scope) -> str:
-    # Reporting-Endpoints wants an absolute URL. Built from the request, so it
-    # names whichever host the page was served from (nginx passes Host and
-    # X-Forwarded-Proto).
-    headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
-    host = headers.get("host", "")
-    proto = headers.get("x-forwarded-proto") or scope.get("scheme", "http")
-    return f'{CSP_REPORT_GROUP}="{proto}://{host}{CSP_REPORT_PATH}"' if host else ""
+    # Reporting-Endpoints wants an absolute, secure URL. Built from the
+    # request, so it names whichever HTTPS host the page was served from;
+    # empty on plain http (see report_suffix).
+    host = _request_headers(scope).get("host", "")
+    if not host or not is_https(scope):
+        return ""
+    return f'{CSP_REPORT_GROUP}="https://{host}{CSP_REPORT_PATH}"'
 
 
 def headers_for(path: str, content_type: str, scope) -> dict[str, str]:
@@ -121,7 +140,7 @@ def headers_for(path: str, content_type: str, scope) -> dict[str, str]:
         if area.csp:
             out["Content-Security-Policy"] = area.csp
         if area.csp_report_only:
-            out["Content-Security-Policy-Report-Only"] = area.csp_report_only + REPORT_SUFFIX
+            out["Content-Security-Policy-Report-Only"] = area.csp_report_only + report_suffix(scope)
             endpoints = reporting_endpoints(scope)
             if endpoints:
                 out["Reporting-Endpoints"] = endpoints

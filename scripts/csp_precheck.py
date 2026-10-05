@@ -18,8 +18,20 @@ and answered from the fixtures below (pages get fake tokens, which never
 leave the browser), any other request that is not a GET/HEAD is refused
 before it leaves the browser, and the Paystack checkout navigation is
 intercepted too, so nothing reaches Paystack. The pages themselves (HTML, JS, CSS) and their
-response headers come from the instance, which is the point. Portal pages'
-own non-API calls (/portal/sites, /portal/branding/...) do reach it: read-only.
+response headers come from the instance, which is the point. The captive
+portal's own JSON calls (sites, plans, initiate-payment, payment-status,
+authenticate) are answered from PORTAL_FIXTURES too, so no payment or session
+is ever created, and the router sign-in form post (http://10.5.50.1/login) is
+captured in the browser; only /portal/branding/... reaches the instance
+(read-only). The portal journey walks location -> plan -> pay -> voucher ->
+Connect now, the same steps as the real-device test.
+
+Origins: the hotspot reaches the portal over plain http on the server IP. To
+check that origin off production, --map-host NAME maps a made-up host name to
+127.0.0.1 so Chromium treats the page as insecure (127.0.0.1 itself counts as
+a secure context); --forwarded-https sends X-Forwarded-Proto: https, which is
+how the app sees the HTTPS site. --pass-reports lets the CSP report POST reach
+the instance (staging only), to prove reports arrive.
 
 Standard library only (Chromium is driven over --remote-debugging-pipe), so it
 runs on the host with nothing installed:
@@ -141,6 +153,25 @@ FIXTURES = {
     ("POST", "/api/v1/platform/notification-templates/precheck_event/email/reset"): {**EMAIL_TEMPLATE, "is_default": True},
 }
 
+SITE_ID = "55555555-0000-0000-0000-000000000001"
+PLAN_ID = "55555555-0000-0000-0000-000000000002"
+PORTAL_REF = "precheck-ref"
+VOUCHER = "PRECHECK-CODE"
+GATEWAY = "http://10.5.50.1/"
+PLAN = {"id": PLAN_ID, "name": "Precheck plan", "type": "time", "duration_minutes": 60, "data_limit_mb": None,
+        "download_speed_kbps": 2000, "upload_speed_kbps": 1000, "price_ghs": "1.00", "site_id": SITE_ID}
+# The captive portal's own JSON endpoints: (method, path) -> body. Never reach the instance.
+PORTAL_FIXTURES = {
+    ("GET", "/portal/sites"): [{"id": SITE_ID, "name": "Precheck Site", "town_name": "Precheck Town"}],
+    ("GET", "/portal/plans"): [PLAN],
+    ("POST", "/portal/initiate-payment"): {"internal_reference": PORTAL_REF, "status": "pending", "next_action": "wait",
+                                           "display_message": "Approve the prompt on your phone."},
+    ("POST", "/portal/continue-payment"): {"internal_reference": PORTAL_REF, "status": "pending", "next_action": "wait"},
+    ("GET", "/portal/payment-status"): {"internal_reference": PORTAL_REF, "status": "success", "next_action": "none",
+                                        "voucher_code": VOUCHER, "plan": PLAN, "display_message": "Payment successful."},
+    ("POST", "/portal/authenticate"): {"success": True, "username": "precheck-user", "password": "precheck-pass"},
+}
+
 PAGES = [
     "/admin/login", "/admin/forgot-password", "/admin/", "/admin/analytics", "/admin/towns-sites", "/admin/routers",
     "/admin/plans", "/admin/vouchers", "/admin/sessions", "/admin/payment-credentials", "/admin/sms-credentials",
@@ -155,6 +186,16 @@ PAGES = [
     "/portal/success?ref=precheck",
 ]
 
+# Expected on a plain-http origin (the server IP): COOP needs a secure context,
+# so the browser ignores it there. Listed as a note, not a failure.
+INSECURE_ORIGIN_NOTES = ("The Cross-Origin-Opener-Policy header has been ignored, because the URL's origin was untrustworthy",)
+
+
+
+def is_note(message: str) -> bool:
+    return any(n in message for n in INSECURE_ORIGIN_NOTES)
+
+
 # Browser messages that mean a header got in the way.
 SIGNALS = ("Content Security Policy", "Content-Security-Policy", "Refused to", "X-Frame-Options",
            "frame-ancestors", "Cross-Origin-Opener-Policy", "Permissions policy", "Permissions-Policy",
@@ -164,7 +205,7 @@ SIGNALS = ("Content Security Policy", "Content-Security-Policy", "Refused to", "
 class Chrome:
     """Minimal CDP client over --remote-debugging-pipe (fd 3 in, fd 4 out)."""
 
-    def __init__(self, binary: str):
+    def __init__(self, binary: str, extra_args: list[str] | None = None):
         self.profile = tempfile.mkdtemp(prefix="csp-precheck-")
         self._stderr = open(os.path.join(self.profile, "chrome-stderr.log"), "wb")
         to_chrome_r, self._to_chrome_w = os.pipe()
@@ -183,7 +224,8 @@ class Chrome:
 
         self.proc = subprocess.Popen(
             [binary, "--headless=new", "--no-sandbox", "--disable-gpu", "--remote-debugging-pipe",
-             "--no-first-run", "--no-default-browser-check", f"--user-data-dir={self.profile}", "about:blank"],
+             "--no-first-run", "--no-default-browser-check", f"--user-data-dir={self.profile}", *(extra_args or []),
+             "about:blank"],
             preexec_fn=wire_fds, close_fds=False, stdout=subprocess.DEVNULL, stderr=self._stderr,
         )
         os.close(to_chrome_r)
@@ -253,8 +295,9 @@ class Chrome:
 
 
 class Page:
-    def __init__(self, chrome: Chrome, base: str):
+    def __init__(self, chrome: Chrome, base: str, forwarded_https: bool = False, pass_reports: bool = False):
         self.c, self.base = chrome, base.rstrip("/")
+        self.pass_reports = pass_reports
         target = chrome.send("Target.createTarget", {"url": "about:blank"})["targetId"]
         self.target = target
         self.s = chrome.send("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
@@ -264,6 +307,8 @@ class Page:
         # non-GET/HEAD anywhere else is refused, the rest (pages, assets) goes on.
         chrome.send("Fetch.enable", {"patterns": [{"urlPattern": "*"}]}, session=self.s)
         chrome.send("Page.addScriptToEvaluateOnNewDocument", {"source": SEED_TOKENS}, session=self.s)
+        if forwarded_https:
+            chrome.send("Network.setExtraHTTPHeaders", {"headers": {"X-Forwarded-Proto": "https"}}, session=self.s)
         # Out-of-process frames (the sandboxed email preview) get their own
         # session; attach to each so its console messages are seen too.
         self.children: dict[str, dict] = {}
@@ -278,6 +323,9 @@ class Page:
         self.refused: list[str] = []                       # non-API writes stopped in the browser
         self.dialogs: list[tuple[str, str]] = []           # (type, message) of alert/confirm/prompt
         self.dialog_accept = True
+        self.portal_calls: list[tuple[str, str]] = []      # answered by PORTAL_FIXTURES
+        self.gateway_posts: list[tuple[str, str, str]] = []  # router sign-in, captured in the browser
+        self.reports_passed = 0
 
     def _handle(self, ev: dict):
         if ev.get("sessionId") != self.s and ev.get("sessionId") not in self.children:
@@ -298,7 +346,26 @@ class Page:
                             "responseHeaders": [{"name": "Content-Type", "value": "text/html"}],
                             "body": base64.b64encode(body).decode()}, session=self.s)
                 return
+            if url.startswith(GATEWAY):
+                self.gateway_posts.append((method, url, p["request"].get("postData", "")))
+                body = b"<!doctype html><title>router-stub</title><p>signed in (stub)</p>"
+                self.c.send("Fetch.fulfillRequest", {"requestId": p["requestId"], "responseCode": 200,
+                            "responseHeaders": [{"name": "Content-Type", "value": "text/html"}],
+                            "body": base64.b64encode(body).decode()}, session=self.s)
+                return
             path = "/" + url.split("://", 1)[1].split("/", 1)[1].split("?", 1)[0]
+            if (method, path) in PORTAL_FIXTURES:
+                self.portal_calls.append((method, path))
+                self.c.send("Fetch.fulfillRequest", {"requestId": p["requestId"], "responseCode": 200,
+                            "responseHeaders": [{"name": "Content-Type", "value": "application/json"}],
+                            "body": base64.b64encode(json.dumps(PORTAL_FIXTURES[(method, path)]).encode()).decode()},
+                            session=self.s)
+                return
+            if path == "/api/v1/csp-report" and self.pass_reports:
+                self.reports_passed += 1
+                self.api_calls.append((method, path, p["request"].get("postData", "")))
+                self.c.send("Fetch.continueRequest", {"requestId": p["requestId"]}, session=self.s)
+                return
             if not path.startswith("/api/v1/"):
                 if method in ("GET", "HEAD"):
                     self.c.send("Fetch.continueRequest", {"requestId": p["requestId"]}, session=self.s)
@@ -543,7 +610,57 @@ def scenario_reseller_print(page: Page) -> Steps:
     return st
 
 
+def scenario_portal_journey(page: Page) -> Steps:
+    """Location -> plan -> pay -> voucher -> Connect now, on fixtures."""
+    st = Steps(page)
+    page.pump(1.0)
+    picked = page.js(f"""(() => {{ const s = document.getElementById('siteSelect');
+        if (!s || !s.options.length) return false; s.value = {json.dumps(SITE_ID)};
+        s.dispatchEvent(new Event('change')); return true; }})()""")
+    page.pump(1.5)
+    st.check("location picker lists the fixture site and selecting it loads plans",
+             picked and bool(page.js("!!document.querySelector('button[data-plan]')")))
+    found, _, _ = st.click(f"Buy - GHS 1.00", "#plansGrid", settle=3.0)
+    on_pay = page.js("location.pathname") == "/portal/pay"
+    st.check("Buy opens the pay page", found and on_pay, f"at={page.js('location.pathname')}")
+    page.pump(1.0)
+    page.js("document.getElementById('phone').value = '0244000000'")
+    submitted = page.js("""(() => { const f = document.getElementById('payForm'); if (!f) return false;
+        setTimeout(() => f.requestSubmit ? f.requestSubmit() : f.submit(), 0); return true; })()""")
+    for _ in range(40):  # the pay page polls every 5 s
+        page.pump(0.5)
+        if page.js("location.pathname") == "/portal/success":
+            break
+    st.check("Pay: initiate-payment, then payment-status, then the success page",
+             submitted and ("POST", "/portal/initiate-payment") in page.portal_calls
+             and page.js("location.pathname") == "/portal/success", f"calls={page.portal_calls}")
+    page.pump(2.0)
+    code = page.js("(document.getElementById('voucherCode') || {}).textContent")
+    hint = page.js("""(() => { const p = [...document.querySelectorAll('#mainBox p.muted.mt-8')];
+        return p.length && p[0].offsetParent !== null ? p[0].textContent : null; })()""")
+    margin = page.js("""(() => { const p = document.querySelector('#mainBox p.muted.mt-8');
+        return p ? getComputedStyle(p).marginTop : null; })()""")
+    st.check("success page shows the voucher and the save-it-now line (class styled)",
+             code == VOUCHER and hint and hint.startswith("Save this code now") and margin == "8px",
+             f"code={code!r} hint={hint!r} margin={margin!r}")
+    found, _, _ = st.click("Connect now", settle=3.0)
+    post = next((g for g in page.gateway_posts if g[0] == "POST"), None)
+    authed = found and ("POST", "/portal/authenticate") in page.portal_calls
+    if page.base.startswith("https://") and post is None and page.navigations[-1:] == ["chrome-error://chromewebdata/"]:
+        # Chromium refuses a form post from an https page to http://<gateway>
+        # (mixed-form block, with or without CSP; confirmed 2026-10-05 with
+        # Page.setBypassCSP). Hotspot clients use the plain-http IP origin.
+        st.check("Connect now: authenticate; the https->http gateway post is the browser's mixed-form block "
+                 "(expected on the HTTPS address, not CSP)", authed)
+        return st
+    st.check("Connect now: authenticate, then the sign-in form posts to the router gateway",
+             authed and post is not None and "username=precheck-user" in post[2],
+             f"gateway_posts={page.gateway_posts} nav={page.navigations[-2:]}")
+    return st
+
+
 SCENARIOS = {
+    "/portal/login?gateway=10.5.50.1": scenario_portal_journey,
     "/platform/operators": scenario_operators,
     f"/platform/operators/{ZERO}": scenario_operator_detail,
     "/platform/notification-templates": scenario_notification_templates,
@@ -567,21 +684,25 @@ def main() -> int:
     ap.add_argument("--chrome", default=find_chrome())
     ap.add_argument("--only", default="", help="only pages starting with this prefix")
     ap.add_argument("--no-clicks", action="store_true", help="page loads only, skip the click-through scenarios")
+    ap.add_argument("--map-host", default="", help="made-up host name to resolve to 127.0.0.1 (insecure origin)")
+    ap.add_argument("--forwarded-https", action="store_true", help="send X-Forwarded-Proto: https (staging)")
+    ap.add_argument("--pass-reports", action="store_true", help="let CSP report POSTs reach the instance (staging)")
     args = ap.parse_args()
     if not args.chrome or not os.path.exists(args.chrome):
         print("Chromium not found; pass --chrome", file=sys.stderr)
         return 2
 
-    chrome = Chrome(args.chrome)
+    extra = [f"--host-resolver-rules=MAP {args.map_host} 127.0.0.1"] if args.map_host else []
+    chrome = Chrome(args.chrome, extra)
     failures, exceptions_seen = [], 0
     clicks_total, api_writes, refused = 0, [], []
     try:
         chrome.send("Browser.getVersion")
         for path in [p for p in PAGES if p.startswith(args.only)]:
-            page = Page(chrome, args.base)
+            page = Page(chrome, args.base, args.forwarded_https, args.pass_reports)
             try:
                 page.goto(path)
-                problems = list(page.messages)
+                problems = [m for m in page.messages if not is_note(m)]
                 extra = ""
                 if path == "/admin/branding":
                     state = page.js("""(() => { const f = document.querySelector('iframe[title="Portal preview"]');
@@ -589,7 +710,7 @@ def main() -> int:
                         try { return 'ok ' + f.contentWindow.location.pathname + ' title=' + f.contentDocument.title; }
                         catch (e) { return 'blocked ' + e.name; } })()""")
                     page.pump(1.0)
-                    problems += [m for m in page.messages if m not in problems]
+                    problems += [m for m in page.messages if m not in problems and not is_note(m)]
                     extra = f"preview iframe: {state}"
                     if not str(state).startswith("ok /portal/login"):
                         problems.append(f"portal preview iframe did not load: {state}")
@@ -597,14 +718,14 @@ def main() -> int:
                     clicked = page.js("""(() => { const b = [...document.querySelectorAll('button')]
                         .find(x => x.textContent.trim() === 'Pay Now'); if (!b) return false; b.click(); return true; })()""")
                     page.pump(4.0)
-                    problems += [m for m in page.messages if m not in problems]
+                    problems += [m for m in page.messages if m not in problems and not is_note(m)]
                     landed = any(u.startswith(PAYSTACK_STUB) for u in page.navigations)
                     extra = f"Pay Now clicked={clicked}, checkout navigation={landed}"
                     if not (clicked and landed and page.paystack_hits):
                         problems.append(f"Paystack redirect did not happen ({extra})")
                 if path in SCENARIOS and not args.no_clicks:
                     steps = SCENARIOS[path](page)
-                    problems += [m for m in page.messages if m not in problems]
+                    problems += [m for m in page.messages if m not in problems and not is_note(m)]
                     for name, ok, detail in steps.results:
                         clicks_total += 1
                         extra += ("\n     " if extra else "") + f"{'click ok' if ok else 'CLICK FAIL'}: {name}" + \
@@ -612,15 +733,26 @@ def main() -> int:
                         if not ok:
                             problems.append(f"click-through failed: {name} ({detail})")
                 api_writes += [f"{m} {p}" for m, p, _ in page.api_calls if m != "GET" and p != "/api/v1/csp-report"]
+                api_writes += [f"{m} {p}" for m, p in page.portal_calls if m != "GET"]
+                api_writes += [f"{m} {u} (router gateway, captured)" for m, u, _ in page.gateway_posts if m != "GET"]
+                reports = [c for c in page.api_calls if c[1] == "/api/v1/csp-report"]
+                if reports:
+                    problems.append(f"{len(reports)} CSP report(s) sent: {[r[2][:200] for r in reports]}")
                 if page.refused:
                     refused += page.refused
                     problems.append(f"non-API write refused in the browser: {page.refused}")
                 h = page.doc_headers
                 summary = " ".join(f"{k}={'y' if k in h else '-'}" for k in (
                     "x-content-type-options", "x-frame-options", "referrer-policy", "permissions-policy",
-                    "cross-origin-opener-policy", "content-security-policy", "content-security-policy-report-only"))
+                    "cross-origin-opener-policy", "content-security-policy", "content-security-policy-report-only",
+                    "reporting-endpoints"))
+                csp = h.get("content-security-policy-report-only", "")
+                if csp:
+                    summary += f" report-to={'y' if 'report-to' in csp else '-'}"
                 status = "FAIL" if problems else "ok"
                 print(f"{status:4} {path}\n     headers: {summary}" + (f"\n     {extra}" if extra else ""))
+                for n in sorted({m for m in page.messages if is_note(m)}):
+                    print(f"     note (expected on an insecure origin): {n[:110]}")
                 for m in problems:
                     print(f"     ! {m[:300]}")
                 if page.exceptions:

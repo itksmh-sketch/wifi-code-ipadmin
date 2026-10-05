@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.db.base import get_db
 from src.db.models import ISPOperator, PaymentTransaction, Plan, Router, Site, Voucher
+from src.middleware.csp_pages import portal_csp_headers
 from src.middleware.rate_limit import enforce_rate_limit
 from types import SimpleNamespace
 
@@ -192,8 +193,10 @@ async def portal_login(
         if resolved is not None:
             site_id = resolved[1]
     branding = await _resolve_branding(db, rt)
+    nonce, csp_headers = portal_csp_headers(request)
     return templates.TemplateResponse("login.html", {
         "request": request,
+        "csp_nonce": nonce,
         "mac": mac,
         "ip": ip,
         "url": url,
@@ -205,7 +208,7 @@ async def portal_login(
         "mikrotik_login_fallback": login_fallback,
         "branding": branding,
         "error": None,
-    })
+    }, headers=csp_headers)
 
 
 @router.get("/portal/pay", response_class=HTMLResponse)
@@ -218,15 +221,17 @@ async def portal_pay(
     db: AsyncSession = Depends(get_db),
 ):
     branding = await _resolve_branding(db, rt)
+    nonce, csp_headers = portal_csp_headers(request)
     return templates.TemplateResponse("pay.html", {
         "request": request,
+        "csp_nonce": nonce,
         "plan_id": plan_id,
         "site_id": site_id,
         "gateway": gateway,
         "rt": rt,
         "branding": branding,
         "error": None,
-    })
+    }, headers=csp_headers)
 
 
 @router.get("/portal/success", response_class=HTMLResponse)
@@ -238,14 +243,16 @@ async def portal_success(
     db: AsyncSession = Depends(get_db),
 ):
     branding = await _resolve_branding(db, rt)
+    nonce, csp_headers = portal_csp_headers(request)
     return templates.TemplateResponse("success.html", {
         "request": request,
+        "csp_nonce": nonce,
         "ref": ref,
         "gateway": gateway,
         "rt": rt,
         "branding": branding,
         "error": None,
-    })
+    }, headers=csp_headers)
 
 
 @router.get("/portal/plans", response_model=list[PlanResponse])

@@ -52,7 +52,7 @@
         </div>
     </div>
 
-    <script>
+    <script nonce="{{ csp_nonce }}">
     (function(){
         var planId = {{ plan_id | tojson }};
         var siteId = {{ site_id | tojson }};

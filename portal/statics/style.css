@@ -175,6 +175,10 @@ h1 {
     margin-bottom: 10px;
 }
 
+.mt-8 {
+    margin-top: 8px;
+}
+
 .plans-grid {
     display: grid;
     gap: 10px;

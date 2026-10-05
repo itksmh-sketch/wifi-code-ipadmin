@@ -23,6 +23,7 @@
                     <div id="voucherCode" class="code-text"></div>
                     <button id="copyBtn" class="btn btn-outline" type="button">Copy code</button>
                 </div>
+                <p class="muted mt-8">Save this code now: copy it or take a screenshot. Any SMS copy is only a backup and can arrive late.</p>
 
                 <div id="planInfo" class="plan-card" style="margin-top:12px"></div>
 
@@ -33,7 +34,7 @@
         </div>
     </div>
 
-    <script>
+    <script nonce="{{ csp_nonce }}">
     (function(){
         var ref = {{ ref | tojson }};
         var params = new URLSearchParams(window.location.search);

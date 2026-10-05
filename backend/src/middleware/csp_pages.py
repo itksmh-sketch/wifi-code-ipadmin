@@ -1,4 +1,5 @@
-"""Hash-based CSP for the vanilla pages: /platform, /reseller and /apply.
+"""Report-Only CSP for the server-served pages: hash-based for /platform,
+/reseller and /apply, nonce-based for the captive portal's three pages.
 
 Each page's inline <script> and <style> blocks are allowed by their sha256
 hash, so no 'unsafe-inline' for scripts. The hashes are computed from the
@@ -21,13 +22,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import secrets
 from html.parser import HTMLParser
 from pathlib import Path
 
 from fastapi import Request
 from fastapi.responses import FileResponse
 
-from src.middleware.security_headers import REPORT_SUFFIX, reporting_endpoints
+from src.middleware.security_headers import report_suffix, reporting_endpoints
 
 
 class _InlineBlocks(HTMLParser):
@@ -110,7 +112,11 @@ def policy_for(path: Path | str) -> str:
 
 
 def page_csp_headers(path: Path | str, request: Request) -> dict[str, str]:
-    headers = {"Content-Security-Policy-Report-Only": policy_for(path) + REPORT_SUFFIX}
+    return _report_only_headers(policy_for(path), request)
+
+
+def _report_only_headers(policy: str, request: Request) -> dict[str, str]:
+    headers = {"Content-Security-Policy-Report-Only": policy + report_suffix(request.scope)}
     endpoints = reporting_endpoints(request.scope)
     if endpoints:
         headers["Reporting-Endpoints"] = endpoints
@@ -119,3 +125,40 @@ def page_csp_headers(path: Path | str, request: Request) -> dict[str, str]:
 
 def serve_page(path: Path | str, request: Request) -> FileResponse:
     return FileResponse(path, headers=page_csp_headers(path, request))
+
+
+# ── The captive portal (phase C) ─────────────────────────────────────────
+#
+# /portal/login, /pay and /success are Jinja-rendered per request with values
+# inside their inline scripts, so a file hash can't match: each response gets
+# a fresh nonce instead, which the template puts on its <script> tags.
+
+
+def portal_policy(nonce: str) -> str:
+    return "; ".join([
+        "default-src 'self'",
+        f"script-src 'self' 'nonce-{nonce}'",
+        "style-src 'self' 'unsafe-inline'",
+        # No <style> blocks; the server-rendered <html style="--primary-color…">
+        # and the display toggles are attributes.
+        "style-src-elem 'self'",
+        "style-src-attr 'unsafe-inline'",
+        "img-src 'self'",
+        "connect-src 'self'",
+        "font-src 'self'",
+        "frame-src 'none'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        # The router sign-in posts to http://<gateway>/login, and the gateway
+        # address differs per router.
+        "form-action 'self' http:",
+        # The admin branding page previews /portal/login in a same-origin frame.
+        "frame-ancestors 'self'",
+    ])
+
+
+def portal_csp_headers(request: Request) -> tuple[str, dict[str, str]]:
+    """(nonce, headers) for one portal page response."""
+    nonce = secrets.token_urlsafe(16)
+    return nonce, _report_only_headers(portal_policy(nonce), request)
+
