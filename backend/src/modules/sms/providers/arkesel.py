@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 import httpx
 
-from src.modules.sms.providers.base import SMSProvider
+from src.modules.sms.providers.base import SMSProvider, http_client, key_fingerprint, mask_msisdn
 from src.modules.sms.types import SMSSendResult
 
 logger = logging.getLogger("sms.providers.arkesel")
@@ -109,10 +109,11 @@ class ArkeselSMSProvider(SMSProvider):
         self.sender_id = sender_id
         self._client = client
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is not None:
-            return self._client
-        return httpx.AsyncClient(timeout=10.0, base_url=self._BASE_URL)
+    def _http(self):
+        return http_client(self._client, base_url=self._BASE_URL)
+
+    def _log_ctx(self, to: str) -> str:
+        return f"key_fp={key_fingerprint(self.api_key)} sender={self.sender_id} to={mask_msisdn(to)}"
 
     async def _get_balance_payload(self) -> dict:
         """Raw parsed /clients/balance-details response. Shared by
@@ -121,12 +122,12 @@ class ArkeselSMSProvider(SMSProvider):
         one fetch+error-handling path, not two."""
         if not self.api_key:
             raise ValueError("Arkesel API key is required")
-        client = await self._get_client()
         try:
-            resp = await client.get(
-                "/api/v2/clients/balance-details",
-                headers={"api-key": self.api_key, "Accept": "application/json"},
-            )
+            async with self._http() as client:
+                resp = await client.get(
+                    "/api/v2/clients/balance-details",
+                    headers={"api-key": self.api_key, "Accept": "application/json"},
+                )
         except Exception as e:  # noqa: BLE001
             raise ValueError(f"Could not reach Arkesel: {_clip(str(e))}") from e
         try:
@@ -171,9 +172,10 @@ class ArkeselSMSProvider(SMSProvider):
 
         body = {"sender": self.sender_id, "message": message, "recipients": [_gh_msisdn(to)]}
         headers = {"api-key": self.api_key, "Accept": "application/json"}
-        client = await self._get_client()
+        ctx = self._log_ctx(to)
         try:
-            resp = await client.post("/api/v2/sms/send", headers=headers, json=body)
+            async with self._http() as client:
+                resp = await client.post("/api/v2/sms/send", headers=headers, json=body)
             try:
                 payload = resp.json()
             except Exception:
@@ -184,7 +186,7 @@ class ArkeselSMSProvider(SMSProvider):
                 if isinstance(payload, dict):
                     reason = payload.get("message") or payload.get("error") or payload.get("errorMessage")
                 reason = reason or resp.text
-                logger.warning("arkesel_sms_send_failed status=%s body=%s", resp.status_code, _clip(reason, 500))
+                logger.warning("arkesel_sms_send_failed %s status=%s body=%s", ctx, resp.status_code, _clip(reason, 500))
                 err = f"arkesel_http_{resp.status_code}"
                 if reason:
                     err += f": {_clip(reason)}"
@@ -198,12 +200,12 @@ class ArkeselSMSProvider(SMSProvider):
                 if isinstance(payload, dict):
                     reason = payload.get("message") or payload.get("error")
                 reason = reason or _clip(resp.text, 200) or "message not accepted"
-                logger.warning("arkesel_sms_rejected status=%s reason=%s", status or "?", _clip(reason))
+                logger.warning("arkesel_sms_rejected %s status=%s reason=%s", ctx, status or "?", _clip(reason))
                 return SMSSendResult(success=False, error=f"arkesel_status_{status or 'unknown'}: {_clip(reason)}")
 
             provider_ref = _extract_message_id(payload.get("data"))
-            logger.info("arkesel_sms_send_ok to=%s provider_reference=%s", to, provider_ref)
+            logger.info("arkesel_sms_send_ok %s provider_reference=%s", ctx, provider_ref)
             return SMSSendResult(success=True, provider_reference=provider_ref)
         except Exception as e:
-            logger.exception("arkesel_sms_send_exception to=%s", to)
+            logger.exception("arkesel_sms_send_exception %s", ctx)
             return SMSSendResult(success=False, error=f"arkesel_exception: {_clip(str(e))}")

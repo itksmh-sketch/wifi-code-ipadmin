@@ -415,3 +415,122 @@ def test_build_sms_provider_maps_keys_and_rejects_unknown():
 
     with pytest.raises(ValueError, match="Unsupported SMS provider"):
         build_sms_provider("twilio", {})
+
+
+# ---------------------------------------------------------------------------
+# Owned HTTP clients are closed; send logs carry key fingerprint + sender
+# ---------------------------------------------------------------------------
+
+_OK_BODIES = {
+    "hubtel": {"status": 0, "messageId": "m-1"},
+    "africastalking": {"SMSMessageData": {"Recipients": [{"statusCode": 101, "messageId": "m-1"}]}},
+    "arkesel": {"status": "success", "data": [{"id": "m-1", "recipient": "233201234514"}]},
+}
+
+
+def _bare(provider_key: str):
+    """A provider with no injected client, so it has to open (and close) its own."""
+    if provider_key == "hubtel":
+        return HubtelSMSProvider(client_id="cid", client_secret="csec-secret", sender_id="MyISP")
+    if provider_key == "africastalking":
+        return AfricasTalkingSMSProvider(api_key="key-secret", username="myapp", sender_id="MyISP")
+    return ArkeselSMSProvider(api_key="key-secret", sender_id="MyISP")
+
+
+@pytest.fixture
+def owned_clients(monkeypatch):
+    """Route provider-owned clients through a MockTransport and record them,
+    so a test can assert every one was closed. ``mode`` picks the response."""
+    from src.modules.sms.providers import base
+
+    created: list[httpx.AsyncClient] = []
+    state = {"mode": "ok", "provider": None}
+    real = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if state["mode"] == "raise":
+            raise httpx.ConnectError("boom", request=request)
+        if state["mode"] == "http_error":
+            return httpx.Response(500, json={"message": "upstream down"})
+        if request.url.path.endswith(("/balance-details", "/version1/user")):
+            return httpx.Response(200, json={"sms_balance": 5, "UserData": {"balance": "GHS 1"}})
+        return httpx.Response(200, json=_OK_BODIES[state["provider"]])
+
+    class Recording(real):
+        def __init__(self, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(**kwargs)
+            created.append(self)
+
+    monkeypatch.setattr(base.httpx, "AsyncClient", Recording)
+    state["created"] = created
+    return state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_key", ["hubtel", "africastalking", "arkesel"])
+@pytest.mark.parametrize("mode", ["ok", "http_error", "raise"])
+async def test_send_closes_its_own_client(owned_clients, provider_key, mode):
+    owned_clients.update(mode=mode, provider=provider_key)
+
+    result = await _bare(provider_key).send("233201234514", "hello")
+
+    assert result.success is (mode == "ok")
+    assert len(owned_clients["created"]) == 1
+    assert owned_clients["created"][0].is_closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_key", ["africastalking", "arkesel"])
+async def test_verify_credentials_closes_its_own_client(owned_clients, provider_key):
+    owned_clients.update(provider=provider_key)
+
+    await _bare(provider_key).verify_credentials()
+
+    assert len(owned_clients["created"]) == 1
+    assert owned_clients["created"][0].is_closed
+
+
+@pytest.mark.asyncio
+async def test_injected_client_is_left_open():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_OK_BODIES["arkesel"])
+
+    provider = _ark(handler)
+    await provider.send("233201234514", "hello")
+    assert not provider._client.is_closed
+    await provider._client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_key,secret", [
+    ("hubtel", "csec-secret"), ("africastalking", "key-secret"), ("arkesel", "key-secret"),
+])
+@pytest.mark.parametrize("mode", ["ok", "http_error", "raise"])
+async def test_send_logs_fingerprint_sender_and_masked_number(owned_clients, caplog, provider_key, secret, mode):
+    import hashlib
+    import logging
+
+    owned_clients.update(mode=mode, provider=provider_key)
+    caplog.set_level(logging.INFO, logger="sms.providers")
+
+    await _bare(provider_key).send("233201234514", "hello")
+
+    lines = [r.getMessage() for r in caplog.records if r.name.startswith("sms.providers")]
+    assert lines, "every send outcome must log"
+    fp = hashlib.sha256(secret.encode()).hexdigest()[:12]
+    for line in lines:
+        assert f"key_fp={fp}" in line
+        assert "sender=MyISP" in line
+        assert "to=23320****514" in line
+        assert secret not in line
+        assert "233201234514" not in line
+
+
+def test_mask_msisdn_and_fingerprint_edges():
+    from src.modules.sms.providers.base import key_fingerprint, mask_msisdn
+
+    assert mask_msisdn("+233201234514") == "23320****514"
+    assert mask_msisdn("") == "***"
+    assert key_fingerprint("") == "none"
+    assert key_fingerprint(None) == "none"

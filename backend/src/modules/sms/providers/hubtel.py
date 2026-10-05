@@ -6,7 +6,7 @@ from typing import Optional
 
 import httpx
 
-from src.modules.sms.providers.base import SMSProvider
+from src.modules.sms.providers.base import SMSProvider, http_client, key_fingerprint, mask_msisdn
 from src.modules.sms.types import SMSSendResult
 
 logger = logging.getLogger("sms.providers.hubtel")
@@ -44,10 +44,11 @@ class HubtelSMSProvider(SMSProvider):
         self.sender_id = sender_id
         self._client = client
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is not None:
-            return self._client
-        return httpx.AsyncClient(timeout=10.0, base_url="https://smsc.hubtel.com")
+    def _http(self):
+        return http_client(self._client, base_url="https://smsc.hubtel.com")
+
+    def _log_ctx(self, to: str) -> str:
+        return f"key_fp={key_fingerprint(self.client_secret)} sender={self.sender_id} to={mask_msisdn(to)}"
 
     def _auth_header(self) -> str:
         raw = f"{self.client_id}:{self.client_secret}".encode("utf-8")
@@ -60,9 +61,10 @@ class HubtelSMSProvider(SMSProvider):
         body = {"From": self.sender_id, "To": to, "Content": message}
         headers = {"Authorization": self._auth_header()}
 
-        client = await self._get_client()
+        ctx = self._log_ctx(to)
         try:
-            resp = await client.post("/v1/messages/send", headers=headers, json=body)
+            async with self._http() as client:
+                resp = await client.post("/v1/messages/send", headers=headers, json=body)
             try:
                 payload = resp.json()
             except Exception:
@@ -73,7 +75,7 @@ class HubtelSMSProvider(SMSProvider):
                 if isinstance(payload, dict):
                     reason = payload.get("message") or payload.get("Message") or payload.get("statusDescription")
                 reason = reason or resp.text
-                logger.warning("hubtel_sms_send_failed status=%s body=%s", resp.status_code, _clip(reason, 500))
+                logger.warning("hubtel_sms_send_failed %s status=%s body=%s", ctx, resp.status_code, _clip(reason, 500))
                 err = f"hubtel_http_{resp.status_code}"
                 if reason:
                     err += f": {_clip(reason)}"
@@ -82,14 +84,14 @@ class HubtelSMSProvider(SMSProvider):
             # HTTP 2xx: Hubtel still reports queue-acceptance in the body.
             if isinstance(payload, dict) and payload.get("status") not in (None, _HUBTEL_OK_STATUS, str(_HUBTEL_OK_STATUS)):
                 desc = payload.get("statusDescription") or payload.get("message") or "message not accepted"
-                logger.warning("hubtel_sms_rejected status=%s desc=%s", payload.get("status"), desc)
+                logger.warning("hubtel_sms_rejected %s status=%s desc=%s", ctx, payload.get("status"), desc)
                 return SMSSendResult(success=False, error=f"hubtel_status_{payload.get('status')}: {_clip(str(desc))}")
 
             provider_ref = None
             if isinstance(payload, dict):
                 provider_ref = payload.get("messageId") or payload.get("MessageId") or payload.get("id")
-            logger.info("hubtel_sms_send_ok to=%s provider_reference=%s", to, provider_ref)
+            logger.info("hubtel_sms_send_ok %s provider_reference=%s", ctx, provider_ref)
             return SMSSendResult(success=True, provider_reference=str(provider_ref) if provider_ref else None)
         except Exception as e:
-            logger.exception("hubtel_sms_send_exception to=%s", to)
+            logger.exception("hubtel_sms_send_exception %s", ctx)
             return SMSSendResult(success=False, error=f"hubtel_exception: {_clip(str(e))}")
