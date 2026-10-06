@@ -1,12 +1,30 @@
 import json
 import os
+import secrets
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
+import pytest
+
 
 BASE_URL = os.getenv("TEST_BASE_URL", "http://localhost:8000")
+
+# Seeded accounts. The seed gives them random passwords and prints each once,
+# so a run passes them in; an unset one skips the test rather than guessing.
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@isp.com")
+SEED_RESELLER1_EMAIL = "reseller1@example.com"
+SEED_AGENT1_EMAIL = "agent1@example.com"
+# Resellers a test creates itself: a fresh password per run.
+CREATED_RESELLER_PASSWORD = secrets.token_urlsafe(12)
+
+
+def env_password(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        pytest.skip(f"{name} is not set (the seed prints it once)")
+    return value
 
 
 def _request(method: str, path: str, *, token: str | None = None, body: dict | None = None, params: dict | None = None):
@@ -36,7 +54,7 @@ def _login_admin() -> str:
     status, body = _request(
         "POST",
         "/api/v1/auth/login",
-        body={"email": "admin@isp.com", "password": "admin123"},
+        body={"email": ADMIN_EMAIL, "password": env_password("ADMIN_PASSWORD")},
     )
     assert status == 200, body
     return body["access_token"]
@@ -63,8 +81,8 @@ def _reseller_id_by_email(admin_token: str, email: str) -> str:
 
 def test_reseller2_cannot_get_reseller1_voucher_by_id():
     admin = _login_admin()
-    reseller2 = _login_reseller("agent1@example.com", "agent123")
-    reseller1_id = _reseller_id_by_email(admin, "reseller1@example.com")
+    reseller2 = _login_reseller(SEED_AGENT1_EMAIL, env_password("SEED_AGENT1_PASSWORD"))
+    reseller1_id = _reseller_id_by_email(admin, SEED_RESELLER1_EMAIL)
 
     status, vouchers = _request("GET", f"/api/v1/admin/resellers/{reseller1_id}/vouchers", token=admin)
     assert status == 200, vouchers
@@ -76,8 +94,8 @@ def test_reseller2_cannot_get_reseller1_voucher_by_id():
 
 
 def test_wallet_transactions_ignore_foreign_wallet_id():
-    reseller1 = _login_reseller("reseller1@example.com", "reseller123")
-    reseller2 = _login_reseller("agent1@example.com", "agent123")
+    reseller1 = _login_reseller(SEED_RESELLER1_EMAIL, env_password("SEED_RESELLER1_PASSWORD"))
+    reseller2 = _login_reseller(SEED_AGENT1_EMAIL, env_password("SEED_AGENT1_PASSWORD"))
 
     status, wallet1 = _request("GET", "/api/v1/reseller/wallet", token=reseller1)
     assert status == 200, wallet1
@@ -126,7 +144,7 @@ def test_reseller2_cannot_purchase_plan_outside_scope():
             "name": "Security Reseller 2",
             "email": test_email,
             "phone": "233200000099",
-            "password": "reseller123",
+            "password": CREATED_RESELLER_PASSWORD,
             "role": "reseller",
             "town_id": reseller1["town_id"],
             "site_id": new_site["id"],
@@ -135,7 +153,7 @@ def test_reseller2_cannot_purchase_plan_outside_scope():
     )
     assert status in (200, 201)
 
-    reseller2 = _login_reseller(test_email, "reseller123")
+    reseller2 = _login_reseller(test_email, CREATED_RESELLER_PASSWORD)
 
     status, all_plans = _request("GET", "/api/v1/plans", token=admin)
     assert status == 200, all_plans
@@ -176,6 +194,6 @@ def test_admin_token_rejected_on_reseller_endpoint():
 
 
 def test_reseller_token_rejected_on_admin_endpoint():
-    reseller2 = _login_reseller("agent1@example.com", "agent123")
+    reseller2 = _login_reseller(SEED_AGENT1_EMAIL, env_password("SEED_AGENT1_PASSWORD"))
     status, _ = _request("GET", "/api/v1/admin/resellers", token=reseller2)
     assert status == 401

@@ -32,6 +32,13 @@ Guard rails, all checked before anything is written:
   * INSERT-ONLY: it applies only when this run creates the owner. An owner
     that already exists is never modified, whatever the variables say.
 There is deliberately no runtime switch that skips the setup gate.
+
+Live-database guard
+-------------------
+The seed refuses (exit 2, nothing written) when the database looks live: any
+operator other than the seed's own "tenant-zero", or any router with a
+wg_tunnel_ip. It applies however the seed is started (RUN_SEED, docker exec,
+python -m) and has no override. Seeding is for empty dev/CI databases only.
 """
 import asyncio
 import os
@@ -116,6 +123,24 @@ def owner_setup_opt_in(env=None, email: str | None = None) -> str | None:
     return code
 
 
+SEED_OPERATOR_SLUG = "tenant-zero"
+
+
+async def refuse_if_live(db: AsyncSession) -> None:
+    """Raise SeedRefused if this database holds anything the seed did not make."""
+    others = (await db.execute(
+        select(func.count()).select_from(ISPOperator).where(ISPOperator.slug != SEED_OPERATOR_SLUG)
+    )).scalar_one()
+    tunnelled = (await db.execute(
+        select(func.count()).select_from(Router).where(Router.wg_tunnel_ip.is_not(None))
+    )).scalar_one()
+    if others or tunnelled:
+        raise SeedRefused(
+            f"this database looks live: {others} operator(s) other than {SEED_OPERATOR_SLUG!r}, "
+            f"{tunnelled} router(s) with a wg_tunnel_ip. The seed is for empty dev/CI databases only."
+        )
+
+
 BATCH_ID = "SEED-BATCH-001"
 RESELLER_SEED_BATCH = "SEED-RESELLER-ALLOC"
 
@@ -131,6 +156,7 @@ async def seed():
     )
 
     async with async_session() as db:
+        await refuse_if_live(db)
         print("🌱 Seeding database...")
         wallet_service = WalletService()
         owner = (

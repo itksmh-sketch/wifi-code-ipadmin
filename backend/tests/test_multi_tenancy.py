@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from platform_owner_session import SEED_CODE_VAR, owner_login_via_request, seeded_owner_code
-from test_multi_tenant_security import _request
+from test_multi_tenant_security import ADMIN_EMAIL, CREATED_RESELLER_PASSWORD, _request, env_password
 
 from src.db.models import ISPOperator, OperatorPaymentCredential, PaymentTransaction
 from src.modules.payments.provider_resolver import dump_credentials
@@ -24,13 +24,14 @@ from src.modules.payments.types import PaymentMethod, PaymentProviderName
 #   PLATFORM_OWNER_EMAIL / PLATFORM_OWNER_PASSWORD, SEED_OWNER_CHARACTER_CODE.
 # This suite only talks HTTP; it never writes to the database itself.
 PLATFORM_OWNER_EMAIL = os.getenv("PLATFORM_OWNER_EMAIL", "owner@yourisp.com")
-PLATFORM_OWNER_PASSWORD = os.getenv("PLATFORM_OWNER_PASSWORD", "ChangeMe2024Strong!")
 _PLATFORM_OWNER_TOKEN: str | None = None
 # Temp passwords returned (once) by POST /platform/operators, keyed by slug.
 _TEMP_PASSWORDS: dict[str, str] = {}
 
 
-def _login_admin(email: str = "admin@isp.com", password: str = "admin123") -> str:
+def _login_admin(email: str | None = None, password: str | None = None) -> str:
+    if email is None:
+        email, password = ADMIN_EMAIL, env_password("ADMIN_PASSWORD")
     status, body = _request("POST", "/api/v1/auth/login", body={"email": email, "password": password})
     assert status == 200, body
     return body["access_token"]
@@ -47,7 +48,7 @@ def _login_platform_owner() -> str:
             f"code: seed the target server with SEED_OWNER_SETUP_COMPLETE=true and "
             f"{SEED_CODE_VAR}=<code>, then run this suite with the same {SEED_CODE_VAR}."
         )
-    status, body = owner_login_via_request(_request, PLATFORM_OWNER_EMAIL, PLATFORM_OWNER_PASSWORD, code)
+    status, body = owner_login_via_request(_request, PLATFORM_OWNER_EMAIL, env_password("PLATFORM_OWNER_PASSWORD"), code)
     assert status == 200 and "access_token" in body, body
     _PLATFORM_OWNER_TOKEN = body["access_token"]
     return _PLATFORM_OWNER_TOKEN
@@ -191,7 +192,7 @@ def _create_reseller(admin_token: str, network: dict, slug: str) -> dict:
             "name": f"{slug} Reseller",
             "email": email,
             "phone": "233200000002",
-            "password": "reseller123",
+            "password": CREATED_RESELLER_PASSWORD,
             "role": "reseller",
             "town_id": network["town"]["id"],
             "site_id": network["site"]["id"],
@@ -203,7 +204,7 @@ def _create_reseller(admin_token: str, network: dict, slug: str) -> dict:
     return reseller
 
 
-def _login_reseller(email: str, password: str = "reseller123") -> str:
+def _login_reseller(email: str, password: str = CREATED_RESELLER_PASSWORD) -> str:
     status, body = _request("POST", "/api/v1/reseller/auth/login", body={"email": email, "password": password})
     assert status == 200, body
     return body["access_token"]

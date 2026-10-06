@@ -19,7 +19,9 @@ class Settings(BaseSettings):
     # Kept distinct from the auth secrets so no session JWT is ever valid here.
     portal_token_secret: str = "change_me_portal_token_in_production"
     admin_email: str = "admin@isp.com"
-    admin_password: str = "admin123"
+    # Seed only. No default: unset (or a shipped default) makes the seed generate
+    # a random password and print it once.
+    admin_password: str = ""
     platform_owner_email: str = "owner@yourdomain.com"
     platform_owner_password: str = "change-me-strong-password"
     mtn_momo_base_url: str = ""
