@@ -14,7 +14,9 @@ class Settings(BaseSettings):
     reseller_jwt_issuer: str = "reseller"
     radius_coa_secret: str = "radius_secret_123"
     radius_accounting_secret: str = "acct_secret_123"
-    encryption_key: str = "change_me_encryption_key_32chars!!"
+    # Required: no default. utils/encryption.py refuses to start without a valid,
+    # non-public Fernet key.
+    encryption_key: str = ""
     # Signs router-bound captive-portal redirect tokens (see utils/portal_token.py).
     # Kept distinct from the auth secrets so no session JWT is ever valid here.
     portal_token_secret: str = "change_me_portal_token_in_production"
@@ -23,7 +25,8 @@ class Settings(BaseSettings):
     # a random password and print it once.
     admin_password: str = ""
     platform_owner_email: str = "owner@yourdomain.com"
-    platform_owner_password: str = "change-me-strong-password"
+    # Seed only. No default: unset makes the seed generate one and print it once.
+    platform_owner_password: str = ""
     mtn_momo_base_url: str = ""
     mtn_momo_collection_subscription_key: str = ""
     mtn_momo_api_user: str = ""
