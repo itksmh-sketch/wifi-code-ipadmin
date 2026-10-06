@@ -35,6 +35,7 @@ There is deliberately no runtime switch that skips the setup gate.
 """
 import asyncio
 import os
+import secrets
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -60,6 +61,24 @@ from src.db.models import CommissionRule, Reseller, ResellerVoucherAllocation, R
 from src.modules.resellers.wallet_service import WalletService
 
 settings = get_settings()
+
+# Shipped in .env.example and as docker-compose fallbacks, so public: the seed
+# treats a password still set to one of these as unset.
+SHIPPED_DEFAULT_PASSWORDS = {"admin123", "change-me-strong-password"}
+
+
+def random_password() -> str:
+    return secrets.token_urlsafe(12)
+
+
+def seed_password(configured: str | None) -> tuple[str, bool]:
+    """The configured password, or a random one when it is unset or a shipped
+    default. Returns (password, generated); a generated one is printed once by
+    the caller and stored nowhere else."""
+    if configured and configured not in SHIPPED_DEFAULT_PASSWORDS:
+        return configured, False
+    return random_password(), True
+
 
 SEED_SETUP_FLAG = "SEED_OWNER_SETUP_COMPLETE"
 SEED_CODE_VAR = "SEED_OWNER_CHARACTER_CODE"
@@ -118,9 +137,10 @@ async def seed():
             await db.execute(select(PlatformOwner).where(PlatformOwner.email == settings.platform_owner_email))
         ).scalar_one_or_none()
         if owner is None:
+            owner_password, owner_generated = seed_password(settings.platform_owner_password)
             owner = PlatformOwner(
                 email=settings.platform_owner_email,
-                password_hash=hash_password(settings.platform_owner_password),
+                password_hash=hash_password(owner_password),
                 name="Platform Owner",
                 is_active=True,
             )
@@ -135,6 +155,8 @@ async def seed():
                 ))
             await db.commit()
             print(f"  Platform owner created: {owner.email}")
+            if owner_generated:
+                print(f"  Generated password (shown once): {owner_password}")
             if owner_setup_code:
                 print(f"  Security setup marked complete ({SEED_SETUP_FLAG}); sign in with the password "
                       f"and characters from {SEED_CODE_VAR}.")
@@ -162,16 +184,20 @@ async def seed():
         r = await db.execute(select(AdminUser).where(AdminUser.email == settings.admin_email))
         admin = r.scalar_one_or_none()
         if admin is None:
+            admin_password, admin_generated = seed_password(settings.admin_password)
             admin = AdminUser(
                 isp_operator_id=tenant_zero_id,
                 email=settings.admin_email,
-                password_hash=hash_password(settings.admin_password),
+                password_hash=hash_password(admin_password),
                 role="superadmin",
                 is_active=True,
             )
             db.add(admin)
             await db.commit()
-            print(f"  ✅ Superadmin: {admin.email} / {settings.admin_password}")
+            if admin_generated:
+                print(f"  ✅ Superadmin: {admin.email} / {admin_password} (generated, shown once)")
+            else:
+                print(f"  ✅ Superadmin: {admin.email} (password from ADMIN_PASSWORD)")
         else:
             print(f"  ⏭ Superadmin already exists: {admin.email}")
 
@@ -421,12 +447,13 @@ async def seed():
                 print(f"   Code: {v.code} | Username: {v.username} | Password: {v.password}")
 
         # --- Phase 3: Resellers + wallets + commission + allocations ---
-        async def ensure_reseller(*, name: str, email: str, phone: str, password: str, role: str, town_id, site_id):
+        async def ensure_reseller(*, name: str, email: str, phone: str, role: str, town_id, site_id):
             r3 = await db.execute(select(Reseller).where(Reseller.email == email))
             existing_reseller = r3.scalar_one_or_none()
             if existing_reseller:
                 print(f"  ⏭ Reseller already exists: {email}")
                 return existing_reseller
+            password = random_password()
             rr = Reseller(
                 isp_operator_id=tenant_zero_id,
                 name=name,
@@ -440,14 +467,13 @@ async def seed():
             )
             db.add(rr)
             await db.commit()
-            print(f"  ✅ Reseller: {email} ({role})")
+            print(f"  ✅ Reseller: {email} ({role}) / {password} (generated, shown once)")
             return rr
 
         reseller1 = await ensure_reseller(
             name="Reseller One",
             email="reseller1@example.com",
             phone="233244000001",
-            password="reseller123",
             role="reseller",
             town_id=town.id,
             site_id=site1.id,
@@ -456,7 +482,6 @@ async def seed():
             name="Town Agent One",
             email="agent1@example.com",
             phone="233244000002",
-            password="agent123",
             role="town_agent",
             town_id=town.id,
             site_id=None,
