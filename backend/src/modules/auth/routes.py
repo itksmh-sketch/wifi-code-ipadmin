@@ -11,6 +11,7 @@ from src.db.models import AdminSecurityEvent, AdminUser
 from src.middleware.rate_limit import enforce_rate_limit
 from src.modules import audit
 from src.modules.admin_accounts import lockout
+from src.modules.admin_accounts.access import admin_may_sign_in
 from src.schemas import LoginRequest, TokenResponse, RefreshRequest, ErrorResponse
 from src.utils.auth import (
     hash_password,
@@ -87,7 +88,10 @@ async def login(
     email = (body.email or "").strip().lower()
     result = await db.execute(
         select(AdminUser)
-        .where(func.lower(AdminUser.email) == email, AdminUser.is_active == True)
+        # admin_may_sign_in: a disabled admin, or one whose operator's logins
+        # are disabled, is simply not found — the unknown-email path below,
+        # dummy hash and all. No new branch, so nothing to tell them apart by.
+        .where(func.lower(AdminUser.email) == email, admin_may_sign_in())
         # Row-locked for the duration: two concurrent wrong guesses must count
         # as two, not one. Contention is per-account, so a busy login endpoint
         # serialises only attempts against the same email.
@@ -141,7 +145,7 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
 
     user_id = payload.get("sub")
-    result = await db.execute(select(AdminUser).where(AdminUser.id == user_id, AdminUser.is_active == True))
+    result = await db.execute(select(AdminUser).where(AdminUser.id == user_id, admin_may_sign_in()))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
@@ -207,7 +211,7 @@ async def logout(
                 .where(
                     AdminUser.id == admin_id,
                     AdminUser.isp_operator_id == operator_id,
-                    AdminUser.is_active == True,
+                    admin_may_sign_in(),
                     AdminUser.token_version == version,
                 )
                 .values(token_version=AdminUser.token_version + 1, pin_verified_until=None)

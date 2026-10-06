@@ -56,6 +56,7 @@ from src.middleware.auth import (
 )
 from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.admin_accounts import lockout, otp as otp_service
+from src.modules.admin_accounts.access import admin_may_sign_in
 from src.modules.admin_accounts.notifications import OTP_TTL_MINUTES, send_otp_sms
 from src.modules.admin_accounts.passwords import password_policy_error
 from src.modules.admin_accounts.pins import PIN_ELEVATION_MINUTES, pin_policy_error
@@ -355,7 +356,7 @@ async def _resettable_admin(db: AsyncSession, email: str, *, lock: bool = False)
     still on a temp password are not resettable — onboarding is their path."""
     stmt = select(AdminUser).where(
         func.lower(AdminUser.email) == _email_key(email),
-        AdminUser.is_active == True,  # noqa: E712
+        admin_may_sign_in(),
         AdminUser.must_complete_onboarding == False,  # noqa: E712
         AdminUser.phone_verified == True,  # noqa: E712
         AdminUser.phone.is_not(None),
@@ -472,7 +473,7 @@ async def reset_set_password(body: ResetSetPasswordRequest, request: Request, db
             select(AdminUser)
             .where(
                 AdminUser.id == grant["sub"],
-                AdminUser.is_active == True,  # noqa: E712
+                admin_may_sign_in(),
                 AdminUser.must_complete_onboarding == False,  # noqa: E712
             )
             .with_for_update()

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from src.db.models import AdminUser, PlatformOwner
 from src.db.base import get_db
 from src.middleware.rate_limit import enforce_rate_limit
+from src.modules.admin_accounts.access import admin_may_sign_in
 from src.modules.audit.context import Actor, bind_actor
 from src.utils.auth import verify_platform_owner_token, verify_token
 
@@ -66,7 +67,8 @@ async def get_authenticated_admin(
         select(AdminUser).where(
             AdminUser.id == user_id,
             AdminUser.isp_operator_id == isp_operator_id,
-            AdminUser.is_active == True,
+            # Active, and the operator's logins not disabled by the platform.
+            admin_may_sign_in(),
         )
     )
     user = result.scalar_one_or_none()

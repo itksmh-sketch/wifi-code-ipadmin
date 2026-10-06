@@ -241,7 +241,7 @@ async def test_disabled_account_counts_as_unknown(client):
     """P1 behaviour: login never loads an inactive account, so its failures
     are indistinguishable from an unknown email and write nothing. P2 may
     revisit this."""
-    admin = await make_admin(is_active=False)
+    admin = await make_admin(is_active=False, disabled_at=datetime.now(timezone.utc), disabled_by_type="system")
     res = await client.post("/auth/login", json={"email": admin.email, "password": "nope-nope-1"})
     assert res.status_code == 401
     assert await rows_for(admin) == []

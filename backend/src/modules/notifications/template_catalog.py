@@ -79,6 +79,7 @@ PLACEHOLDER_HELP: dict[str, str] = {
     "payment_url": "Link to pay the invoice",
     "suspension_date": "The date the account will be suspended",
     "next_invoice_date": "The date of the next invoice",
+    "access_scope": "Whose sign-in changed: one admin's email, or all of the operator's users and resellers",
 }
 
 
@@ -171,6 +172,20 @@ EVENTS: dict[str, EventDef] = {
         label="Account reactivated",
         description="Sent when payment clears and full access is restored.",
         placeholders=("isp_name", "next_invoice_date", "platform_name"),
+    ),
+    # Platform-initiated only: an operator disabling its own users sends nothing.
+    # The reason the platform owner typed is internal and is never offered here.
+    "admin_access_disabled": EventDef(
+        event="admin_access_disabled",
+        label="Sign-in disabled",
+        description="Sent when the platform disables one admin's sign-in, or every sign-in for an operator.",
+        placeholders=("access_scope", "isp_name", "support_email", "platform_name"),
+    ),
+    "admin_access_restored": EventDef(
+        event="admin_access_restored",
+        label="Sign-in restored",
+        description="Sent when the platform re-enables sign-in it had disabled.",
+        placeholders=("access_scope", "isp_name", "support_email", "platform_name"),
     ),
 }
 
@@ -420,6 +435,50 @@ _default(
     body_text="{platform_name}: Payment received! Full access restored. Next invoice: {next_invoice_date}.",
 )
 
+# New with migration 056: never f-strings, so there is no legacy text to match.
+_default(
+    "admin_access_disabled", EMAIL,
+    subject="Sign-in disabled — {isp_name}",
+    body_html=(
+        "<h2>Sign-in disabled — {isp_name}</h2>"
+        "<p>Sign-in for <strong>{access_scope}</strong> at {isp_name} on <strong>{platform_name}</strong> "
+        "has been disabled by the platform team.</p>"
+        "<p>Your hotspot keeps running: existing vouchers and sessions are not affected.</p>"
+        "<p>Questions? Email us at <a href='mailto:{support_email}'>{support_email}</a></p>"
+    ),
+    body_text=(
+        "Sign-in for {access_scope} at {isp_name} on {platform_name} has been disabled by the platform team.\n"
+        "Your hotspot keeps running: existing vouchers and sessions are not affected.\n"
+        "Questions? Email {support_email}"
+    ),
+)
+_default(
+    "admin_access_disabled", SMS,
+    body_text=(
+        "{platform_name}: Sign-in for {access_scope} at {isp_name} has been disabled. "
+        "Hotspot service is not affected. Questions: {support_email}"
+    ),
+)
+
+_default(
+    "admin_access_restored", EMAIL,
+    subject="Sign-in restored — {isp_name}",
+    body_html=(
+        "<h2>Sign-in restored — {isp_name}</h2>"
+        "<p>Sign-in for <strong>{access_scope}</strong> at {isp_name} on <strong>{platform_name}</strong> "
+        "has been restored. Sign in again to continue.</p>"
+        "<p>Questions? Email us at <a href='mailto:{support_email}'>{support_email}</a></p>"
+    ),
+    body_text=(
+        "Sign-in for {access_scope} at {isp_name} on {platform_name} has been restored. Sign in again to continue.\n"
+        "Questions? Email {support_email}"
+    ),
+)
+_default(
+    "admin_access_restored", SMS,
+    body_text="{platform_name}: Sign-in for {access_scope} at {isp_name} has been restored. Sign in again to continue.",
+)
+
 
 # ── render ────────────────────────────────────────────────────────────────
 
@@ -476,6 +535,7 @@ SAMPLE_VALUES: dict[str, str] = {
     "payment_url": "https://ip-admin.duckdns.org/admin/billing",
     "suspension_date": "21 October 2026",
     "next_invoice_date": "1 November 2026",
+    "access_scope": "all dashboard users and resellers",
 }
 
 

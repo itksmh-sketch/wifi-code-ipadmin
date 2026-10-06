@@ -273,3 +273,24 @@ async def notify_reactivated(*, email: str, phone: str, isp_name: str, next_invo
     subj, html, text = await store.render_email("account_reactivated", values)
     await _send_email(email, subj, html, text)
     await _send_sms(phone, await store.render_sms("account_reactivated", values))
+
+
+async def notify_admin_access_changed(
+    *, disabled: bool, email: str | None, phone: str | None, isp_name: str, access_scope: str
+) -> None:
+    """admin_access_disabled / admin_access_restored. Only the platform's own
+    disable and enable actions call this; an operator managing its own users
+    sends nothing. Either address may be missing: each channel is skipped
+    rather than sent to nobody."""
+    event = "admin_access_disabled" if disabled else "admin_access_restored"
+    values = {
+        "access_scope": access_scope,
+        "isp_name": isp_name,
+        "support_email": await _support_email(),
+        "platform_name": await get_platform_name(),
+    }
+    if email:
+        subj, html, text = await store.render_email(event, values)
+        await _send_email(email, subj, html, text)
+    if phone:
+        await _send_sms(phone, await store.render_sms(event, values))

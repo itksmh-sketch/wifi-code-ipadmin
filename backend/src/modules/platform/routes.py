@@ -48,13 +48,15 @@ from src.modules.mikrotik import setup_status as setup_store
 from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.platform import character_code, owner_lockout
-from src.modules.admin_accounts import platform_reset
+from src.modules import audit
+from src.modules.admin_accounts import access, platform_reset
+from src.modules.notifications import dispatcher as notify
 from src.modules.admin_accounts.notifications import send_temp_password_sms
 from src.modules.admin_accounts.security_questions import SECURITY_QUESTIONS
 from src.modules.admin_accounts.provisioning import admin_email_taken, provision_operator_admin
 from src.modules.sms.types import SMSSendResult
 from src.utils.phone import mask_phone
-from src.schemas import DefaultMonthlyFeeUpdate, LoginRequest, PlatformAdminCreate, PlatformAdminPasswordReset, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, PlatformNotificationSMSCredentialResponse, PlatformNotificationSMSCredentialUpdate, PlatformSMSCredentialResponse, PlatformSMSCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse, TransactionDiagnosticUpdate
+from src.schemas import DefaultMonthlyFeeUpdate, LoginRequest, PlatformAccessDisable, PlatformAccessEnable, PlatformAdminCreate, PlatformAdminDisable, PlatformAdminPasswordReset, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, PlatformNotificationSMSCredentialResponse, PlatformNotificationSMSCredentialUpdate, PlatformSMSCredentialResponse, PlatformSMSCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse, TransactionDiagnosticUpdate
 from src.modules.billing.service import DEFAULT_MONTHLY_FEE_KEY, get_default_monthly_fee
 from src.modules.payments.filters import REAL_TRANSACTIONS_ONLY
 from src.utils.encryption import encrypt_secret
@@ -393,6 +395,8 @@ async def _operator_row(db: AsyncSession, operator: ISPOperator) -> dict:
         "billing_status": operator.billing_status,
         "created_at": operator.created_at,
         "admin_count": admin_count,
+        "admin_logins_disabled_at": operator.admin_logins_disabled_at,
+        "admin_logins_disabled_reason": operator.admin_logins_disabled_reason,
         "voucher_count_this_month": voucher_count,
         "monthly_revenue_this_month": float(monthly_revenue),
     }
@@ -736,21 +740,25 @@ async def list_operator_admins(
     result = await db.execute(
         select(AdminUser).where(AdminUser.isp_operator_id == operator_id).order_by(AdminUser.created_at.desc())
     )
-    return [
-        {
-            "id": str(admin.id),
-            "email": admin.email,
-            "role": admin.role,
-            "is_active": bool(admin.is_active),
-            "created_at": admin.created_at,
-            "last_login_at": admin.last_login_at,
-            "phone": mask_phone(admin.phone),
-            "phone_verified": bool(admin.phone_verified),
-            "must_complete_onboarding": bool(admin.must_complete_onboarding),
-            "must_change_password": bool(admin.must_change_password),
-        }
-        for admin in result.scalars().all()
-    ]
+    return [_admin_row(admin) for admin in result.scalars().all()]
+
+
+def _admin_row(admin: AdminUser) -> dict:
+    return {
+        "id": str(admin.id),
+        "email": admin.email,
+        "role": admin.role,
+        "is_active": bool(admin.is_active),
+        "disabled_at": admin.disabled_at,
+        "disabled_by_type": admin.disabled_by_type,
+        "disabled_reason": admin.disabled_reason,
+        "created_at": admin.created_at,
+        "last_login_at": admin.last_login_at,
+        "phone": mask_phone(admin.phone),
+        "phone_verified": bool(admin.phone_verified),
+        "must_complete_onboarding": bool(admin.must_complete_onboarding),
+        "must_change_password": bool(admin.must_change_password),
+    }
 
 
 @router.post("/operators/{operator_id}/admins/{admin_id}/reset-password")
@@ -784,6 +792,14 @@ async def reset_operator_admin_password(
     ).scalar_one_or_none()
     if admin is None:
         raise HTTPException(status_code=404, detail="Admin not found for this operator")
+    operator = await db.get(ISPOperator, operator_id)
+    # A reset texts a temporary password and would hand a working credential
+    # to an account that can't use it — or that becomes usable the moment
+    # sign-in is turned back on. Re-enable first, then reset.
+    if not admin.is_active:
+        raise HTTPException(status_code=409, detail=ADMIN_DISABLED_RESET)
+    if operator is not None and operator.admin_logins_disabled_at is not None:
+        raise HTTPException(status_code=409, detail=OPERATOR_LOGINS_DISABLED_RESET)
 
     try:
         outcome = await platform_reset.reset_admin_password(
@@ -835,6 +851,160 @@ async def create_operator_admin(
         "created_at": admin.created_at,
         "last_login_at": admin.last_login_at,
     }
+
+
+# ── Disabling sign-in ───────────────────────────────────────────────────────
+# Kept apart from suspension (PUT /status), which is about billing and lets
+# the operator sign in to pay. See modules.admin_accounts.access.
+
+ADMIN_DISABLED_RESET = "This admin's sign-in is disabled. Re-enable it before resetting the password."
+OPERATOR_LOGINS_DISABLED_RESET = (
+    "Sign-in is disabled for this operator. Re-enable it before resetting a password."
+)
+ALL_USERS_SCOPE = "all dashboard users and resellers"
+
+
+async def _locked_operator(db: AsyncSession, operator_id: uuid.UUID) -> ISPOperator:
+    operator = (
+        await db.execute(select(ISPOperator).where(ISPOperator.id == operator_id).with_for_update())
+    ).scalar_one_or_none()
+    if operator is None:
+        raise HTTPException(status_code=404, detail="Operator not found")
+    return operator
+
+
+async def _locked_admin(db: AsyncSession, operator_id: uuid.UUID, admin_id: uuid.UUID) -> AdminUser:
+    admin = (
+        await db.execute(
+            select(AdminUser)
+            .where(AdminUser.id == admin_id, AdminUser.isp_operator_id == operator_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if admin is None:
+        raise HTTPException(status_code=404, detail="Admin not found for this operator")
+    return admin
+
+
+def _admin_notice_phone(admin: AdminUser) -> str | None:
+    # Only a verified number: it was typed by whoever created the account.
+    return admin.phone if admin.phone_verified and admin.phone else None
+
+
+@router.post("/operators/{operator_id}/admin-logins/disable", dependencies=[Depends(audit.audited)])
+async def disable_operator_admin_logins(
+    operator_id: uuid.UUID,
+    body: PlatformAccessDisable,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Turn off sign-in for every admin and reseller of this operator. Signs
+    every admin out at once. Hotspot service (RADIUS, the captive portal) is
+    not touched."""
+    operator = await _locked_operator(db, operator_id)
+    if operator.admin_logins_disabled_at is not None:
+        raise HTTPException(status_code=409, detail="Sign-in is already disabled for this operator.")
+    signed_out = await access.disable_operator_logins(db, operator, owner_id=owner.id, reason=body.reason)
+    await db.commit()
+    background_tasks.add_task(
+        notify.notify_admin_access_changed,
+        disabled=True, email=operator.contact_email, phone=operator.contact_phone,
+        isp_name=operator.name, access_scope=ALL_USERS_SCOPE,
+    )
+    return {**await _operator_row(db, operator), "admins_signed_out": signed_out}
+
+
+@router.post("/operators/{operator_id}/admin-logins/enable", dependencies=[Depends(audit.audited)])
+async def enable_operator_admin_logins(
+    operator_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    body: PlatformAccessEnable = Body(default_factory=PlatformAccessEnable),
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Turn the operator switch back off. Admins disabled individually stay
+    disabled."""
+    operator = await _locked_operator(db, operator_id)
+    if operator.admin_logins_disabled_at is None:
+        raise HTTPException(status_code=409, detail="Sign-in is not disabled for this operator.")
+    access.enable_operator_logins(db, operator, reason=body.reason)
+    await db.commit()
+    background_tasks.add_task(
+        notify.notify_admin_access_changed,
+        disabled=False, email=operator.contact_email, phone=operator.contact_phone,
+        isp_name=operator.name, access_scope=ALL_USERS_SCOPE,
+    )
+    return await _operator_row(db, operator)
+
+
+@router.post("/operators/{operator_id}/admins/{admin_id}/disable", dependencies=[Depends(audit.audited)])
+async def disable_operator_admin(
+    operator_id: uuid.UUID,
+    admin_id: uuid.UUID,
+    body: PlatformAdminDisable,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Turn off one admin's sign-in and end their sessions."""
+    admin = await _locked_admin(db, operator_id, admin_id)
+    if not admin.is_active:
+        raise HTTPException(status_code=409, detail="This admin's sign-in is already disabled.")
+    if admin.role == "superadmin" and not body.confirm_last_superadmin:
+        others = (
+            await db.execute(
+                select(func.count()).select_from(AdminUser).where(
+                    AdminUser.isp_operator_id == operator_id,
+                    AdminUser.role == "superadmin",
+                    AdminUser.is_active == True,  # noqa: E712
+                    AdminUser.id != admin.id,
+                )
+            )
+        ).scalar_one()
+        if others == 0:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This is the operator's last active superadmin: nobody would be left to run the account. "
+                    "To shut the whole operator out, disable all sign-in instead; to disable only this "
+                    "account anyway, confirm it."
+                ),
+            )
+    await access.disable_admin(db, admin, by_type=access.PLATFORM_OWNER, by_id=owner.id, reason=body.reason)
+    await db.commit()
+    operator = await db.get(ISPOperator, operator_id)
+    background_tasks.add_task(
+        notify.notify_admin_access_changed,
+        disabled=True, email=admin.email, phone=_admin_notice_phone(admin),
+        isp_name=operator.name if operator else "", access_scope=admin.email,
+    )
+    return _admin_row(admin)
+
+
+@router.post("/operators/{operator_id}/admins/{admin_id}/enable", dependencies=[Depends(audit.audited)])
+async def enable_operator_admin(
+    operator_id: uuid.UUID,
+    admin_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    body: PlatformAccessEnable = Body(default_factory=PlatformAccessEnable),
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Turn one admin's sign-in back on (whoever disabled it). Clears the
+    flags only: sessions ended by the disable stay ended."""
+    admin = await _locked_admin(db, operator_id, admin_id)
+    if admin.is_active:
+        raise HTTPException(status_code=409, detail="This admin's sign-in is not disabled.")
+    access.enable_admin(db, admin, reason=body.reason)
+    await db.commit()
+    operator = await db.get(ISPOperator, operator_id)
+    background_tasks.add_task(
+        notify.notify_admin_access_changed,
+        disabled=False, email=admin.email, phone=_admin_notice_phone(admin),
+        isp_name=operator.name if operator else "", access_scope=admin.email,
+    )
+    return _admin_row(admin)
 
 
 @router.get("/operators/{operator_id}/summary")

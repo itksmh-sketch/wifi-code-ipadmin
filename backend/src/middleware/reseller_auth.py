@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
 from src.db.models import Reseller
+from src.modules.admin_accounts.access import reseller_may_sign_in
 from src.utils.reseller_auth import verify_reseller_token
 
 security = HTTPBearer()
@@ -29,7 +30,8 @@ async def get_current_reseller(
         select(Reseller).where(
             Reseller.id == reseller_id,
             Reseller.isp_operator_id == isp_operator_id,
-            Reseller.is_active == True,
+            # Active, and the operator's logins not disabled by the platform.
+            reseller_may_sign_in(),
         )
     )  # noqa: E712
     reseller = result.scalar_one_or_none()

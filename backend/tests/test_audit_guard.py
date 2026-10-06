@@ -39,6 +39,11 @@ AUDITED = {
     ("POST", "/api/v1/auth/me/pin/reset"),
     ("POST", "/api/v1/auth/me/pin/verify"),
     ("POST", "/api/v1/auth/me/security-question"),
+    # P2: disabling sign-in
+    ("POST", "/api/v1/platform/operators/{operator_id}/admin-logins/disable"),
+    ("POST", "/api/v1/platform/operators/{operator_id}/admin-logins/enable"),
+    ("POST", "/api/v1/platform/operators/{operator_id}/admins/{admin_id}/disable"),
+    ("POST", "/api/v1/platform/operators/{operator_id}/admins/{admin_id}/enable"),
 }
 
 # Change nothing worth a row: token renewal, previews, and a check that only

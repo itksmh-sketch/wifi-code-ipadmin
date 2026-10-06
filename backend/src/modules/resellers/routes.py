@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
 from src.db.models import ISPOperator, Plan, Reseller, ResellerWallet, ResellerVoucherAllocation, Site, Voucher
 from src.middleware.reseller_auth import get_current_reseller, update_reseller_last_login
+from src.modules.admin_accounts.access import reseller_may_sign_in
 from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.resellers.wallet_service import InsufficientFundsError, WalletService
 from src.modules.vouchers.engine import generate_voucher_code, generate_voucher_password, generate_voucher_username
@@ -38,7 +39,7 @@ async def reseller_login(body: LoginRequest, request: Request, db: AsyncSession 
     client_ip = request.client.host if request.client else "unknown"
     await enforce_rate_limit(client_ip, "reseller:login", limit=10, window_seconds=60)
 
-    result = await db.execute(select(Reseller).where(Reseller.email == body.email, Reseller.is_active == True))  # noqa: E712
+    result = await db.execute(select(Reseller).where(Reseller.email == body.email, reseller_may_sign_in()))
     reseller = result.scalar_one_or_none()
     if not reseller or not verify_reseller_password(body.password, reseller.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
@@ -70,7 +71,7 @@ async def reseller_refresh(body: RefreshRequest, db: AsyncSession = Depends(get_
         select(Reseller).where(
             Reseller.id == reseller_id,
             Reseller.isp_operator_id == payload.get("isp_operator_id"),
-            Reseller.is_active == True,
+            reseller_may_sign_in(),
         )
     )  # noqa: E712
     reseller = result.scalar_one_or_none()

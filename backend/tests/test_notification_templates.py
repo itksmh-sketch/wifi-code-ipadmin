@@ -102,8 +102,14 @@ LEGACY_CASES = {
 }
 
 
+# Added after the f-string era (migration 056): there is no earlier text for
+# them to match, so they are covered by the catalog-consistency tests only.
+NO_LEGACY_TEXT = {"admin_access_disabled", "admin_access_restored"}
+
+
 def test_legacy_cases_cover_every_event():
-    assert set(LEGACY_CASES) == set(catalog.EVENTS)
+    assert set(LEGACY_CASES) == set(catalog.EVENTS) - NO_LEGACY_TEXT
+    assert NO_LEGACY_TEXT <= set(catalog.EVENTS)
 
 
 @pytest.mark.parametrize("event", sorted(LEGACY_CASES))

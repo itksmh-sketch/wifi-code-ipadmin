@@ -297,7 +297,7 @@ async def test_an_inactive_admin_is_not_touched(client):
     email = await make_admin()
     tokens = await sign_in(client, email)
     before = (await row(email)).token_version
-    await patch_admin(email, is_active=False)
+    await patch_admin(email, is_active=False, disabled_at=datetime.now(timezone.utc), disabled_by_type="system")
 
     assert (await client.post(LOGOUT, headers=bearer(tokens["access_token"]))).status_code == 204
     assert (await row(email)).token_version == before

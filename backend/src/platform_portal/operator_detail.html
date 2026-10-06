@@ -29,6 +29,7 @@
     .detail-line.spaced{margin-top:var(--sp-3)}
     .detail-line.figure{font-size:var(--fs-lg);font-weight:700}
     @media (max-width:820px){.detail-grid{grid-template-columns:1fr}}
+    .card.stacked{margin-top:18px}
   </style>
 </head>
 <body>
@@ -96,6 +97,36 @@
       </div>
       <div id="admins-err" class="notice bad" style="display:none;margin-bottom:12px"></div>
       <div id="admins-body"></div>
+    </div>
+
+    <!-- Sign-in access: driven by statics/operator_access.js (no inline code). -->
+    <div class="card stacked" id="access-card">
+      <div class="card-header">
+        <span class="card-title">Sign-in access</span>
+        <span class="text-muted">Hotspot service is never affected</span>
+      </div>
+      <div id="access-err" class="notice bad" hidden></div>
+      <div id="access-body"><p class="text-muted">Loading…</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- Disable / re-enable sign-in. Its own backdrop, opened with the .show class. -->
+<div id="access-overlay" class="modal-backdrop">
+  <div class="modal-dialog sm" role="dialog" aria-modal="true" aria-labelledby="access-title">
+    <div class="modal-title" id="access-title"></div>
+    <p class="text-muted" id="access-explain"></p>
+    <div id="access-msg" class="notice bad" hidden></div>
+    <label for="access-reason" id="access-reason-label">Reason</label>
+    <textarea id="access-reason" maxlength="500"></textarea>
+    <p class="help" id="access-reason-help"></p>
+    <div id="access-confirm-wrap" hidden>
+      <label class="check"><input type="checkbox" id="access-confirm">
+        <span>This is the operator's last active superadmin. Disable it anyway.</span></label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" type="button" data-access-action="cancel">Cancel</button>
+      <button class="btn danger" type="button" id="access-submit">Disable</button>
     </div>
   </div>
 </div>
@@ -740,5 +771,6 @@ async function load() {
 
 load();
 </script>
+<script src="/platform/statics/operator_access.js?v=1"></script>
 </body>
 </html>

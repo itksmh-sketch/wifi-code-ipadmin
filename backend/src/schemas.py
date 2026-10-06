@@ -580,6 +580,33 @@ class PlatformAdminPasswordReset(BaseModel):
         return normalize_ghana_phone(v)
 
 
+class PlatformAccessDisable(BaseModel):
+    """Disable sign-in (one admin, or a whole operator). The reason is kept on
+    the row and in the audit trail for the platform; it is never sent to the
+    operator."""
+    model_config = {"extra": "forbid"}
+    reason: str = Field(max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("Give a reason (at least 3 characters).")
+        return v
+
+
+class PlatformAdminDisable(PlatformAccessDisable):
+    # Disabling an operator's last active superadmin leaves nobody who can run
+    # the account; it needs this set, so it can't happen by a mis-click.
+    confirm_last_superadmin: bool = False
+
+
+class PlatformAccessEnable(BaseModel):
+    model_config = {"extra": "forbid"}
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
 class PlatformOperatorStatusUpdate(BaseModel):
     status: str
 

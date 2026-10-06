@@ -128,6 +128,15 @@ class ISPOperator(Base):
     # Structural layout for the captive portal ("card_centered" | "full_bleed");
     # NULL resolves to "card_centered" at read time in build_branding.
     portal_template = Column(Text, nullable=True)
+    # Platform switch: while set, none of this operator's admins or resellers
+    # can sign in or use the API (src.modules.admin_accounts.access). Separate
+    # from suspension, which is about billing and deliberately allows login.
+    # by/reason are only meaningful while at is set (CHECK in migration 056).
+    admin_logins_disabled_at = Column(DateTime(timezone=True), nullable=True)
+    admin_logins_disabled_by = Column(
+        UUID(as_uuid=True), ForeignKey("platform_owners.id", ondelete="SET NULL"), nullable=True
+    )
+    admin_logins_disabled_reason = Column(Text, nullable=True)
     # Footer contact details shown on the captive portal (rendered by the shared
     # branding.js module). Deliberately separate from contact_email/contact_phone
     # above, which are the operator's account/billing contact from signup, not
@@ -860,7 +869,14 @@ class AdminUser(Base):
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(Text, nullable=False)
     role = Column(ENUM("superadmin", "admin", "viewer", name="admin_role", create_type=False), nullable=False)
-    is_active = Column(Boolean, server_default="true")
+    is_active = Column(Boolean, nullable=False, server_default="true", default=True)
+    # Who disabled this account and why; all NULL while is_active (CHECK in
+    # migration 056). by_type: platform_owner | operator_user | system.
+    # by_id is not a foreign key: it points at one of two tables.
+    disabled_at = Column(DateTime(timezone=True), nullable=True)
+    disabled_by_type = Column(String(20), nullable=True)
+    disabled_by_id = Column(UUID(as_uuid=True), nullable=True)
+    disabled_reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     # The admin's own mobile number (normalized 233XXXXXXXXX). Only trusted once
