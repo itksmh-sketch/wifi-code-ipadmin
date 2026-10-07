@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator, require_recent_pin
+from src.middleware.permissions import SECRETS, require_perm
 from src.modules.credentials.service import (
     build_view,
     deactivate_others,
@@ -60,7 +61,7 @@ def make_credentials_router(
 
         await mark_checklist(db, operator_id, checklist_key)
 
-    @router.get("", response_model=CredentialsView)
+    @router.get("", response_model=CredentialsView, dependencies=[Depends(require_perm(SECRETS))])
     async def get_credentials(
         db: AsyncSession = Depends(get_db),
         tenant: TenantContext = Depends(get_admin_tenant_context),
@@ -70,7 +71,7 @@ def make_credentials_router(
     @router.put(
         "/{provider}",
         response_model=CredentialsView,
-        dependencies=[Depends(require_recent_pin)],
+        dependencies=[Depends(require_perm(SECRETS)), Depends(require_recent_pin)],
     )
     async def upsert_credentials(
         provider: str,
@@ -134,7 +135,7 @@ def make_credentials_router(
     @router.post(
         "/{provider}/activate",
         response_model=CredentialsView,
-        dependencies=[Depends(require_recent_pin)],
+        dependencies=[Depends(require_perm(SECRETS)), Depends(require_recent_pin)],
     )
     async def activate_provider(
         provider: str,
@@ -151,7 +152,7 @@ def make_credentials_router(
         await db.commit()
         return await _view(db, tenant.isp_operator_id)
 
-    @router.post("/{provider}/test", response_model=CredentialsView)
+    @router.post("/{provider}/test", response_model=CredentialsView, dependencies=[Depends(require_perm(SECRETS))])
     async def test_credentials(
         provider: str,
         db: AsyncSession = Depends(get_db),
@@ -186,7 +187,7 @@ def make_credentials_router(
     @router.delete(
         "/{provider}",
         response_model=CredentialsView,
-        dependencies=[Depends(require_recent_pin)],
+        dependencies=[Depends(require_perm(SECRETS)), Depends(require_recent_pin)],
     )
     async def delete_credentials(
         provider: str,

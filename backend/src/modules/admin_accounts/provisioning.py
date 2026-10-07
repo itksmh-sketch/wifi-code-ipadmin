@@ -22,7 +22,7 @@ from src.utils.auth import hash_password
 from src.utils.email_address import normalize_email
 from src.utils.phone import normalize_ghana_phone
 
-ADMIN_ROLES = ("superadmin", "admin", "viewer")
+ADMIN_ROLES = ("superadmin", "admin", "staff")
 
 
 class AdminEmailInUseError(ValueError):

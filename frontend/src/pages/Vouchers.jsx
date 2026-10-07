@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { apiCall } from '../App';
+import { apiCall, usePermissions } from '../App';
 import PageHeader from '../components/PageHeader';
 
 // Server-side bounds live in vouchers/engine.py (MIN_CODE_LENGTH / MAX_CODE_LENGTH);
@@ -25,6 +25,7 @@ const SOURCES = [
 const SOURCE_BADGE = { manual: 'badge-blue', online: 'badge-green', reseller: 'badge-yellow' };
 
 export default function Vouchers() {
+    const { can } = usePermissions();
     const [vouchers, setVouchers] = useState([]);
     const [total, setTotal] = useState(0);
     const [plans, setPlans] = useState([]);
@@ -124,7 +125,10 @@ export default function Vouchers() {
                 <PageHeader title="Vouchers" />
                 <div style={{ display: 'flex', gap: 8 }}>
                     <Link to="/vouchers/print" className="btn">Print vouchers</Link>
-                    <button className="btn btn-primary" onClick={() => setShowForm(true)}>Generate Batch</button>
+                    {/* Staff print and manage vouchers but don't create them. */}
+                    {can('vouchers.generate') && (
+                        <button className="btn btn-primary" onClick={() => setShowForm(true)}>Generate Batch</button>
+                    )}
                 </div>
             </div>
 

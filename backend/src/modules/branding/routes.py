@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
 from src.db.models import ISPOperator
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
+from src.middleware.permissions import CONFIG, READ, require_perm
 from src.modules.branding.preview_store import set_preview_draft
 from src.modules.branding.service import build_branding
 from src.portal.routes import PORTAL_DIR
@@ -48,7 +49,7 @@ async def _get_operator(db: AsyncSession, operator_id) -> ISPOperator:
     return operator
 
 
-@router.get("", response_model=BrandingResponse)
+@router.get("", response_model=BrandingResponse, dependencies=[Depends(require_perm(READ))])
 async def get_branding(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(get_admin_tenant_context),
@@ -56,7 +57,7 @@ async def get_branding(
     return build_branding(await _get_operator(db, tenant.isp_operator_id))
 
 
-@router.put("", response_model=BrandingResponse)
+@router.put("", response_model=BrandingResponse, dependencies=[Depends(require_perm(CONFIG))])
 async def update_branding(
     body: BrandingUpdate,
     db: AsyncSession = Depends(get_db),
@@ -84,7 +85,7 @@ async def update_branding(
     return build_branding(operator)
 
 
-@router.get("/preview-token")
+@router.get("/preview-token", dependencies=[Depends(require_perm(CONFIG))])
 async def get_preview_token(
     tenant: TenantContext = Depends(get_admin_tenant_context),
 ):
@@ -97,7 +98,7 @@ async def get_preview_token(
     return {"token": token, "preview_url": f"/portal/login?rt={token}"}
 
 
-@router.post("/preview-draft", status_code=204)
+@router.post("/preview-draft", status_code=204, dependencies=[Depends(require_perm(CONFIG))])
 async def post_preview_draft(
     body: BrandingUpdate,
     tenant: TenantContext = Depends(get_admin_tenant_context),
@@ -108,7 +109,7 @@ async def post_preview_draft(
     await set_preview_draft(str(tenant.isp_operator_id), body.model_dump(exclude_unset=True))
 
 
-@router.post("/logo", response_model=BrandingResponse)
+@router.post("/logo", response_model=BrandingResponse, dependencies=[Depends(require_perm(CONFIG))])
 async def upload_logo(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),

@@ -18,6 +18,8 @@ from src.config import get_settings
 from src.db.base import get_db
 from src.db.models import Router, RouterProvisionLog, RouterSetupStatus
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
+from src.middleware.permissions import CONFIG, READ, SECRETS, require_perm
+from src.middleware.auth import require_recent_pin
 from src.modules.mikrotik.api_service import MikroTikOperationError, RouterCredentialsMissingError
 from src.modules.mikrotik import setup_service as svc
 from src.modules.mikrotik import setup_status as store
@@ -118,7 +120,7 @@ async def _run_apply(db, router_id, tenant, section, action, operation_coro, *, 
 # ─── Combined status ────────────────────────────────────────────────────────
 
 
-@router.get("/routers/{router_id}/setup/status", response_model=SetupStatusResponse)
+@router.get("/routers/{router_id}/setup/status", response_model=SetupStatusResponse, dependencies=[Depends(require_perm(READ))])
 async def setup_status_endpoint(
     router_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -142,7 +144,7 @@ async def setup_status_endpoint(
 # ─── Section 1: Network ─────────────────────────────────────────────────────
 
 
-@router.get("/routers/{router_id}/setup/network/detect")
+@router.get("/routers/{router_id}/setup/network/detect", dependencies=[Depends(require_perm(READ))])
 async def detect_network(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     await _load_router(db, router_id, tenant)
     try:
@@ -154,7 +156,7 @@ async def detect_network(router_id: uuid.UUID, db: AsyncSession = Depends(get_db
     return {"status": status, "detected": detected}
 
 
-@router.post("/routers/{router_id}/setup/network/apply", response_model=ApplyResultResponse)
+@router.post("/routers/{router_id}/setup/network/apply", response_model=ApplyResultResponse, dependencies=[Depends(require_perm(CONFIG))])
 async def apply_network(router_id: uuid.UUID, body: NetworkApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
@@ -191,7 +193,7 @@ async def apply_network(router_id: uuid.UUID, body: NetworkApplyRequest, db: Asy
 # ─── Section 2: Hotspot ─────────────────────────────────────────────────────
 
 
-@router.get("/routers/{router_id}/setup/hotspot/detect")
+@router.get("/routers/{router_id}/setup/hotspot/detect", dependencies=[Depends(require_perm(READ))])
 async def detect_hotspot(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     await _load_router(db, router_id, tenant)
     try:
@@ -203,7 +205,7 @@ async def detect_hotspot(router_id: uuid.UUID, db: AsyncSession = Depends(get_db
     return {"status": status, "detected": detected}
 
 
-@router.post("/routers/{router_id}/setup/hotspot/apply", response_model=ApplyResultResponse)
+@router.post("/routers/{router_id}/setup/hotspot/apply", response_model=ApplyResultResponse, dependencies=[Depends(require_perm(CONFIG))])
 async def apply_hotspot(router_id: uuid.UUID, body: HotspotApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
@@ -234,7 +236,7 @@ async def apply_hotspot(router_id: uuid.UUID, body: HotspotApplyRequest, db: Asy
 # ─── Section 3: RADIUS ──────────────────────────────────────────────────────
 
 
-@router.get("/routers/{router_id}/setup/radius/detect")
+@router.get("/routers/{router_id}/setup/radius/detect", dependencies=[Depends(require_perm(READ))])
 async def detect_radius(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     router_row = await _load_router(db, router_id, tenant)
     try:
@@ -249,7 +251,7 @@ async def detect_radius(router_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     return {"status": status, "detected": detected, "radius_host": radius_host, "other_addresses": other}
 
 
-@router.post("/routers/{router_id}/setup/radius/apply", response_model=ApplyResultResponse)
+@router.post("/routers/{router_id}/setup/radius/apply", response_model=ApplyResultResponse, dependencies=[Depends(require_perm(CONFIG))])
 async def apply_radius(router_id: uuid.UUID, body: RadiusApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
@@ -283,7 +285,7 @@ async def apply_radius(router_id: uuid.UUID, body: RadiusApplyRequest, db: Async
     )
 
 
-@router.get("/routers/{router_id}/nas-secret", response_model=NasSecretResponse)
+@router.get("/routers/{router_id}/nas-secret", response_model=NasSecretResponse, dependencies=[Depends(require_perm(SECRETS)), Depends(require_recent_pin)])
 async def nas_secret(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     router_row = await _load_router(db, router_id, tenant)
     secret = _router_secret(router_row)
@@ -294,7 +296,7 @@ async def nas_secret(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), t
 # ─── Section 4: NAT & firewall ──────────────────────────────────────────────
 
 
-@router.get("/routers/{router_id}/setup/nat/detect")
+@router.get("/routers/{router_id}/setup/nat/detect", dependencies=[Depends(require_perm(READ))])
 async def detect_nat(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     await _load_router(db, router_id, tenant)
     try:
@@ -306,7 +308,7 @@ async def detect_nat(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), t
     return {"status": status, "detected": detected, "duplicate_masquerade": detected.get("masquerade_count", 0) > 1}
 
 
-@router.post("/routers/{router_id}/setup/nat/apply", response_model=ApplyResultResponse)
+@router.post("/routers/{router_id}/setup/nat/apply", response_model=ApplyResultResponse, dependencies=[Depends(require_perm(CONFIG))])
 async def apply_nat(router_id: uuid.UUID, body: NatApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):

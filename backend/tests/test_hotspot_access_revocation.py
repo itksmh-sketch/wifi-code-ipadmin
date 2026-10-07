@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from src.db.base import get_db
 from src.jobs import reconcile_hotspot as rh
-from src.middleware.auth import get_admin_tenant_context
+from src.middleware.auth import get_admin_tenant_context, get_current_user
 from src.modules.mikrotik import access_revocation, routes
 from src.modules.mikrotik.api_service import HOTSPOT_COOKIE_LIFETIME, MikroTikAPIService, MikroTikOperationError
 from src.modules.mikrotik.types import ActiveUserInfo
@@ -236,7 +236,10 @@ class RouteDb:
 def disconnect_app(monkeypatch):
     app = FastAPI()
     app.include_router(routes.router, prefix="/api/v1")
-    app.dependency_overrides[get_admin_tenant_context] = lambda: SimpleNamespace(isp_operator_id=uuid.uuid4())
+    op = uuid.uuid4()
+    app.dependency_overrides[get_admin_tenant_context] = lambda: SimpleNamespace(isp_operator_id=op)
+    # require_perm resolves the caller through get_current_user.
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4(), isp_operator_id=op, role="superadmin", email="su@example.test")
     db = RouteDb()
 
     async def fake_db():

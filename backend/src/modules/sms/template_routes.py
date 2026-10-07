@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
 from src.db.models import ISPOperator
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
+from src.middleware.permissions import CONFIG, require_perm
 from src.modules.sms import templates
 from src.modules.vouchers.engine import DEFAULT_CODE_LENGTH, MAX_CODE_LENGTH
 
@@ -72,12 +73,12 @@ async def _operator(db: AsyncSession, tenant: TenantContext) -> ISPOperator:
     return operator
 
 
-@router.get("/voucher")
+@router.get("/voucher", dependencies=[Depends(require_perm(CONFIG))])
 async def get_voucher_template(db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     return _payload(await _operator(db, tenant))
 
 
-@router.post("/voucher/preview")
+@router.post("/voucher/preview", dependencies=[Depends(require_perm(CONFIG))])
 async def preview_voucher_template(body: VoucherTemplatePreview, _: TenantContext = Depends(get_admin_tenant_context)):
     """Measure a draft without saving it. Returns the same shape either way so the
     editor can show the rendered text next to the reason it is refused."""
@@ -96,7 +97,7 @@ async def preview_voucher_template(body: VoucherTemplatePreview, _: TenantContex
     }
 
 
-@router.put("/voucher")
+@router.put("/voucher", dependencies=[Depends(require_perm(CONFIG))])
 async def set_voucher_template(
     body: VoucherTemplateUpdate,
     db: AsyncSession = Depends(get_db),

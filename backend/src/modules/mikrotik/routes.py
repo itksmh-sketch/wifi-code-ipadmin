@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
 from src.db.models import CoAEvent, ConfigTemplate, Router, RouterCredential, RouterMetric, RouterProvisionLog, Session, Site, Town, Voucher
 from src.middleware.auth import TenantContext, get_admin_tenant_context, get_current_user, require_active_operator
+from src.middleware.permissions import CONFIG, READ, VOUCHERS_OPERATE, require_perm
 from src.jobs.collect_router_metrics import collect_one_router
 from src.modules.mikrotik.api_service import MikroTikAPIService, MikroTikOperationError, RouterCredentialsMissingError, _normalize_error
 from src.modules.mikrotik import health as health_service
@@ -48,7 +49,7 @@ provisioner = MikroTikProvisioner()
 template_service = ConfigTemplateService()
 
 
-@router.post("/routers/test-connection", response_model=ConnectionTestResult)
+@router.post("/routers/test-connection", response_model=ConnectionTestResult, dependencies=[Depends(require_perm(CONFIG))])
 async def test_router_connection(body: ConnectionTestRequest, _=Depends(get_current_user)):
     result = await service.test_connection_async(
         host=body.host,
@@ -62,7 +63,7 @@ async def test_router_connection(body: ConnectionTestRequest, _=Depends(get_curr
     return result
 
 
-@router.post("/routers/temp-interfaces")
+@router.post("/routers/temp-interfaces", dependencies=[Depends(require_perm(CONFIG))])
 async def temp_interfaces(body: TempInterfacesRequest, _=Depends(get_current_user)):
     try:
         items = await service.list_interfaces_temp(
@@ -77,7 +78,7 @@ async def temp_interfaces(body: TempInterfacesRequest, _=Depends(get_current_use
         raise HTTPException(status_code=422, detail=str(exc))
 
 
-@router.get("/sites")
+@router.get("/sites", dependencies=[Depends(require_perm(READ))])
 async def admin_sites(db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     result = await db.execute(
         select(Site, Town)
@@ -99,7 +100,7 @@ async def admin_sites(db: AsyncSession = Depends(get_db), tenant: TenantContext 
     ]
 
 
-@router.post("/routers/onboard")
+@router.post("/routers/onboard", dependencies=[Depends(require_perm(CONFIG))])
 async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     # API credentials are now optional — an operator can register a router before
     # it is reachable (e.g. behind NAT) and set up a WireGuard tunnel afterwards.
@@ -140,7 +141,7 @@ async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tena
     return {"router_id": str(router_row.id), "log_id": None}
 
 
-@router.get("/routers")
+@router.get("/routers", dependencies=[Depends(require_perm(READ))])
 async def admin_router_list(
     include_removed: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
@@ -182,7 +183,7 @@ async def admin_router_list(
     ]
 
 
-@router.get("/routers/{router_id}")
+@router.get("/routers/{router_id}", dependencies=[Depends(require_perm(READ))])
 async def admin_router_detail(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     result = await db.execute(
         select(Router, Site, RouterCredential)
@@ -238,7 +239,7 @@ async def admin_router_detail(router_id: uuid.UUID, db: AsyncSession = Depends(g
     }
 
 
-@router.delete("/routers/{router_id}", response_model=RouterRemovalSummary)
+@router.delete("/routers/{router_id}", response_model=RouterRemovalSummary, dependencies=[Depends(require_perm(CONFIG))])
 async def remove_router_endpoint(
     router_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -256,7 +257,7 @@ async def remove_router_endpoint(
         raise HTTPException(status_code=409, detail="Router has already been removed")
 
 
-@router.post("/routers/{router_id}/credentials", response_model=RouterCredentialsResponse, status_code=201)
+@router.post("/routers/{router_id}/credentials", response_model=RouterCredentialsResponse, status_code=201, dependencies=[Depends(require_perm(CONFIG))])
 async def create_router_credentials(router_id: uuid.UUID, body: RouterCredentialsRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     router_row = (
         await db.execute(select(Router).where(Router.id == router_id, Router.isp_operator_id == tenant.isp_operator_id))
@@ -280,7 +281,7 @@ async def create_router_credentials(router_id: uuid.UUID, body: RouterCredential
     return _serialize_credentials(credentials)
 
 
-@router.put("/routers/{router_id}/credentials", response_model=RouterCredentialsResponse)
+@router.put("/routers/{router_id}/credentials", response_model=RouterCredentialsResponse, dependencies=[Depends(require_perm(CONFIG))])
 async def update_router_credentials(router_id: uuid.UUID, body: RouterCredentialsRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     # Upsert: a router onboarded via the VPN flow has no RouterCredential row yet,
     # so the edit modal must be able to *create* the credentials here, not only
@@ -307,7 +308,7 @@ async def update_router_credentials(router_id: uuid.UUID, body: RouterCredential
     return _serialize_credentials(credentials)
 
 
-@router.post("/routers/{router_id}/provision", response_model=ProvisionStartResponse)
+@router.post("/routers/{router_id}/provision", response_model=ProvisionStartResponse, dependencies=[Depends(require_perm(CONFIG))])
 async def provision_router(router_id: uuid.UUID, body: ProvisionRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = (
         await db.execute(select(Router).where(Router.id == router_id, Router.isp_operator_id == tenant.isp_operator_id))
@@ -339,7 +340,7 @@ async def provision_router(router_id: uuid.UUID, body: ProvisionRequest, db: Asy
     return ProvisionStartResponse(log_id=str(log_row.id))
 
 
-@router.get("/routers/{router_id}/provision-status/{log_id}", response_model=ProvisionStatusResponse)
+@router.get("/routers/{router_id}/provision-status/{log_id}", response_model=ProvisionStatusResponse, dependencies=[Depends(require_perm(READ))])
 async def provision_status(router_id: uuid.UUID, log_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     log_row = (
         await db.execute(
@@ -357,13 +358,13 @@ async def provision_status(router_id: uuid.UUID, log_id: uuid.UUID, db: AsyncSes
     return _serialize_provision_status(log_row)
 
 
-@router.get("/routers/{router_id}/diagnostics")
+@router.get("/routers/{router_id}/diagnostics", dependencies=[Depends(require_perm(CONFIG))])
 async def router_diagnostics(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
     return (await diagnostics_service.run(str(router_id))).model_dump()
 
 
-@router.get("/routers/{router_id}/interfaces")
+@router.get("/routers/{router_id}/interfaces", dependencies=[Depends(require_perm(READ))])
 async def router_interfaces(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
     try:
@@ -374,7 +375,7 @@ async def router_interfaces(router_id: uuid.UUID, db: AsyncSession = Depends(get
         raise HTTPException(status_code=422, detail=str(exc))
 
 
-@router.get("/routers/{router_id}/active-sessions")
+@router.get("/routers/{router_id}/active-sessions", dependencies=[Depends(require_perm(READ))])
 async def router_active_sessions(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
     try:
@@ -385,7 +386,7 @@ async def router_active_sessions(router_id: uuid.UUID, db: AsyncSession = Depend
         raise HTTPException(status_code=422, detail=str(exc))
 
 
-@router.post("/routers/{router_id}/disconnect-user")
+@router.post("/routers/{router_id}/disconnect-user", dependencies=[Depends(require_perm(VOUCHERS_OPERATE))])
 async def disconnect_router_user(
     router_id: uuid.UUID,
     body: DisconnectUserRequest,
@@ -444,7 +445,7 @@ async def disconnect_router_user(
     return result.model_dump()
 
 
-@router.get("/routers/{router_id}/metrics", response_model=list[RouterMetricResponse])
+@router.get("/routers/{router_id}/metrics", response_model=list[RouterMetricResponse], dependencies=[Depends(require_perm(READ))])
 async def router_metrics(router_id: uuid.UUID, hours: int = Query(default=24, ge=1, le=168), db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -479,7 +480,7 @@ async def _latest_two_health(db: AsyncSession, router_id: uuid.UUID):
     return current, previous
 
 
-@router.get("/routers/{router_id}/health")
+@router.get("/routers/{router_id}/health", dependencies=[Depends(require_perm(READ))])
 async def router_health(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     """Last polled health state. Reads storage only — never touches the router.
 
@@ -494,7 +495,7 @@ async def router_health(router_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     return health_service.build_response(str(router_id), current, previous)
 
 
-@router.post("/routers/{router_id}/health/check")
+@router.post("/routers/{router_id}/health/check", dependencies=[Depends(require_perm(READ))])
 async def router_health_check(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     """Poll the router now and store the result, then return it.
 
@@ -512,7 +513,7 @@ async def router_health_check(router_id: uuid.UUID, db: AsyncSession = Depends(g
     return health_service.build_response(str(router_id), current, previous)
 
 
-@router.get("/routers/{router_id}/provision-logs")
+@router.get("/routers/{router_id}/provision-logs", dependencies=[Depends(require_perm(READ))])
 async def router_provision_logs(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
     result = await db.execute(
@@ -536,7 +537,7 @@ async def router_provision_logs(router_id: uuid.UUID, db: AsyncSession = Depends
     ]
 
 
-@router.post("/routers/{router_id}/reboot", response_model=ProvisionStartResponse)
+@router.post("/routers/{router_id}/reboot", response_model=ProvisionStartResponse, dependencies=[Depends(require_perm(CONFIG))])
 async def reboot_router(router_id: uuid.UUID, body: ConfirmActionRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     if body.confirm is not True:
         raise HTTPException(status_code=422, detail="confirm=true is required")
@@ -568,7 +569,7 @@ async def reboot_router(router_id: uuid.UUID, body: ConfirmActionRequest, db: As
     return ProvisionStartResponse(log_id=str(log_row.id))
 
 
-@router.post("/routers/{router_id}/apply-template", response_model=ProvisionStartResponse)
+@router.post("/routers/{router_id}/apply-template", response_model=ProvisionStartResponse, dependencies=[Depends(require_perm(CONFIG))])
 async def apply_template(router_id: uuid.UUID, body: ApplyTemplateRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
     await provisioner.ensure_router_credentials(str(router_id))
@@ -597,13 +598,13 @@ async def apply_template(router_id: uuid.UUID, body: ApplyTemplateRequest, db: A
     return ProvisionStartResponse(log_id=str(log_row.id))
 
 
-@router.get("/config-templates", response_model=list[ConfigTemplateResponse])
+@router.get("/config-templates", response_model=list[ConfigTemplateResponse], dependencies=[Depends(require_perm(CONFIG))])
 async def list_config_templates(db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     rows = await template_service.list_templates(db, tenant.isp_operator_id)
     return [_serialize_template(row) for row in rows]
 
 
-@router.post("/config-templates", response_model=ConfigTemplateResponse, status_code=201)
+@router.post("/config-templates", response_model=ConfigTemplateResponse, status_code=201, dependencies=[Depends(require_perm(CONFIG))])
 async def create_config_template(body: ConfigTemplateRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     try:
         template = await template_service.create_template(db, body, tenant.isp_operator_id)
@@ -612,7 +613,7 @@ async def create_config_template(body: ConfigTemplateRequest, db: AsyncSession =
         raise HTTPException(status_code=422, detail=str(exc))
 
 
-@router.put("/config-templates/{template_id}", response_model=ConfigTemplateResponse)
+@router.put("/config-templates/{template_id}", response_model=ConfigTemplateResponse, dependencies=[Depends(require_perm(CONFIG))])
 async def update_config_template(template_id: uuid.UUID, body: ConfigTemplateUpdateRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     template = (
         await db.execute(
@@ -631,7 +632,7 @@ async def update_config_template(template_id: uuid.UUID, body: ConfigTemplateUpd
         raise HTTPException(status_code=422, detail=str(exc))
 
 
-@router.delete("/config-templates/{template_id}", status_code=204)
+@router.delete("/config-templates/{template_id}", status_code=204, dependencies=[Depends(require_perm(CONFIG))])
 async def delete_config_template(template_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     template = (
         await db.execute(

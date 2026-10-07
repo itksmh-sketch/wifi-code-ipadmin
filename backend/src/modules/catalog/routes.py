@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
 from src.db.models import ProviderCatalogEntry
 from src.middleware.auth import TenantContext, get_admin_tenant_context
+from src.middleware.permissions import READ, require_perm
 from src.schemas import OperatorProviderResponse
 
 router = APIRouter(prefix="/providers", tags=["providers"])
@@ -37,7 +38,7 @@ _PLATFORM_GATEWAY_DESCRIPTION = (
 )
 
 
-@router.get("", response_model=list[OperatorProviderResponse])
+@router.get("", response_model=list[OperatorProviderResponse], dependencies=[Depends(require_perm(READ))])
 async def list_available_providers(
     category: Literal["payment", "sms"],
     db: AsyncSession = Depends(get_db),

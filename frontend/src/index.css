@@ -441,3 +441,4 @@ th {
     .voucher-sheet:last-child { break-after: auto; page-break-after: auto; }
     .voucher-card, .voucher-card-code { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+.sidebar-role { text-transform: capitalize; }

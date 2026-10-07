@@ -30,9 +30,10 @@ from src.app import app
 from src.db.models import AdminUser, ISPOperator
 from src.middleware.auth import (
     SUSPENDED_DETAIL,
+    TenantContext,
     assert_operator_not_suspended,
-    require_active_role,
 )
+from src.middleware.permissions import CONFIG, PERMISSION_DENIED, require_perm
 
 # --------------------------------------------------------------------------
 # The policy, as data. (method, path) exactly as FastAPI registers it.
@@ -237,9 +238,9 @@ async def test_guard_treats_missing_operator_row_as_not_suspended():
 
 
 @pytest.mark.asyncio
-async def test_require_active_role_blocks_suspended_operator():
+async def test_require_perm_active_blocks_suspended_operator():
     operator = _operator("suspended")
-    check = require_active_role("superadmin", "admin")
+    check = require_perm(CONFIG, active=True)
     with pytest.raises(HTTPException) as exc:
         await check(user=_admin(operator.id), db=FakeDb(operator))
     assert exc.value.status_code == 403
@@ -247,24 +248,25 @@ async def test_require_active_role_blocks_suspended_operator():
 
 
 @pytest.mark.asyncio
-async def test_require_active_role_still_enforces_role_first():
-    """Role failure must not leak whether the operator is suspended."""
-    operator = _operator("approved")
-    check = require_active_role("superadmin")
+async def test_require_perm_checks_the_permission_first():
+    """A permission failure must not leak whether the operator is suspended."""
+    operator = _operator("suspended")
+    check = require_perm(CONFIG, active=True)
     with pytest.raises(HTTPException) as exc:
-        await check(user=_admin(operator.id, role="viewer"), db=FakeDb(operator))
+        await check(user=_admin(operator.id, role="staff"), db=FakeDb(operator))
     assert exc.value.status_code == 403
-    assert exc.value.detail == "Insufficient permissions"
+    assert exc.value.detail == PERMISSION_DENIED
 
 
 @pytest.mark.asyncio
-async def test_require_active_role_returns_admin_user_unchanged():
-    """Several routes annotate this as TenantContext and use .isp_operator_id —
-    the return type must stay AdminUser."""
+async def test_require_perm_returns_a_tenant_context():
+    """What the routes annotate. (require_active_role returned the AdminUser
+    while its routes declared TenantContext.)"""
     operator = _operator("approved")
     user = _admin(operator.id)
-    check = require_active_role("superadmin", "admin")
-    assert await check(user=user, db=FakeDb(operator)) is user
+    tenant = await require_perm(CONFIG, active=True)(user=user, db=FakeDb(operator))
+    assert isinstance(tenant, TenantContext)
+    assert (tenant.isp_operator_id, tenant.user_id, tenant.role) == (operator.id, user.id, "admin")
 
 
 # --------------------------------------------------------------------------

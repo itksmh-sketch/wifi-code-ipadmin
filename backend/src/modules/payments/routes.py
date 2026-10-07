@@ -12,6 +12,8 @@ from src.db.base import get_db
 from src.db.models import CoAEvent, PaymentTransaction
 from src.jobs.queue import get_redis_pool
 from src.middleware.auth import TenantContext, get_admin_tenant_context
+from src.middleware.permissions import MONEY, READ, require_perm
+from src.middleware.auth import require_recent_pin
 from src.modules.payments.dependencies import get_payment_service
 from src.modules.payments.filters import REAL_TRANSACTIONS_ONLY
 from src.modules.payments.service import PaymentService
@@ -45,7 +47,7 @@ def _payment_filters(
     return clauses
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_perm(READ))])
 async def list_payments(
     status: str | None = None,
     payment_method: str | None = None,
@@ -69,7 +71,7 @@ async def list_payments(
     return {"items": rows, "page": page, "per_page": 50, "total": total}
 
 
-@router.get("/summary")
+@router.get("/summary", dependencies=[Depends(require_perm(READ))])
 async def payment_summary(db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     now = datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -142,7 +144,7 @@ async def payment_summary(db: AsyncSession = Depends(get_db), tenant: TenantCont
     }
 
 
-@router.put("/{payment_id}/verify")
+@router.put("/{payment_id}/verify", dependencies=[Depends(require_perm(MONEY))])
 async def verify_payment(
     payment_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -159,7 +161,7 @@ async def verify_payment(
     return await payment_service.refresh_transaction_status(db, tx=tx, force=True)
 
 
-@router.put("/{payment_id}/refund")
+@router.put("/{payment_id}/refund", dependencies=[Depends(require_perm(MONEY)), Depends(require_recent_pin)])
 async def refund_payment(
     payment_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -180,14 +182,14 @@ async def refund_payment(
     return tx
 
 
-@router.post("/reconcile")
+@router.post("/reconcile", dependencies=[Depends(require_perm(MONEY))])
 async def trigger_reconcile(_=Depends(get_admin_tenant_context)):
     redis = await get_redis_pool()
     job = await redis.enqueue_job("run_payment_reconciliation")
     return {"queued": True, "job_id": job.job_id if job else None}
 
 
-@router.get("/export")
+@router.get("/export", dependencies=[Depends(require_perm(MONEY)), Depends(require_recent_pin)])
 async def export_payments_csv(
     format: str = "csv",
     status: str | None = None,
@@ -246,7 +248,7 @@ async def export_payments_csv(
     )
 
 
-@router.get("/{payment_id}")
+@router.get("/{payment_id}", dependencies=[Depends(require_perm(READ))])
 async def get_payment(payment_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     tx = (
         await db.execute(select(PaymentTransaction).where(PaymentTransaction.id == payment_id, PaymentTransaction.isp_operator_id == tenant.isp_operator_id))

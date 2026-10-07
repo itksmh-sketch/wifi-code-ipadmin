@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
 from src.db.models import CommissionRule, Plan, Reseller, ResellerWallet, ResellerVoucherAllocation, Voucher
-from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_role, require_role
+from src.middleware.auth import TenantContext, get_admin_tenant_context
+from src.middleware.permissions import CONFIG, MONEY, require_perm
 from src.modules.resellers.wallet_service import WalletService
 from src.utils.reseller_auth import hash_reseller_password
 
@@ -15,7 +16,7 @@ router = APIRouter(prefix="/admin", tags=["admin-resellers"])
 wallet_service = WalletService()
 
 
-@router.get("/resellers")
+@router.get("/resellers", dependencies=[Depends(require_perm(CONFIG))])
 async def admin_list_resellers(db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     res = await db.execute(
         select(Reseller, ResellerWallet)
@@ -44,7 +45,7 @@ async def admin_list_resellers(db: AsyncSession = Depends(get_db), tenant: Tenan
 
 
 @router.post("/resellers")
-async def admin_create_reseller(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_role("superadmin", "admin"))):
+async def admin_create_reseller(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(CONFIG, active=True))):
     # Expected keys: name,email,phone,password,role,town_id,site_id
     email = (payload.get("email") or "").strip().lower()
     if not email or not payload.get("password") or not payload.get("name"):
@@ -75,7 +76,7 @@ async def admin_create_reseller(payload: dict, db: AsyncSession = Depends(get_db
     return {"id": str(reseller.id)}
 
 
-@router.get("/resellers/{reseller_id}")
+@router.get("/resellers/{reseller_id}", dependencies=[Depends(require_perm(CONFIG))])
 async def admin_get_reseller(reseller_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     res = await db.execute(
         select(Reseller, ResellerWallet)
@@ -124,7 +125,7 @@ async def admin_get_reseller(reseller_id: uuid.UUID, db: AsyncSession = Depends(
 
 
 @router.put("/resellers/{reseller_id}")
-async def admin_update_reseller(reseller_id: uuid.UUID, payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_role("superadmin", "admin"))):
+async def admin_update_reseller(reseller_id: uuid.UUID, payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(CONFIG))):
     reseller = (
         await db.execute(select(Reseller).where(Reseller.id == reseller_id, Reseller.isp_operator_id == tenant.isp_operator_id))
     ).scalar_one_or_none()
@@ -151,7 +152,7 @@ async def admin_update_reseller(reseller_id: uuid.UUID, payload: dict, db: Async
 
 
 @router.put("/resellers/{reseller_id}/topup")
-async def admin_reseller_topup(reseller_id: uuid.UUID, payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_role("superadmin", "admin"))):
+async def admin_reseller_topup(reseller_id: uuid.UUID, payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(MONEY, active=True))):
     amount = payload.get("amount_ghs")
     if amount is None:
         raise HTTPException(status_code=400, detail="amount_ghs is required")
@@ -191,7 +192,7 @@ async def admin_reseller_topup(reseller_id: uuid.UUID, payload: dict, db: AsyncS
     return {"ok": True}
 
 
-@router.get("/resellers/{reseller_id}/vouchers")
+@router.get("/resellers/{reseller_id}/vouchers", dependencies=[Depends(require_perm(CONFIG))])
 async def admin_reseller_vouchers(reseller_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     res = await db.execute(
         select(ResellerVoucherAllocation, Voucher, Plan)
@@ -220,7 +221,7 @@ async def admin_reseller_vouchers(reseller_id: uuid.UUID, db: AsyncSession = Dep
     ]
 
 
-@router.get("/commission-rules")
+@router.get("/commission-rules", dependencies=[Depends(require_perm(CONFIG))])
 async def admin_list_commission_rules(
     reseller_id: uuid.UUID | None = None,
     plan_id: uuid.UUID | None = None,
@@ -249,7 +250,7 @@ async def admin_list_commission_rules(
 
 
 @router.post("/commission-rules")
-async def admin_create_commission_rule(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_role("superadmin", "admin"))):
+async def admin_create_commission_rule(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(CONFIG))):
     rule = CommissionRule(
         isp_operator_id=tenant.isp_operator_id,
         reseller_id=payload.get("reseller_id"),
@@ -265,7 +266,7 @@ async def admin_create_commission_rule(payload: dict, db: AsyncSession = Depends
 
 
 @router.put("/commission-rules/{rule_id}")
-async def admin_update_commission_rule(rule_id: uuid.UUID, payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_role("superadmin", "admin"))):
+async def admin_update_commission_rule(rule_id: uuid.UUID, payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(CONFIG))):
     rule = (
         await db.execute(select(CommissionRule).where(CommissionRule.id == rule_id, CommissionRule.isp_operator_id == tenant.isp_operator_id))
     ).scalar_one_or_none()
@@ -279,7 +280,7 @@ async def admin_update_commission_rule(rule_id: uuid.UUID, payload: dict, db: As
 
 
 @router.delete("/commission-rules/{rule_id}")
-async def admin_delete_commission_rule(rule_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_role("superadmin", "admin"))):
+async def admin_delete_commission_rule(rule_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(CONFIG))):
     await db.execute(delete(CommissionRule).where(CommissionRule.id == rule_id, CommissionRule.isp_operator_id == tenant.isp_operator_id))
     await db.commit()
     return {"ok": True}

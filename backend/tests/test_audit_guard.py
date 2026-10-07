@@ -44,6 +44,11 @@ AUDITED = {
     ("POST", "/api/v1/platform/operators/{operator_id}/admin-logins/enable"),
     ("POST", "/api/v1/platform/operators/{operator_id}/admins/{admin_id}/disable"),
     ("POST", "/api/v1/platform/operators/{operator_id}/admins/{admin_id}/enable"),
+    # P3: operator user management
+    ("POST", "/api/v1/admin/users"),
+    ("PATCH", "/api/v1/admin/users/{user_id}"),
+    ("POST", "/api/v1/admin/users/{user_id}/disable"),
+    ("POST", "/api/v1/admin/users/{user_id}/enable"),
 }
 
 # Change nothing worth a row: token renewal, previews, and a check that only

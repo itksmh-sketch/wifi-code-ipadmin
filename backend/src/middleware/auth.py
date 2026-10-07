@@ -86,7 +86,7 @@ async def get_authenticated_admin(
 async def get_current_user(user: AdminUser = Depends(get_authenticated_admin)) -> AdminUser:
     """An authenticated admin with no pending account-setup step. Every admin API
     route goes through this (directly or via get_admin_tenant_context /
-    require_role), so an account on a temp password can reach nothing but the
+    permissions.require_perm), so an account on a temp password can reach nothing but the
     onboarding endpoints — including after a platform-owner password reset."""
     if user.must_complete_onboarding:
         raise HTTPException(
@@ -214,15 +214,6 @@ async def get_platform_owner_context(
 get_platform_owner_context.is_security_setup_guard = True
 
 
-def require_role(*roles: str):
-    """Dependency factory to require specific admin roles."""
-    async def _check(user: AdminUser = Depends(get_current_user)):
-        if user.role not in roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-        return user
-    return _check
-
-
 async def update_last_login(user_id, db: AsyncSession):
     await db.execute(
         update(AdminUser)
@@ -282,22 +273,3 @@ async def require_active_operator(
 # policy says it should be — and, just as importantly, ABSENT from the
 # exemption chain. A closure is otherwise hard to identify in a dependant tree.
 require_active_operator.is_suspension_guard = True
-
-
-def require_active_role(*roles: str):
-    """require_role + the suspension gate, for routes that need both.
-
-    Returns the AdminUser, exactly as require_role does — several routes
-    annotate that as TenantContext and rely on `.isp_operator_id`, so the
-    return type must not change.
-    """
-    async def _check(
-        user: AdminUser = Depends(get_current_user),
-        db: AsyncSession = Depends(get_db),
-    ) -> AdminUser:
-        if user.role not in roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-        await assert_operator_not_suspended(db, user.isp_operator_id)
-        return user
-    _check.is_suspension_guard = True  # see require_active_operator below
-    return _check

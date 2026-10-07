@@ -8,6 +8,7 @@ from src.db.base import get_db
 from src.db.models import PaymentTransaction, Plan, ResellerVoucherAllocation, Router, Session, Voucher
 from src.modules.payments.filters import REAL_TRANSACTIONS_ONLY
 from src.middleware.auth import TenantContext, get_admin_tenant_context
+from src.middleware.permissions import READ, require_perm
 from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -22,7 +23,7 @@ def _period_starts(now: datetime) -> tuple[datetime, datetime, datetime]:
     return today_start, week_start, month_start
 
 
-@router.get("/snapshot")
+@router.get("/snapshot", dependencies=[Depends(require_perm(READ))])
 async def analytics_snapshot(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(get_admin_tenant_context),
@@ -227,7 +228,7 @@ async def analytics_snapshot(
     }
 
 
-@router.get("/trends")
+@router.get("/trends", dependencies=[Depends(require_perm(READ))])
 async def analytics_trends(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(get_admin_tenant_context),

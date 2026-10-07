@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
 from src.db.models import OperatorSMSCredential, ProviderCatalogEntry
 from src.middleware.auth import TenantContext, require_active_operator, require_recent_pin
+from src.middleware.permissions import SECRETS, require_perm
 from src.modules.credentials.router import make_credentials_router
 from src.modules.credentials.service import build_view, deactivate_others, dump_credentials
 from src.modules.sms.providers.registry import build_sms_provider
@@ -46,7 +47,7 @@ PLATFORM_GATEWAY_PROVIDER_KEY = "arkesel_platform"
 @router.post(
     "/activate-platform",
     response_model=CredentialsView,
-    dependencies=[Depends(require_recent_pin)],
+    dependencies=[Depends(require_perm(SECRETS)), Depends(require_recent_pin)],
 )
 async def activate_platform_gateway(
     db: AsyncSession = Depends(get_db),

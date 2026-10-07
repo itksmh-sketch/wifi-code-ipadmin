@@ -23,7 +23,7 @@ from sqlalchemy.dialects import postgresql
 from src.db.base import get_db
 from src.db.models import Router
 from src.jobs.wireguard_status import _retry_incomplete_removals
-from src.middleware.auth import get_admin_tenant_context
+from src.middleware.auth import get_admin_tenant_context, get_current_user
 from src.modules.mikrotik import removal, routes
 from src.modules.mikrotik.api_service import MikroTikOperationError, RouterCredentialsMissingError
 from src.modules.mikrotik.types import ActiveUserInfo
@@ -412,6 +412,8 @@ def api_app(monkeypatch):
     app.include_router(routes.router, prefix="/api/v1")
     tenant = SimpleNamespace(isp_operator_id=uuid.uuid4())
     app.dependency_overrides[get_admin_tenant_context] = lambda: tenant
+    # require_perm resolves the caller through get_current_user.
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4(), isp_operator_id=tenant.isp_operator_id, role="superadmin", email="su@example.test")
     return SimpleNamespace(app=app, client=TestClient(app), tenant=tenant)
 
 

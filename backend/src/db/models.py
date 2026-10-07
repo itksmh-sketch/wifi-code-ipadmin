@@ -868,7 +868,7 @@ class AdminUser(Base):
     isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id"), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(Text, nullable=False)
-    role = Column(ENUM("superadmin", "admin", "viewer", name="admin_role", create_type=False), nullable=False)
+    role = Column(ENUM("superadmin", "admin", "staff", name="admin_role", create_type=False), nullable=False)
     is_active = Column(Boolean, nullable=False, server_default="true", default=True)
     # Who disabled this account and why; all NULL while is_active (CHECK in
     # migration 056). by_type: platform_owner | operator_user | system.

@@ -187,14 +187,22 @@ async def test_path3_add_admin(env):
     res = await client.post(
         f"/platform/operators/{created['id']}/admins",
         headers=client.owner_headers,
-        json={"email": email, "phone": "0555000002", "role": "viewer"},
+        json={"email": email, "phone": "0555000002", "role": "staff"},
     )
     assert res.status_code == 201, res.text
     body = res.json()
-    assert body["role"] == "viewer" and body["temp_password_sms_sent"] is True and body["temp_password"]
+    assert body["role"] == "staff" and body["temp_password_sms_sent"] is True and body["temp_password"]
     assert "password" not in res.request.content.decode()
     row = await admin_row(email)
     assert row.must_complete_onboarding and row.phone == "233555000002"
+
+    # 'viewer' was renamed to 'staff' in P3 (migration 057).
+    res = await client.post(
+        f"/platform/operators/{created['id']}/admins",
+        headers=client.owner_headers,
+        json={"email": f"viewer-{uuid.uuid4().hex[:6]}@throwaway.test", "phone": "0555000003", "role": "viewer"},
+    )
+    assert res.status_code == 422
 
     res = await client.post(
         f"/platform/operators/{created['id']}/admins",

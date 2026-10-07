@@ -45,7 +45,8 @@ if FLOW_DB:  # imports that bind the engine only happen when the guard can pass
 
     from src.app import app
     from src.db.base import async_session_factory
-    from src.middleware.auth import TenantContext, get_admin_tenant_context
+    from src.db.models import AdminUser as _AdminUser
+    from src.middleware.auth import TenantContext, get_admin_tenant_context, get_current_user
     from src.modules.onboarding import CHECKLIST_KEYS, get_checklist, mark_checklist
     from src.modules.payments.service import PaymentService
 
@@ -293,6 +294,10 @@ async def test_billing_endpoint_reports_a_complete_checklist(client):
     await make_session(ids, await make_voucher(ids, "manual"))
     app.dependency_overrides[get_admin_tenant_context] = lambda: TenantContext(
         False, ids["op"], uuid.uuid4(), "superadmin", "t@throwaway.test"
+    )
+    # require_perm (P3) resolves the caller through get_current_user.
+    app.dependency_overrides[get_current_user] = lambda: _AdminUser(
+        id=uuid.uuid4(), isp_operator_id=ids["op"], role="superadmin", email="t@throwaway.test"
     )
     res = await client.get("/billing/onboarding-checklist")
     assert res.status_code == 200

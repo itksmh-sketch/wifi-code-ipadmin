@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { useAuth } from '../App';
+import { useAuth, usePermissions } from '../App';
 
 // Platform identity icon sprite (Lucide, ISC) — served by the backend, same
 // asset the login/apply pages use. See backend/static/platform-ui/icons.svg.
@@ -17,23 +17,28 @@ function Icon({ name }) {
 // Icon choices are constrained to the symbols already in icons.svg (shared
 // with the login/apply identity pass) — picked for closest available fit,
 // not a literal 1:1 match for every label.
+// `perm` matches the page's route gate in App.jsx (a list: any one of them);
+// none means every signed-in user.
 const links = [
     { to: '/', label: 'Dashboard', icon: 'rocket' },
-    { to: '/analytics', label: 'Analytics', icon: 'trending-up' },
-    { to: '/towns-sites', label: 'Towns & Sites', icon: 'map-pin' },
-    { to: '/routers', label: 'Routers', icon: 'router' },
-    { to: '/plans', label: 'Plans', icon: 'check' },
-    { to: '/vouchers', label: 'Vouchers', icon: 'wifi' },
-    { to: '/sessions', label: 'Sessions', icon: 'clock' },
-    { to: '/payment-credentials', label: 'Payments', icon: 'smartphone' },
-    { to: '/sms-credentials', label: 'SMS', icon: 'message' },
-    { to: '/branding', label: 'Branding', icon: 'building' },
-    { to: '/billing', label: 'Billing', icon: 'mail' },
+    { to: '/analytics', label: 'Analytics', icon: 'trending-up', perm: 'read' },
+    { to: '/towns-sites', label: 'Towns & Sites', icon: 'map-pin', perm: 'read' },
+    { to: '/routers', label: 'Routers', icon: 'router', perm: 'read' },
+    { to: '/plans', label: 'Plans', icon: 'check', perm: 'read' },
+    { to: '/vouchers', label: 'Vouchers', icon: 'wifi', perm: 'read' },
+    { to: '/sessions', label: 'Sessions', icon: 'clock', perm: 'read' },
+    { to: '/payment-credentials', label: 'Payments', icon: 'smartphone', perm: 'secrets' },
+    { to: '/sms-credentials', label: 'SMS', icon: 'message', perm: ['secrets', 'config'] },
+    { to: '/branding', label: 'Branding', icon: 'building', perm: 'config' },
+    { to: '/billing', label: 'Billing', icon: 'mail', perm: 'billing.read' },
+    { to: '/users', label: 'Users', icon: 'user', perm: 'users' },
     { to: '/security', label: 'Security', icon: 'lock' },
 ];
 
 export default function Sidebar() {
     const { user, logout } = useAuth();
+    const { me, can } = usePermissions();
+    const visible = links.filter(({ perm }) => !perm || (Array.isArray(perm) ? perm.some(can) : can(perm)));
     const [open, setOpen] = useState(false);
 
     // Off-canvas nav only exists below the mobile breakpoint; Escape closes it
@@ -73,7 +78,7 @@ export default function Sidebar() {
                     </div>
                 </div>
                 <nav className="sidebar-nav">
-                    {links.map((link) => (
+                    {visible.map((link) => (
                         <NavLink
                             key={link.to}
                             to={link.to}
@@ -87,7 +92,7 @@ export default function Sidebar() {
                     ))}
                 </nav>
                 <div className="sidebar-foot">
-                    <p className="sidebar-user">{user?.email || 'Admin'}</p>
+                    <p className="sidebar-user">{me?.email || user?.email || 'Admin'}{me?.role && <span className="sidebar-role"> · {me.role}</span>}</p>
                     <button className="sidebar-logout" onClick={logout}>Logout</button>
                 </div>
             </div>

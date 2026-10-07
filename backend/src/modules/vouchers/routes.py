@@ -12,6 +12,7 @@ from src.schemas import (
     PrintBatchResponse, PrintConfirmRequest, PrintConfirmResponse,
 )
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
+from src.middleware.permissions import READ, VOUCHERS_GENERATE, VOUCHERS_OPERATE, require_perm
 from src.modules.vouchers.engine import disable_voucher_with_disconnect, generate_vouchers, restore_voucher_status
 from typing import List, Optional
 import uuid
@@ -19,7 +20,7 @@ import uuid
 router = APIRouter(prefix="/vouchers", tags=["vouchers"])
 
 
-@router.get("", response_model=VoucherListResponse)
+@router.get("", response_model=VoucherListResponse, dependencies=[Depends(require_perm(READ))])
 async def list_vouchers(
     status_filter: Optional[VoucherStatus] = Query(None, alias="status"),
     site_id: Optional[uuid.UUID] = Query(None),
@@ -65,7 +66,7 @@ async def list_vouchers(
     return VoucherListResponse(vouchers=vouchers, total=total)
 
 
-@router.post("/generate", response_model=List[VoucherResponse], status_code=201, responses={400: {"model": ErrorResponse}})
+@router.post("/generate", response_model=List[VoucherResponse], status_code=201, responses={400: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(VOUCHERS_GENERATE))])
 async def generate_voucher_batch(
     body: VoucherGenerate,
     db: AsyncSession = Depends(get_db),
@@ -84,7 +85,7 @@ async def generate_voucher_batch(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/batch/{batch_id}", response_model=VoucherListResponse)
+@router.get("/batch/{batch_id}", response_model=VoucherListResponse, dependencies=[Depends(require_perm(READ))])
 async def get_voucher_batch(
     batch_id: str,
     skip: int = Query(0, ge=0),
@@ -127,7 +128,7 @@ def _printable(operator_id):
     )
 
 
-@router.get("/print-batch", response_model=PrintBatchResponse, responses={404: {"model": ErrorResponse}})
+@router.get("/print-batch", response_model=PrintBatchResponse, responses={404: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(VOUCHERS_OPERATE))])
 async def get_print_batch(
     plan_id: uuid.UUID = Query(...),
     # Optional, and not capped: a print run needs the whole batch, unlike the
@@ -152,7 +153,7 @@ async def get_print_batch(
     return PrintBatchResponse(plan=plan, vouchers=vouchers, available=available)
 
 
-@router.post("/print-batch/confirm", response_model=PrintConfirmResponse)
+@router.post("/print-batch/confirm", response_model=PrintConfirmResponse, dependencies=[Depends(require_perm(VOUCHERS_OPERATE))])
 async def confirm_print_batch(
     body: PrintConfirmRequest,
     db: AsyncSession = Depends(get_db),
@@ -199,7 +200,7 @@ async def confirm_print_batch(
     )
 
 
-@router.get("/{voucher_id}", response_model=VoucherResponse, responses={404: {"model": ErrorResponse}})
+@router.get("/{voucher_id}", response_model=VoucherResponse, responses={404: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(READ))])
 async def get_voucher(
     voucher_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -212,7 +213,7 @@ async def get_voucher(
     return voucher
 
 
-@router.put("/{voucher_id}/disable", response_model=VoucherResponse, responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}})
+@router.put("/{voucher_id}/disable", response_model=VoucherResponse, responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(VOUCHERS_OPERATE))])
 async def disable_voucher(
     voucher_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -227,7 +228,7 @@ async def disable_voucher(
         raise HTTPException(status_code=status_code, detail=detail)
 
 
-@router.put("/{voucher_id}/reactivate", response_model=VoucherResponse, responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}})
+@router.put("/{voucher_id}/reactivate", response_model=VoucherResponse, responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(VOUCHERS_OPERATE))])
 async def reactivate_voucher(
     voucher_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

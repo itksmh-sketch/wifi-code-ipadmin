@@ -22,13 +22,14 @@ from src.db.models import (
     Voucher,
 )
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_recent_pin
+from src.middleware.permissions import BILLING_READ, READ, SECRETS, require_perm
 from src.modules.billing import service
 from src.modules.billing.schemas import BillingStatusResponse, InvoiceResponse, PayInvoiceResponse
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
 
-@router.get("/status", response_model=BillingStatusResponse)
+@router.get("/status", response_model=BillingStatusResponse, dependencies=[Depends(require_perm(READ))])
 async def billing_status(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(get_admin_tenant_context),
@@ -59,7 +60,7 @@ async def billing_status(
     )
 
 
-@router.get("/invoices", response_model=List[InvoiceResponse])
+@router.get("/invoices", response_model=List[InvoiceResponse], dependencies=[Depends(require_perm(BILLING_READ))])
 async def list_invoices(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(get_admin_tenant_context),
@@ -72,7 +73,7 @@ async def list_invoices(
     return result.scalars().all()
 
 
-@router.get("/invoices/{invoice_id}", response_model=InvoiceResponse)
+@router.get("/invoices/{invoice_id}", response_model=InvoiceResponse, dependencies=[Depends(require_perm(BILLING_READ))])
 async def get_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -96,7 +97,7 @@ async def get_invoice(
 @router.post(
     "/invoices/{invoice_id}/pay",
     response_model=PayInvoiceResponse,
-    dependencies=[Depends(require_recent_pin)],
+    dependencies=[Depends(require_perm(SECRETS)), Depends(require_recent_pin)],
 )
 async def pay_invoice(
     invoice_id: uuid.UUID,
@@ -159,7 +160,7 @@ def _page_bounds(page: int, page_size: int, total_count: int) -> tuple[int, int,
     return page, page_size, total_pages
 
 
-@router.get("/transactions")
+@router.get("/transactions", dependencies=[Depends(require_perm(BILLING_READ))])
 async def list_transactions(
     page: int = 1,
     page_size: int = 50,
@@ -253,7 +254,7 @@ def _delivery(msg: SMSMessage | None) -> dict | None:
     }
 
 
-@router.get("/sms-usage")
+@router.get("/sms-usage", dependencies=[Depends(require_perm(BILLING_READ))])
 async def list_sms_usage(
     page: int = 1,
     page_size: int = 50,
@@ -321,7 +322,7 @@ async def list_sms_usage(
     }
 
 
-@router.get("/onboarding-checklist")
+@router.get("/onboarding-checklist", dependencies=[Depends(require_perm(BILLING_READ))])
 async def get_onboarding_checklist(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(get_admin_tenant_context),

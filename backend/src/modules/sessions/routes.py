@@ -5,13 +5,14 @@ from src.db.base import get_db
 from src.db.models import Session
 from src.schemas import SessionResponse, SessionListResponse, ErrorResponse
 from src.middleware.auth import TenantContext, get_admin_tenant_context
+from src.middleware.permissions import READ, require_perm
 from typing import Optional
 import uuid
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
-@router.get("", response_model=SessionListResponse)
+@router.get("", response_model=SessionListResponse, dependencies=[Depends(require_perm(READ))])
 async def list_sessions(
     voucher_id: Optional[uuid.UUID] = Query(None),
     router_id: Optional[uuid.UUID] = Query(None),
@@ -44,7 +45,7 @@ async def list_sessions(
     return SessionListResponse(sessions=sessions, total=total)
 
 
-@router.get("/{session_id}", response_model=SessionResponse, responses={404: {"model": ErrorResponse}})
+@router.get("/{session_id}", response_model=SessionResponse, responses={404: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(READ))])
 async def get_session(
     session_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

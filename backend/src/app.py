@@ -33,9 +33,11 @@ from src.radius.routes import router as radius_router
 from src.portal.routes import router as portal_router
 from src.middleware.auth import TenantContext, get_admin_tenant_context
 from src.middleware.security_headers import SecurityHeadersMiddleware
+from src.middleware.permissions import READ, require_perm
 from src.modules.security.csp_report import router as csp_report_router
 from src.modules.resellers.routes import router as reseller_router
 from src.modules.resellers.admin_routes import router as admin_reseller_router
+from src.modules.admin_users.routes import router as admin_users_router
 from src.modules.mikrotik.routes import router as mikrotik_router
 from src.modules.mikrotik.setup_routes import router as router_setup_router
 from src.modules.wireguard.routes import router as wireguard_router, peers_router as wireguard_peers_router
@@ -107,6 +109,7 @@ app.include_router(portal_router)
 app.include_router(reseller_portal_router)
 app.include_router(reseller_router, prefix="/api/v1")
 app.include_router(admin_reseller_router, prefix="/api/v1")
+app.include_router(admin_users_router, prefix="/api/v1")
 app.include_router(mikrotik_router, prefix="/api/v1")
 app.include_router(router_setup_router, prefix="/api/v1")
 app.include_router(wireguard_router, prefix="/api/v1")
@@ -154,7 +157,7 @@ async def production_health(db: AsyncSession = Depends(get_db)):
     return {"status": status_code, "db": db_status, "redis": redis_status}
 
 
-@app.get("/api/v1/dashboard", response_model=DashboardSummary)
+@app.get("/api/v1/dashboard", response_model=DashboardSummary, dependencies=[Depends(require_perm(READ))])
 async def get_dashboard_summary(db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     operator_id = tenant.isp_operator_id
     total_vouchers = (await db.execute(select(func.count()).select_from(Voucher).where(Voucher.isp_operator_id == operator_id))).scalar() or 0

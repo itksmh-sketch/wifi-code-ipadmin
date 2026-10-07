@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { apiCall } from '../App';
+import { apiCall, usePermissions } from '../App';
 import TransactionsTab from '../components/TransactionsTab';
 import SmsUsageTab from '../components/SmsUsageTab';
 import PageHeader from '../components/PageHeader';
@@ -19,6 +19,8 @@ export default function Billing() {
     const [error, setError] = useState('');
     const [tab, setTab] = useState('invoices');
     const gate = usePinGate();
+    // Paying an invoice is a superadmin action ('secrets'); admins see the bills.
+    const { can } = usePermissions();
 
     useEffect(() => {
         apiCall('/billing/status').then(d => d && setStatus(d)).catch(() => {});
@@ -155,7 +157,7 @@ export default function Billing() {
                                 <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}>{inv.due_at ? new Date(inv.due_at).toLocaleDateString() : '—'}</td>
                                 <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}>{inv.paid_at ? new Date(inv.paid_at).toLocaleDateString() : '—'}</td>
                                 <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}>
-                                    {['issued', 'overdue'].includes(inv.status) && (
+                                    {can('secrets') && ['issued', 'overdue'].includes(inv.status) && (
                                         <button onClick={() => handlePay(inv.id)} disabled={payLoading}
                                             style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 4, padding: '4px 12px', cursor: 'pointer', fontSize: 13 }}>
                                             {payLoading ? '…' : 'Pay Now'}

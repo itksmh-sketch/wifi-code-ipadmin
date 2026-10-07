@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { apiCall } from '../App';
+import { apiCall, usePermissions } from '../App';
+import PinPrompt, { usePinGate } from '../components/PinPrompt';
 import PageHeader from '../components/PageHeader';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -1038,11 +1039,27 @@ function RadiusSection({ routerId, online, status, cfg, expanded, onToggle, onAp
     const [timeout, setTimeoutMs] = useState(cfg?.timeout || 3000);
     const [secret, setSecret] = useState({ masked: '●●●●●●●●', hint: '' });
     const [showHint, setShowHint] = useState(false);
+    const [secretError, setSecretError] = useState('');
     const [radiusHost, setRadiusHost] = useState(cfg?.radius_host || '');
+    // The hint is superadmin-only and PIN-gated, so it is fetched on Show
+    // (through the PIN prompt) rather than on mount.
+    const { can } = usePermissions();
+    const gate = usePinGate();
 
-    useEffect(() => {
-        apiCall(`/admin/routers/${routerId}/nas-secret`).then(d => { if (d && !d.detail) setSecret(d); }).catch(() => {});
-    }, [routerId]);
+    const toggleHint = async () => {
+        if (showHint) { setShowHint(false); return; }
+        setSecretError('');
+        try {
+            // The state updates live inside the gated call: after a PIN prompt
+            // only that function is replayed, not the code following run().
+            await gate.run(async () => {
+                setSecret(await apiCall(`/admin/routers/${routerId}/nas-secret`));
+                setShowHint(true);
+            });
+        } catch (e) {
+            setSecretError(e.message || 'Could not load the secret hint.');
+        }
+    };
 
     const terminal = [
         `/radius/add service=hotspot address=${radiusHost || '<platform-radius-host>'} secret=<your-router-secret> authentication-port=1812 accounting-port=1813 timeout=${Math.floor(timeout / 1000)}s`,
@@ -1062,8 +1079,11 @@ function RadiusSection({ routerId, online, status, cfg, expanded, onToggle, onAp
                 <Field label="Shared secret">
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                         <input value={showHint ? (secret.hint || secret.masked) : secret.masked} readOnly style={{ flex: 1 }} />
-                        <button className="btn" style={{ background: '#e5e7eb', fontSize: 13, padding: '6px 12px' }} onClick={() => setShowHint(v => !v)}>{showHint ? 'Hide' : 'Show'}</button>
+                        {can('secrets') && (
+                            <button className="btn" style={{ background: '#e5e7eb', fontSize: 13, padding: '6px 12px' }} onClick={toggleHint}>{showHint ? 'Hide' : 'Show'}</button>
+                        )}
                     </div>
+                    {secretError && <small style={{ color: '#b91c1c' }}>{secretError}</small>}
                 </Field>
                 <Field label="Timeout (ms)"><input type="number" min="100" value={timeout} onChange={e => setTimeoutMs(Number(e.target.value))} /></Field>
             </div>
@@ -1080,6 +1100,7 @@ function RadiusSection({ routerId, online, status, cfg, expanded, onToggle, onAp
             )}
             <ApplyLog commands={s.log} error={s.error} />
             <TerminalPanel lines={terminal} />
+            {gate.reason && <PinPrompt reason={gate.reason} onCancel={gate.cancel} onUnlocked={gate.unlocked} />}
         </SectionCard>
     );
 }

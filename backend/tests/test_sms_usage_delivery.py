@@ -11,7 +11,7 @@ import pytest
 
 from src.app import app
 from src.db.base import get_db
-from src.middleware.auth import get_admin_tenant_context
+from src.middleware.auth import get_admin_tenant_context, get_current_user
 from src.modules.billing.routes import _delivery
 
 ACCEPTED = datetime(2026, 10, 5, 14, 6, 22, tzinfo=timezone.utc)
@@ -85,6 +85,9 @@ async def test_endpoint_returns_delivery_per_record():
 
     app.dependency_overrides[get_db] = _get_db
     app.dependency_overrides[get_admin_tenant_context] = lambda: types.SimpleNamespace(isp_operator_id=op)
+    # require_perm resolves the caller through get_current_user.
+    app.dependency_overrides[get_current_user] = lambda: types.SimpleNamespace(
+        id=uuid.uuid4(), isp_operator_id=op, role="superadmin", email="su@example.test")
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="https://ip-admin.example.test") as client:
@@ -92,6 +95,7 @@ async def test_endpoint_returns_delivery_per_record():
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_admin_tenant_context, None)
+        app.dependency_overrides.pop(get_current_user, None)
     assert res.status_code == 200
     first, second = res.json()["records"]
     assert first["delivery"]["state"] == "delivered" and first["delivery"]["network_delay_seconds"] == 3252

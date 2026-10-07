@@ -55,6 +55,7 @@ from src.middleware.auth import (
     require_recent_pin,
 )
 from src.middleware.rate_limit import enforce_rate_limit
+from src.middleware.permissions import SELF, permissions_for, require_perm
 from src.modules.admin_accounts import lockout, otp as otp_service
 from src.modules.admin_accounts.access import admin_may_sign_in
 from src.modules.admin_accounts.notifications import OTP_TTL_MINUTES, send_otp_sms
@@ -177,7 +178,7 @@ def _require_onboarding(admin: AdminUser) -> None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Your phone is already verified. Choose a new password.")
 
 
-@router.get("/onboarding/status")
+@router.get("/onboarding/status", dependencies=[Depends(require_perm(SELF, onboarding=True))])
 async def onboarding_status(admin: AdminUser = Depends(get_authenticated_admin)):
     return {
         "mode": _setup_mode(admin),  # "onboarding" | "change_password" | None
@@ -192,7 +193,7 @@ async def onboarding_status(admin: AdminUser = Depends(get_authenticated_admin))
     }
 
 
-@router.post("/onboarding/phone")
+@router.post("/onboarding/phone", dependencies=[Depends(require_perm(SELF, onboarding=True))])
 async def onboarding_send_code(
     body: OnboardingPhoneRequest,
     request: Request,
@@ -222,7 +223,7 @@ async def onboarding_send_code(
     return {"status": "sent", "phone": mask_phone(phone), "expires_in_seconds": OTP_TTL_MINUTES * 60}
 
 
-@router.post("/onboarding/otp/verify")
+@router.post("/onboarding/otp/verify", dependencies=[Depends(require_perm(SELF, onboarding=True))])
 async def onboarding_verify_code(
     body: OtpVerifyRequest,
     request: Request,
@@ -243,7 +244,7 @@ async def onboarding_verify_code(
     return {"status": "verified", "phone": mask_phone(admin.phone)}
 
 
-@router.post("/onboarding/password")
+@router.post("/onboarding/password", dependencies=[Depends(require_perm(SELF, onboarding=True))])
 async def onboarding_set_password(
     body: OnboardingPasswordRequest,
     request: Request,
@@ -284,7 +285,7 @@ class ChangePasswordRequest(BaseModel):
     confirm_password: str = Field(max_length=256)
 
 
-@router.post("/me/password", response_model=TokenResponse)
+@router.post("/me/password", response_model=TokenResponse, dependencies=[Depends(require_perm(SELF))])
 async def change_my_password(
     body: ChangePasswordRequest,
     request: Request,
@@ -600,7 +601,7 @@ def _attempts_remaining(admin: AdminUser) -> int:
     return max(0, lockout.PIN_MAX_ATTEMPTS - int(admin.pin_attempt_count or 0))
 
 
-@router.post("/me/pin", dependencies=[Depends(audit.audited)])
+@router.post("/me/pin", dependencies=[Depends(require_perm(SELF)), Depends(audit.audited)])
 async def set_my_pin(
     body: SetPinRequest,
     request: Request,
@@ -656,7 +657,7 @@ async def set_my_pin(
     return {"status": "saved", "verified_until": until.isoformat()}
 
 
-@router.post("/me/pin/verify", dependencies=[Depends(audit.audited)])
+@router.post("/me/pin/verify", dependencies=[Depends(require_perm(SELF)), Depends(audit.audited)])
 async def verify_my_pin(
     body: VerifyPinRequest,
     request: Request,
@@ -693,7 +694,7 @@ async def verify_my_pin(
     return {"status": "verified", "verified_until": until.isoformat()}
 
 
-@router.post("/me/pin/forgot")
+@router.post("/me/pin/forgot", dependencies=[Depends(require_perm(SELF))])
 async def forgot_my_pin(
     request: Request,
     admin: AdminUser = Depends(get_current_user),
@@ -729,7 +730,7 @@ async def forgot_my_pin(
     return {"status": "sent", "phone": mask_phone(admin.phone), "expires_in_seconds": OTP_TTL_MINUTES * 60}
 
 
-@router.post("/me/pin/reset", dependencies=[Depends(audit.audited)])
+@router.post("/me/pin/reset", dependencies=[Depends(require_perm(SELF)), Depends(audit.audited)])
 async def reset_my_pin(
     body: ResetPinRequest,
     request: Request,
@@ -844,7 +845,20 @@ async def _notify_old_number(old_phone: str, admin_id) -> None:
         logger.error("admin_phone_change_notice_failed admin_id=%s error=%s", admin_id, exc)
 
 
-@router.get("/me/security")
+@router.get("/me", dependencies=[Depends(require_perm(SELF))])
+async def who_am_i(admin: AdminUser = Depends(get_current_user)):
+    """The signed-in admin's role and permissions. The SPA hides navigation
+    with these; every route still checks its own permission server-side."""
+    return {
+        "id": str(admin.id),
+        "email": admin.email,
+        "role": admin.role,
+        "permissions": sorted(permissions_for(admin.role)),
+        "has_pin": bool(admin.pin_hash),
+    }
+
+
+@router.get("/me/security", dependencies=[Depends(require_perm(SELF))])
 async def my_security_status(
     admin: AdminUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -872,7 +886,7 @@ async def my_security_status(
     }
 
 
-@router.post("/me/phone", dependencies=[Depends(require_recent_pin)])
+@router.post("/me/phone", dependencies=[Depends(require_perm(SELF)), Depends(require_recent_pin)])
 async def request_phone_change(
     body: PhoneChangeRequest,
     request: Request,
@@ -920,7 +934,7 @@ async def request_phone_change(
     }
 
 
-@router.post("/me/phone/verify", dependencies=[Depends(audit.audited), Depends(require_recent_pin)])
+@router.post("/me/phone/verify", dependencies=[Depends(require_perm(SELF)), Depends(audit.audited), Depends(require_recent_pin)])
 async def verify_phone_change(
     body: OtpVerifyRequest,
     request: Request,
@@ -980,7 +994,7 @@ async def verify_phone_change(
     }
 
 
-@router.post("/me/security-question", dependencies=[Depends(audit.audited), Depends(require_recent_pin)])
+@router.post("/me/security-question", dependencies=[Depends(require_perm(SELF)), Depends(audit.audited), Depends(require_recent_pin)])
 async def change_my_security_question(
     body: ChangeSecurityQuestionRequest,
     request: Request,

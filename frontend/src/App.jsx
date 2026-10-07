@@ -1,4 +1,4 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useState, useContext, useEffect, useMemo } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Onboarding from './pages/Onboarding';
@@ -16,6 +16,7 @@ import SMSCredentials from './pages/SMSCredentials';
 import Branding from './pages/Branding';
 import Billing from './pages/Billing';
 import Security from './pages/Security';
+import Users from './pages/Users';
 import Sidebar from './components/Sidebar';
 import SuspensionBanner from './components/SuspensionBanner';
 import { signOutEverywhere } from './signOut';
@@ -26,6 +27,15 @@ const AuthContext = createContext(null);
 
 export function useAuth() {
     return useContext(AuthContext);
+}
+
+// The signed-in admin's role and permissions, from GET /auth/me. Only used to
+// hide what would 403 anyway: every route still checks its own permission on
+// the server (src/middleware/permissions.py), which is the authority.
+const PermissionsContext = createContext({ me: null, can: () => false });
+
+export function usePermissions() {
+    return useContext(PermissionsContext);
 }
 
 // Thrown for any non-2xx response (other than the 401 redirect case). Carries
@@ -130,6 +140,76 @@ function ProtectedRoute({ children }) {
     return token ? children : <Navigate to="/login" />;
 }
 
+// A page the role can't use goes back to the dashboard rather than rendering
+// a screen of 403s. `perm` may be a list: any one of them is enough.
+function RequirePerm({ perm, children }) {
+    const { can } = usePermissions();
+    const ok = Array.isArray(perm) ? perm.some(can) : can(perm);
+    return ok ? children : <Navigate to="/" replace />;
+}
+
+// Everything behind sign-in. Loads /auth/me here, not in App: the onboarding
+// page sits outside the shell, and /auth/me (like every other route) answers a
+// temp-password account with the onboarding redirect.
+function AdminShell() {
+    const { logout } = useAuth();
+    const [me, setMe] = useState(null);
+    const [error, setError] = useState('');
+
+    useEffect(() => {
+        apiCall('/auth/me').then(setMe).catch((e) => setError(e.message || 'Could not load your account.'));
+    }, []);
+
+    const perms = useMemo(() => {
+        const set = new Set(me?.permissions || []);
+        return { me, can: (p) => set.has(p) };
+    }, [me]);
+
+    if (error) {
+        return (
+            <div style={{ padding: 24 }}>
+                <p style={{ color: '#b91c1c', marginBottom: 12 }}>{error}</p>
+                <button className="btn" onClick={() => window.location.reload()}>Try again</button>{' '}
+                <button className="btn" onClick={logout}>Sign out</button>
+            </div>
+        );
+    }
+    if (!me) return <p style={{ padding: 24 }}>Loading...</p>;
+
+    return (
+        <PermissionsContext.Provider value={perms}>
+            <div style={{ display: 'flex', minHeight: '100vh' }}>
+                <Sidebar />
+                <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
+                    {/* Above the router, so it persists across every
+                        admin page rather than remounting per route. */}
+                    <SuspensionBanner />
+                    <Routes>
+                        <Route path="/" element={<Dashboard />} />
+                        <Route path="/analytics" element={<RequirePerm perm="read"><Analytics /></RequirePerm>} />
+                        <Route path="/towns-sites" element={<RequirePerm perm="read"><TownsSites /></RequirePerm>} />
+                        <Route path="/routers" element={<RequirePerm perm="read"><Routers /></RequirePerm>} />
+                        <Route path="/plans" element={<RequirePerm perm="read"><Plans /></RequirePerm>} />
+                        <Route path="/vouchers" element={<RequirePerm perm="read"><Vouchers /></RequirePerm>} />
+                        <Route path="/vouchers/print" element={<RequirePerm perm="vouchers.operate"><VoucherPrint /></RequirePerm>} />
+                        <Route path="/sessions" element={<RequirePerm perm="read"><Sessions /></RequirePerm>} />
+                        <Route path="/payment-credentials" element={<RequirePerm perm="secrets"><PaymentCredentials /></RequirePerm>} />
+                        <Route path="/sms-credentials" element={<RequirePerm perm={['secrets', 'config']}><SMSCredentials /></RequirePerm>} />
+                        <Route path="/branding" element={<RequirePerm perm="config"><Branding /></RequirePerm>} />
+                        <Route path="/billing" element={<RequirePerm perm="billing.read"><Billing /></RequirePerm>} />
+                        <Route path="/users" element={<RequirePerm perm="users"><Users /></RequirePerm>} />
+                        <Route path="/security" element={<Security />} />
+                        {/* The password form lived here before it became
+                            a tab; bookmarks and older links still work. */}
+                        <Route path="/change-password" element={<Navigate to="/security?tab=password" replace />} />
+                        <Route path="*" element={<Navigate to="/" />} />
+                    </Routes>
+                </div>
+            </div>
+        </PermissionsContext.Provider>
+    );
+}
+
 export default function App() {
     const [user, setUser] = useState(null);
 
@@ -167,40 +247,7 @@ export default function App() {
                     <Route path="/login" element={<Login />} />
                     <Route path="/forgot-password" element={<ForgotPassword />} />
                     <Route path="/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
-                    <Route
-                        path="/*"
-                        element={
-                            <ProtectedRoute>
-                                <div style={{ display: 'flex', minHeight: '100vh' }}>
-                                    <Sidebar />
-                                    <div style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
-                                        {/* Above the router, so it persists across every
-                                            admin page rather than remounting per route. */}
-                                        <SuspensionBanner />
-                                        <Routes>
-                                            <Route path="/" element={<Dashboard />} />
-                                            <Route path="/analytics" element={<Analytics />} />
-                                            <Route path="/towns-sites" element={<TownsSites />} />
-                                            <Route path="/routers" element={<Routers />} />
-                                            <Route path="/plans" element={<Plans />} />
-                                            <Route path="/vouchers" element={<Vouchers />} />
-                                            <Route path="/vouchers/print" element={<VoucherPrint />} />
-                                            <Route path="/sessions" element={<Sessions />} />
-                                            <Route path="/payment-credentials" element={<PaymentCredentials />} />
-                                            <Route path="/sms-credentials" element={<SMSCredentials />} />
-                                            <Route path="/branding" element={<Branding />} />
-                                            <Route path="/billing" element={<Billing />} />
-                                            <Route path="/security" element={<Security />} />
-                                            {/* The password form lived here before it became
-                                                a tab; bookmarks and older links still work. */}
-                                            <Route path="/change-password" element={<Navigate to="/security?tab=password" replace />} />
-                                            <Route path="*" element={<Navigate to="/" />} />
-                                        </Routes>
-                                    </div>
-                                </div>
-                            </ProtectedRoute>
-                        }
-                    />
+                    <Route path="/*" element={<ProtectedRoute><AdminShell /></ProtectedRoute>} />
                 </Routes>
             </BrowserRouter>
         </AuthContext.Provider>

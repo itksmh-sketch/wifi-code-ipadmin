@@ -50,7 +50,7 @@ class DevicePolicy(str, Enum):
 class AdminRole(str, Enum):
     superadmin = "superadmin"
     admin = "admin"
-    viewer = "viewer"
+    staff = "staff"
 
 
 # --- Shared response ---
@@ -565,6 +565,25 @@ class PlatformAdminCreate(BaseModel):
     @classmethod
     def _phone(cls, v: str) -> str:
         return normalize_ghana_phone(v)
+
+
+# ── Operator user management (/admin/users, superadmin only) ──────────────────
+# An operator can only ever hand out admin or staff; superadmin is the
+# platform's to grant. Unknown fields are ignored, so an isp_operator_id in the
+# body changes nothing: the tenant always comes from the caller's token.
+OperatorUserRole = Literal["admin", "staff"]
+
+
+class OperatorUserCreate(PlatformAdminCreate):
+    role: OperatorUserRole
+
+
+class OperatorUserRoleUpdate(BaseModel):
+    role: OperatorUserRole
+
+
+class OperatorUserAccessChange(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class PlatformAdminPasswordReset(BaseModel):

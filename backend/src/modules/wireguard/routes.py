@@ -17,6 +17,7 @@ from src.config import get_settings
 from src.db.base import get_db
 from src.db.models import PlatformOwner, Router
 from src.middleware.auth import TenantContext, get_admin_tenant_context, get_platform_owner_context, require_active_operator
+from src.middleware.permissions import CONFIG, READ, require_perm
 from src.modules.platform.settings_service import get_setting
 from src.modules.wireguard.keys import generate_wireguard_keypair
 from src.modules.wireguard.service import WireGuardError, WireGuardService
@@ -46,7 +47,7 @@ async def _load_router(db: AsyncSession, router_id: uuid.UUID, tenant: TenantCon
     return router_row
 
 
-@router.post("/routers/{router_id}/wireguard/setup")
+@router.post("/routers/{router_id}/wireguard/setup", dependencies=[Depends(require_perm(CONFIG))])
 async def setup_wireguard(
     router_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -93,7 +94,7 @@ async def setup_wireguard(
     }
 
 
-@router.get("/routers/{router_id}/wireguard/status")
+@router.get("/routers/{router_id}/wireguard/status", dependencies=[Depends(require_perm(READ))])
 async def wireguard_status(
     router_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -141,7 +142,7 @@ async def wireguard_status(
         }
 
 
-@router.delete("/routers/{router_id}/wireguard", status_code=200)
+@router.delete("/routers/{router_id}/wireguard", status_code=200, dependencies=[Depends(require_perm(CONFIG))])
 async def remove_wireguard(
     router_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

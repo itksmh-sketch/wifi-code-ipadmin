@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
 from src.db.models import Router, Site
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
+from src.middleware.permissions import CONFIG, READ, require_perm
 from src.schemas import ErrorResponse, RouterCreate, RouterResponse, RouterUpdate
 from src.utils.encryption import decrypt_secret, encrypt_secret
 from src.utils.freeradius_reload import reload_freeradius_clients
@@ -16,7 +17,7 @@ from src.utils.freeradius_reload import reload_freeradius_clients
 router = APIRouter(prefix="/sites", tags=["routers"])
 
 
-@router.get("/{site_id}/routers", response_model=List[RouterResponse])
+@router.get("/{site_id}/routers", response_model=List[RouterResponse], dependencies=[Depends(require_perm(READ))])
 async def list_routers(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     result = await db.execute(
         select(Router).where(Router.site_id == site_id, Router.isp_operator_id == tenant.isp_operator_id).order_by(Router.name)
@@ -31,7 +32,7 @@ async def list_routers(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), t
     return routers
 
 
-@router.post("/{site_id}/routers", response_model=RouterResponse, status_code=201, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}})
+@router.post("/{site_id}/routers", response_model=RouterResponse, status_code=201, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
 async def create_router(site_id: uuid.UUID, body: RouterCreate, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     site_result = await db.execute(select(Site).where(Site.id == site_id, Site.isp_operator_id == tenant.isp_operator_id))
     if not site_result.scalar_one_or_none():
@@ -64,7 +65,7 @@ async def create_router(site_id: uuid.UUID, body: RouterCreate, db: AsyncSession
     return r
 
 
-@router.put("/routers/{router_id}", response_model=RouterResponse, responses={404: {"model": ErrorResponse}})
+@router.put("/routers/{router_id}", response_model=RouterResponse, responses={404: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
 async def update_router(router_id: uuid.UUID, body: RouterUpdate, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     result = await db.execute(select(Router).where(Router.id == router_id, Router.isp_operator_id == tenant.isp_operator_id))
     r = result.scalar_one_or_none()
