@@ -49,6 +49,17 @@ AUDITED = {
     ("PATCH", "/api/v1/admin/users/{user_id}"),
     ("POST", "/api/v1/admin/users/{user_id}/disable"),
     ("POST", "/api/v1/admin/users/{user_id}/enable"),
+    # P4 batch 1: vouchers, plans
+    ("POST", "/api/v1/plans"),
+    ("DELETE", "/api/v1/plans/{plan_id}"),
+    ("PATCH", "/api/v1/plans/{plan_id}"),
+    ("PUT", "/api/v1/plans/{plan_id}"),
+    ("POST", "/api/v1/plans/{plan_id}/activate"),
+    ("POST", "/api/v1/plans/{plan_id}/deactivate"),
+    ("POST", "/api/v1/vouchers/generate"),
+    ("POST", "/api/v1/vouchers/print-batch/confirm"),
+    ("PUT", "/api/v1/vouchers/{voucher_id}/disable"),
+    ("PUT", "/api/v1/vouchers/{voucher_id}/reactivate"),
 }
 
 # Change nothing worth a row: token renewal, previews, and a check that only
@@ -75,7 +86,7 @@ PENDING = {
     ("POST", "/api/v1/auth/reset/security-question"),
     ("POST", "/api/v1/auth/reset/set-password"),
     ("POST", "/api/v1/auth/reset/verify-otp"),
-    # Catalogue and configuration (plans, vouchers, towns/sites, branding, resellers, templates)
+    # Catalogue and configuration (towns/sites, branding, resellers, templates)
     ("PUT", "/api/v1/admin/branding"),
     ("POST", "/api/v1/admin/branding/logo"),
     ("POST", "/api/v1/admin/commission-rules"),
@@ -87,22 +98,12 @@ PENDING = {
     ("POST", "/api/v1/admin/resellers"),
     ("PUT", "/api/v1/admin/resellers/{reseller_id}"),
     ("PUT", "/api/v1/admin/resellers/{reseller_id}/topup"),
-    ("POST", "/api/v1/plans"),
-    ("DELETE", "/api/v1/plans/{plan_id}"),
-    ("PATCH", "/api/v1/plans/{plan_id}"),
-    ("PUT", "/api/v1/plans/{plan_id}"),
-    ("POST", "/api/v1/plans/{plan_id}/activate"),
-    ("POST", "/api/v1/plans/{plan_id}/deactivate"),
     ("PUT", "/api/v1/sites/routers/{router_id}"),
     ("POST", "/api/v1/sites/{site_id}/routers"),
     ("PUT", "/api/v1/sms-template/voucher"),
     ("POST", "/api/v1/towns"),
     ("PUT", "/api/v1/towns/{town_id}"),
     ("POST", "/api/v1/towns/{town_id}/sites"),
-    ("POST", "/api/v1/vouchers/generate"),
-    ("POST", "/api/v1/vouchers/print-batch/confirm"),
-    ("PUT", "/api/v1/vouchers/{voucher_id}/disable"),
-    ("PUT", "/api/v1/vouchers/{voucher_id}/reactivate"),
     # Routers
     ("POST", "/api/v1/admin/routers/onboard"),
     ("POST", "/api/v1/admin/routers/temp-interfaces"),

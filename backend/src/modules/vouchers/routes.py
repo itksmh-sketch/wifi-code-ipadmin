@@ -13,6 +13,7 @@ from src.schemas import (
 )
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
 from src.middleware.permissions import READ, VOUCHERS_GENERATE, VOUCHERS_OPERATE, require_perm
+from src.modules import audit
 from src.modules.vouchers.engine import disable_voucher_with_disconnect, generate_vouchers, restore_voucher_status
 from typing import List, Optional
 import uuid
@@ -66,7 +67,7 @@ async def list_vouchers(
     return VoucherListResponse(vouchers=vouchers, total=total)
 
 
-@router.post("/generate", response_model=List[VoucherResponse], status_code=201, responses={400: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(VOUCHERS_GENERATE))])
+@router.post("/generate", response_model=List[VoucherResponse], status_code=201, responses={400: {"model": ErrorResponse}}, dependencies=[Depends(audit.audited), Depends(require_perm(VOUCHERS_GENERATE))])
 async def generate_voucher_batch(
     body: VoucherGenerate,
     db: AsyncSession = Depends(get_db),
@@ -153,7 +154,7 @@ async def get_print_batch(
     return PrintBatchResponse(plan=plan, vouchers=vouchers, available=available)
 
 
-@router.post("/print-batch/confirm", response_model=PrintConfirmResponse, dependencies=[Depends(require_perm(VOUCHERS_OPERATE))])
+@router.post("/print-batch/confirm", response_model=PrintConfirmResponse, dependencies=[Depends(audit.audited), Depends(require_perm(VOUCHERS_OPERATE))])
 async def confirm_print_batch(
     body: PrintConfirmRequest,
     db: AsyncSession = Depends(get_db),
@@ -176,6 +177,12 @@ async def confirm_print_batch(
             .returning(Voucher.id)
         )
     ).scalars().all()
+    if confirmed:
+        audit.record(
+            db, "voucher.print_confirm", target_type="voucher_print", target_id=None,
+            summary=f"Marked {len(confirmed)} voucher(s) as printed",
+            detail={"requested": len(requested), "confirmed": len(confirmed)},
+        )
     await db.commit()
 
     remaining = [vid for vid in requested if vid not in set(confirmed)]
@@ -213,7 +220,7 @@ async def get_voucher(
     return voucher
 
 
-@router.put("/{voucher_id}/disable", response_model=VoucherResponse, responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(VOUCHERS_OPERATE))])
+@router.put("/{voucher_id}/disable", response_model=VoucherResponse, responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}}, dependencies=[Depends(audit.audited), Depends(require_perm(VOUCHERS_OPERATE))])
 async def disable_voucher(
     voucher_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -228,7 +235,7 @@ async def disable_voucher(
         raise HTTPException(status_code=status_code, detail=detail)
 
 
-@router.put("/{voucher_id}/reactivate", response_model=VoucherResponse, responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(VOUCHERS_OPERATE))])
+@router.put("/{voucher_id}/reactivate", response_model=VoucherResponse, responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}}, dependencies=[Depends(audit.audited), Depends(require_perm(VOUCHERS_OPERATE))])
 async def reactivate_voucher(
     voucher_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),

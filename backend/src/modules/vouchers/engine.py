@@ -7,6 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import or_, select
 from src.db.models import Voucher, Plan, Site, Session, Router
 from src.schemas import VoucherStatus, VoucherGenerate
+from src.modules import audit
+from src.modules.audit.fields import VOUCHER
+from src.modules.audit.redact import mask_code
 from src.modules.mikrotik.access_revocation import revoke_voucher_access
 from src.radius.coa_events import create_pending_disconnect_event, send_disconnect_with_event
 
@@ -172,8 +175,14 @@ async def transition_voucher_status(
     voucher_id: uuid.UUID,
     new_status: str,
     isp_operator_id: uuid.UUID,
+    *,
+    commit: bool = True,
 ) -> Voucher:
-    """Transition a voucher to a new status with strict state machine validation."""
+    """Transition a voucher to a new status with strict state machine validation.
+
+    ``commit=False`` flushes instead, for a caller that adds its audit row to
+    the same transaction.
+    """
     result = await db.execute(select(Voucher).where(Voucher.id == voucher_id, Voucher.isp_operator_id == isp_operator_id))
     voucher = result.scalar_one_or_none()
     if not voucher:
@@ -194,6 +203,9 @@ async def transition_voucher_status(
         if plan and plan.duration_minutes is not None:
             voucher.expires_at = voucher.activated_at + timedelta(minutes=plan.duration_minutes)
 
+    if not commit:
+        await db.flush()
+        return voucher
     await db.commit()
     await db.refresh(voucher)
     return voucher
@@ -204,7 +216,12 @@ async def restore_voucher_status(
     voucher_id: uuid.UUID,
     isp_operator_id: uuid.UUID,
 ) -> Voucher:
-    """Re-enable a disabled voucher based on its activation and limit state."""
+    """Re-enable a disabled voucher based on its activation and limit state.
+
+    The three operator entry points (restore, disable, generate) write their
+    audit rows here, in the transaction that makes the change; the shared
+    transition above stays unaudited for the RADIUS and expiry paths.
+    """
     result = await db.execute(select(Voucher).where(Voucher.id == voucher_id, Voucher.isp_operator_id == isp_operator_id))
     voucher = result.scalar_one_or_none()
     if not voucher:
@@ -212,8 +229,24 @@ async def restore_voucher_status(
     if voucher.status != "disabled":
         raise ValueError(f"Invalid transition from '{voucher.status}' to restored state")
 
+    before = VOUCHER.snapshot(voucher)
+    voucher = await transition_voucher_status(
+        db, voucher_id, await _restored_status(db, voucher, isp_operator_id), isp_operator_id, commit=False
+    )
+    audit.record(
+        db, "voucher.reactivate", target_type="voucher", target_id=voucher.id,
+        summary=f"Reactivated voucher {mask_code(voucher.code)} ({voucher.status})",
+        changes=VOUCHER.diff(before, VOUCHER.snapshot(voucher)),
+        detail={"code_suffix": mask_code(voucher.code), "plan_id": voucher.plan_id, "batch_id": voucher.batch_id},
+    )
+    await db.commit()
+    await db.refresh(voucher)
+    return voucher
+
+
+async def _restored_status(db: AsyncSession, voucher: Voucher, isp_operator_id: uuid.UUID) -> str:
     if voucher.activated_at is None:
-        return await transition_voucher_status(db, voucher_id, "unused", isp_operator_id)
+        return "unused"
 
     now = datetime.now(timezone.utc)
     expires_at = voucher.expires_at
@@ -221,7 +254,7 @@ async def restore_voucher_status(
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if expires_at < now:
-            return await transition_voucher_status(db, voucher_id, "expired", isp_operator_id)
+            return "expired"
 
     plan_result = await db.execute(select(Plan).where(Plan.id == voucher.plan_id, Plan.isp_operator_id == isp_operator_id))
     plan = plan_result.scalar_one_or_none()
@@ -230,9 +263,9 @@ async def restore_voucher_status(
         and plan.data_limit_mb is not None
         and voucher.data_used_mb >= plan.data_limit_mb
     ):
-        return await transition_voucher_status(db, voucher_id, "exhausted", isp_operator_id)
+        return "exhausted"
 
-    return await transition_voucher_status(db, voucher_id, "active", isp_operator_id)
+    return "active"
 
 
 async def disable_voucher_with_disconnect(
@@ -253,7 +286,24 @@ async def disable_voucher_with_disconnect(
     )
     active_session = active_session_result.scalar_one_or_none()
 
-    voucher = await transition_voucher_status(db, voucher_id, "disabled", isp_operator_id)
+    voucher = (
+        await db.execute(select(Voucher).where(Voucher.id == voucher_id, Voucher.isp_operator_id == isp_operator_id))
+    ).scalar_one_or_none()
+    before = VOUCHER.snapshot(voucher)
+    voucher = await transition_voucher_status(db, voucher_id, "disabled", isp_operator_id, commit=False)
+    audit.record(
+        db, "voucher.disable", target_type="voucher", target_id=voucher.id,
+        summary=f"Disabled voucher {mask_code(voucher.code)}" + (" and disconnected its session" if active_session else ""),
+        changes=VOUCHER.diff(before, VOUCHER.snapshot(voucher)),
+        detail={
+            "code_suffix": mask_code(voucher.code), "plan_id": voucher.plan_id, "batch_id": voucher.batch_id,
+            "had_live_session": bool(active_session),
+        },
+    )
+    # Committed before the disconnect, as before: a client that reconnects at
+    # once must already be refused.
+    await db.commit()
+    await db.refresh(voucher)
 
     router = None
     if active_session:
@@ -346,6 +396,14 @@ async def generate_vouchers(
         db.add(voucher)
         vouchers.append(voucher)
 
+    audit.record(
+        db, "voucher.generate", target_type="voucher_batch", target_id=batch_id,
+        summary=f"Generated {body.quantity} voucher(s) for plan {plan.name}",
+        detail={
+            "plan_id": plan.id, "plan_name": plan.name, "quantity": body.quantity, "site_id": body.site_id,
+            "characters": code_length, "device_policy": body.device_policy.value,
+        },
+    )
     await db.commit()
     for v in vouchers:
         await db.refresh(v)

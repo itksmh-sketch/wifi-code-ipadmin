@@ -15,6 +15,8 @@ from src.db.models import (
 from src.schemas import PlanCreate, PlanResponse, ErrorResponse
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
 from src.middleware.permissions import CONFIG, READ, require_perm
+from src.modules import audit
+from src.modules.audit.fields import PLAN
 from src.modules.plans.dedup import DUPLICATE_PLAN_MESSAGE, SETTINGS_FIELDS, find_duplicate_plan
 from src.utils.payload import parse_update, reject_unknown_fields
 from fastapi import Body
@@ -27,6 +29,8 @@ logger = logging.getLogger("plans")
 
 router = APIRouter(prefix="/plans", tags=["plans"])
 
+_WRITE = [Depends(audit.audited), Depends(require_perm(CONFIG))]
+
 
 @router.get("", response_model=List[PlanResponse], dependencies=[Depends(require_perm(READ))])
 async def list_plans(db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
@@ -34,7 +38,7 @@ async def list_plans(db: AsyncSession = Depends(get_db), tenant: TenantContext =
     return result.scalars().all()
 
 
-@router.post("", response_model=PlanResponse, status_code=201, responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("", response_model=PlanResponse, status_code=201, responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}, dependencies=_WRITE)
 async def create_plan(body: PlanCreate, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     if body.type == "time" and body.duration_minutes is None:
         raise HTTPException(status_code=400, detail="duration_minutes is required for time-based plans")
@@ -77,12 +81,20 @@ async def create_plan(body: PlanCreate, db: AsyncSession = Depends(get_db), tena
         is_active=body.is_active,
     )
     db.add(plan)
+    # Snapshots read back from the database, so a row shows stored values
+    # (price "7.50", as on later edits) rather than what the request sent.
+    await db.flush()
+    await db.refresh(plan)
+    audit.record(
+        db, "plan.create", target_type="plan", target_id=plan.id,
+        summary=f"Created plan {plan.name}", changes=PLAN.diff(None, PLAN.snapshot(plan)),
+    )
     await db.commit()
     await db.refresh(plan)
     return plan
 
 
-@router.put("/{plan_id}", response_model=PlanResponse, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
+@router.put("/{plan_id}", response_model=PlanResponse, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}, dependencies=_WRITE)
 async def update_plan(
     plan_id: uuid.UUID,
     payload: dict = Body(...),
@@ -125,7 +137,7 @@ class PlanProfileUpdate(BaseModel):
         return cleaned
 
 
-@router.patch("/{plan_id}", response_model=PlanResponse, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
+@router.patch("/{plan_id}", response_model=PlanResponse, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}, dependencies=_WRITE)
 async def patch_plan(
     plan_id: uuid.UUID,
     payload: dict = Body(...),
@@ -169,8 +181,14 @@ async def _apply_plan_update(plan_id: uuid.UUID, payload: dict, db: AsyncSession
         if duplicate:
             raise HTTPException(status_code=409, detail=f'{DUPLICATE_PLAN_MESSAGE} ("{duplicate.name}")')
 
+    before = PLAN.snapshot(plan)
     for field, value in updates.items():
         setattr(plan, field, value)
+    await db.flush()
+    await db.refresh(plan)
+    changes = PLAN.diff(before, PLAN.snapshot(plan))
+    if changes:
+        audit.record(db, "plan.update", target_type="plan", target_id=plan.id, summary=f"Edited plan {plan.name}", changes=changes)
     await db.commit()
     await db.refresh(plan)
     logger.info(
@@ -231,7 +249,7 @@ async def _plan_history(db: AsyncSession, plan_id: uuid.UUID) -> dict[str, int]:
     return {key: value for key, value in found.items() if value}
 
 
-@router.delete("/{plan_id}", status_code=204, responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
+@router.delete("/{plan_id}", status_code=204, responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}}, dependencies=_WRITE)
 async def delete_plan(plan_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     """Delete a plan and the untouched vouchers it produced.
 
@@ -270,6 +288,11 @@ async def delete_plan(plan_id: uuid.UUID, db: AsyncSession = Depends(get_db), te
     )
     await db.execute(sql_delete(Voucher).where(Voucher.plan_id == plan_id))
     await db.execute(sql_delete(CommissionRule).where(CommissionRule.plan_id == plan_id))
+    audit.record(
+        db, "plan.delete", target_type="plan", target_id=plan.id, summary=f"Deleted plan {plan.name}",
+        changes=PLAN.diff(PLAN.snapshot(plan), None),
+        detail={"vouchers_deleted": vouchers_deleted, "commission_rules_deleted": rules_deleted},
+    )
     await db.delete(plan)
     await db.commit()
     logger.info(
@@ -278,13 +301,13 @@ async def delete_plan(plan_id: uuid.UUID, db: AsyncSession = Depends(get_db), te
     )
 
 
-@router.post("/{plan_id}/deactivate", response_model=PlanResponse, responses={404: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/{plan_id}/deactivate", response_model=PlanResponse, responses={404: {"model": ErrorResponse}}, dependencies=_WRITE)
 async def deactivate_plan(plan_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     """Stop selling this plan. Vouchers already issued from it keep working."""
     return await _set_plan_active(db, plan_id, tenant, active=False)
 
 
-@router.post("/{plan_id}/activate", response_model=PlanResponse, responses={404: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/{plan_id}/activate", response_model=PlanResponse, responses={404: {"model": ErrorResponse}}, dependencies=_WRITE)
 async def activate_plan(plan_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     return await _set_plan_active(db, plan_id, tenant, active=True)
 
@@ -294,7 +317,13 @@ async def _set_plan_active(db: AsyncSession, plan_id: uuid.UUID, tenant: TenantC
     plan = result.scalar_one_or_none()
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
-    plan.is_active = active
+    if plan.is_active != active:
+        plan.is_active = active
+        audit.record(
+            db, "plan.activate" if active else "plan.deactivate", target_type="plan", target_id=plan.id,
+            summary=f"{'Activated' if active else 'Deactivated'} plan {plan.name}",
+            changes=PLAN.diff({"is_active": not active}, {"is_active": active}),
+        )
     await db.commit()
     await db.refresh(plan)
     logger.info("plan_%s plan_id=%s operator_id=%s", "activated" if active else "deactivated", plan_id, tenant.isp_operator_id)

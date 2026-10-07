@@ -517,6 +517,7 @@ class OrderDb:
     def __init__(self, session_row, router_row):
         self.session_row, self.router_row = session_row, router_row
         self.commits = 0
+        self.added = []  # (object, commits so far)
 
     async def execute(self, statement):
         sql = str(statement)
@@ -529,10 +530,17 @@ class OrderDb:
     async def refresh(self, obj):
         pass
 
+    def add(self, obj):
+        self.added.append((obj, self.commits))
+
+    async def flush(self):
+        pass
+
 
 def _patch_order(monkeypatch, module, calls):
-    async def fake_transition(db, voucher_id, status, isp_operator_id):
-        return SimpleNamespace(id=voucher_id, isp_operator_id=isp_operator_id, code="C", username="U")
+    async def fake_transition(db, voucher_id, status, isp_operator_id, **kw):
+        return SimpleNamespace(id=voucher_id, isp_operator_id=isp_operator_id, code="C", username="U",
+                               status=status, printed_at=None, plan_id=None, batch_id=None)
 
     async def fake_event(db, **kw):
         calls.append("event")
@@ -566,6 +574,10 @@ async def test_disable_sends_coa_before_router_cleanup(monkeypatch, has_session)
 
     # Untracked client (no session row) still gets the router-side cleanup.
     assert calls == (["event", "coa", "revoke"] if has_session else ["revoke"])
+    # The audit row joins the status change's commit, the first one, which
+    # happens before the disconnect.
+    [(row, commits_before)] = db.added
+    assert (row.action, commits_before) == ("voucher.disable", 0)
 
 
 @pytest.mark.asyncio

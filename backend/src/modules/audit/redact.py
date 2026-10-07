@@ -12,6 +12,10 @@ Two rules, and the second always wins:
 
 Over-matching is deliberate: a voucher code or a WireGuard public key shows as
 "[redacted]", which costs a little readability and nothing else.
+
+One exception, by exact key and exact shape: ``code_suffix`` passes when its
+value is what ``mask_code`` makes ("…NV9W"), so a single-voucher row can say
+which voucher it was. Anything else under that key is still redacted.
 """
 from __future__ import annotations
 
@@ -35,6 +39,10 @@ SECRET_NAME_PARTS = frozenset({
     "encrypted", "ciphertext",
 })
 
+CODE_SUFFIX_KEY = "code_suffix"
+CODE_SUFFIX_LEN = 4
+_MASKED_RE = re.compile(r"^…[A-Za-z0-9]{0,%d}$" % CODE_SUFFIX_LEN)
+
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
@@ -42,6 +50,19 @@ _SPLIT_RE = re.compile(r"[^a-z0-9]+")
 def is_secret_name(name: str) -> bool:
     parts = _SPLIT_RE.split(_CAMEL_RE.sub("_", str(name)).lower())
     return any(part in SECRET_NAME_PARTS for part in parts)
+
+
+def mask_code(code: str | None) -> str:
+    """The last few characters of a voucher code, for telling vouchers apart
+    in a row: "…NV9W". Never more."""
+    chars = re.sub(r"[^A-Za-z0-9]", "", code or "")
+    return "…" + chars[-CODE_SUFFIX_LEN:]
+
+
+def _redacted_value(key: Any, value: Any) -> bool:
+    if key == CODE_SUFFIX_KEY:
+        return not (isinstance(value, str) and _MASKED_RE.match(value))
+    return is_secret_name(key)
 
 
 def jsonable(value: Any) -> Any:
@@ -64,7 +85,7 @@ def redact_detail(value: Any, _depth: int = 0) -> Any:
         return REDACTED
     if isinstance(value, Mapping):
         return {
-            str(k): (REDACTED if is_secret_name(k) else redact_detail(v, _depth + 1))
+            str(k): (REDACTED if _redacted_value(k, v) else redact_detail(v, _depth + 1))
             for k, v in value.items()
         }
     if isinstance(value, (list, tuple, set, frozenset)):

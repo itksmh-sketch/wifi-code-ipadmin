@@ -11,6 +11,7 @@ from src.modules.audit.context import (
     current_actor,
     current_request_info,
 )
+from src.modules.audit import fields
 from src.modules.audit.redact import diff, snapshot
 from src.modules.audit.service import record, record_detached
 
@@ -25,6 +26,7 @@ __all__ = [
     "current_actor",
     "current_request_info",
     "diff",
+    "fields",
     "record",
     "record_detached",
     "snapshot",
