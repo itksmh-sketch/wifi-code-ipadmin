@@ -40,6 +40,33 @@ def dump_credentials(values: dict) -> str:
     return encrypt_secret(json.dumps(values, sort_keys=True, separators=(",", ":")))
 
 
+def secret_field_names(entry: ProviderCatalogEntry | None) -> set[str]:
+    """The fields the catalog marks secret."""
+    if entry is None:
+        return set()
+    return {f["name"] for f in (entry.credential_schema or {}).get("fields", []) if f.get("secret")}
+
+
+def try_load_credentials(row) -> dict | None:
+    """``load_credentials`` for an audit comparison: None if the blob can't be read."""
+    if row is None:
+        return None
+    try:
+        return load_credentials(row)
+    except Exception:
+        return None
+
+
+async def operator_credential_values(db: AsyncSession, model, operator_id) -> list[str]:
+    """Every stored credential value of an operator in one table, for
+    ``audit.redact.scrub``: a provider error may echo any of them."""
+    rows = (await db.execute(select(model).where(model.isp_operator_id == operator_id))).scalars().all()
+    values: list[str] = []
+    for row in rows:
+        values += [str(v) for v in (try_load_credentials(row) or {}).values() if v]
+    return values
+
+
 def mask(value: str | None) -> str | None:
     if not value:
         return None

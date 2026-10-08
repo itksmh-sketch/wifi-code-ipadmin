@@ -124,18 +124,54 @@ def diff(
     return changes or None
 
 
+# A run this long copied out of a secret is redacted even when the rest of the
+# secret isn't there: a provider may quote only the start of a key it rejects.
+FRAGMENT_MIN = 8
+_SCRUB_SCAN_MAX = 20_000
+# Payment-provider key shapes, redacted whoever's key they are.
+_KEY_SHAPED_RE = re.compile(
+    r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]+|\bFLW(?:SECK|PUBK)(?:_TEST)?-[A-Za-z0-9-]+"
+)
+
+
 def scrub(text: Any, secrets: Iterable[str | None] = ()) -> str | None:
     """An error message fit for a row: every secret value used in the call is
     replaced, then the text is capped.
 
     Name-based redaction can't see inside free text, and a router or provider
-    may echo back what it was sent (a RADIUS secret in a rejected command).
-    Scrubbing comes before the cap, so a secret cut at the limit can't leave a
-    prefix behind; longest first, so one secret inside another goes whole.
+    may echo back what it was sent (a RADIUS secret in a rejected command, a
+    Paystack key in "Invalid key"). Three passes, all before the cap, so a
+    secret cut at the limit can't leave a prefix behind:
+
+    1. each whole secret, longest first, so one secret inside another goes whole;
+    2. any run of FRAGMENT_MIN or more characters copied out of a secret;
+    3. anything shaped like a payment-provider key.
     """
     if text is None:
         return None
-    text = str(text)
-    for secret in sorted({s for s in secrets if s}, key=len, reverse=True):
+    text = str(text)[:_SCRUB_SCAN_MAX]
+    values = sorted({str(s) for s in secrets if s}, key=len, reverse=True)
+    for secret in values:
         text = text.replace(secret, REDACTED)
+    text = _scrub_fragments(text, [s for s in values if len(s) >= FRAGMENT_MIN])
+    text = _KEY_SHAPED_RE.sub(REDACTED, text)
     return jsonable(text)
+
+
+def _scrub_fragments(text: str, secrets: list[str]) -> str:
+    if not secrets:
+        return text
+    grams = {s[i:i + FRAGMENT_MIN] for s in secrets for i in range(len(s) - FRAGMENT_MIN + 1)}
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i:i + FRAGMENT_MIN] in grams:
+            end = i + FRAGMENT_MIN
+            while end < len(text) and any(text[i:end + 1] in s for s in secrets):
+                end += 1
+            out.append(REDACTED)
+            i = end
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)

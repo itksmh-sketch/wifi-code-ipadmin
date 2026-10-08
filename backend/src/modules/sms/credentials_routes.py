@@ -23,6 +23,7 @@ from src.db.base import get_db
 from src.db.models import OperatorSMSCredential, ProviderCatalogEntry
 from src.middleware.auth import TenantContext, require_active_operator, require_recent_pin
 from src.middleware.permissions import SECRETS, require_perm
+from src.modules import audit
 from src.modules.credentials.router import make_credentials_router
 from src.modules.credentials.service import build_view, deactivate_others, dump_credentials
 from src.modules.sms.providers.registry import build_sms_provider
@@ -47,7 +48,7 @@ PLATFORM_GATEWAY_PROVIDER_KEY = "arkesel_platform"
 @router.post(
     "/activate-platform",
     response_model=CredentialsView,
-    dependencies=[Depends(require_perm(SECRETS)), Depends(require_recent_pin)],
+    dependencies=[Depends(audit.audited), Depends(require_perm(SECRETS)), Depends(require_recent_pin)],
 )
 async def activate_platform_gateway(
     db: AsyncSession = Depends(get_db),
@@ -87,6 +88,7 @@ async def activate_platform_gateway(
             )
         )
     ).scalar_one_or_none()
+    was_active = bool(row.is_active) if row is not None else False
     if row is None:
         row = OperatorSMSCredential(
             isp_operator_id=tenant.isp_operator_id,
@@ -97,7 +99,25 @@ async def activate_platform_gateway(
         db.add(row)
         await db.flush()
 
+    switched_off = list(
+        (
+            await db.execute(
+                select(OperatorSMSCredential.provider).where(
+                    OperatorSMSCredential.isp_operator_id == tenant.isp_operator_id,
+                    OperatorSMSCredential.id != row.id,
+                    OperatorSMSCredential.is_active == True,  # noqa: E712
+                )
+            )
+        ).scalars().all()
+    )
     await deactivate_others(db, OperatorSMSCredential, tenant.isp_operator_id, row.id)
     row.is_active = True
+    if not was_active or switched_off:
+        audit.record(
+            db, "sms_credentials.activate", target_type="sms_provider", target_id=PLATFORM_GATEWAY_PROVIDER_KEY,
+            summary="Switched SMS to the platform gateway",
+            changes={"is_active": {"before": was_active, "after": True}} if not was_active else None,
+            detail={"provider": PLATFORM_GATEWAY_PROVIDER_KEY, "is_active": True, "deactivated": switched_off},
+        )
     await db.commit()
     return await build_view(db, category="sms", model=OperatorSMSCredential, operator_id=tenant.isp_operator_id)

@@ -80,3 +80,20 @@ def test_code_suffix_passes_when_masked_and_only_under_that_key():
 
     row = build("x", detail={"code_suffix": "…NV9W", "voucher_code": "…NV9W", "nested": {"code_suffix": "…AB12"}})
     assert row.detail == {"code_suffix": "…NV9W", "voucher_code": REDACTED, "nested": {"code_suffix": "…AB12"}}
+
+
+def test_credential_diff_shows_only_plain_identifiers_and_only_what_changed():
+    from src.modules.audit.fields import credential_diff
+    from src.modules.audit.service import build
+
+    before = {"api_key": "AK-old-1234567", "username": "op", "from": "WIFI", "client_id": "cid-1"}
+    after = {"api_key": "AK-new-7654321", "username": "op", "from": "WIFI2", "client_id": "cid-2"}
+    changes = build("x", changes=credential_diff(before, after, secret_fields={"api_key"})).changes
+    assert changes == {"api_key": "[redacted]", "from": {"before": "WIFI", "after": "WIFI2"}, "client_id": "changed"}
+    # Same values: nothing to say, secrets included.
+    assert credential_diff(before, dict(before), secret_fields={"api_key"}) is None
+    # A secret field the catalog marks secret is redacted whatever its name.
+    assert credential_diff({"passphrase": "a"}, {"passphrase": "b"}, secret_fields={"passphrase"}) == {"passphrase": "[redacted]"}
+    # public_key is not catalog-secret, but a row never carries a key.
+    built = build("x", changes=credential_diff({"public_key": "pk_live_1"}, {"public_key": "pk_live_2"})).changes
+    assert built == {"public_key": "[redacted]"}

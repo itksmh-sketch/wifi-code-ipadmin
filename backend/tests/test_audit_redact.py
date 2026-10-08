@@ -199,3 +199,23 @@ def test_scrub_without_secrets_still_caps_and_passes_none():
     assert scrub(None, ["s"]) is None
     assert scrub(ValueError("boom"), []) == "boom"
     assert len(scrub("z" * 2000)) == STRING_MAX + 1
+
+
+def test_scrub_catches_a_partial_echo_of_a_key():
+    """A provider quoting only the start of the key it rejected."""
+    key = "sk_live_4f9a8b7c6d5e4f3a2b1c"
+    out = scrub(f"Invalid key {key[:14]}... supplied", [key])
+    assert key[:14] not in out and "4f9a8b" not in out
+    assert out == f"Invalid key {REDACTED}... supplied"
+
+
+def test_scrub_fragment_must_be_long_enough():
+    # 7 characters in common with a secret is not a fragment of it.
+    assert scrub("ordinary text abcdefg here", ["abcdefgXYZ123456"]) == "ordinary text abcdefg here"
+    assert scrub("ordinary text abcdefgX here", ["abcdefgXYZ123456"]) == f"ordinary text {REDACTED} here"
+
+
+def test_scrub_redacts_key_shaped_tokens_even_without_the_secret():
+    for token in ("sk_live_abc123", "pk_test_ZZ99", "FLWSECK-0a1b2c3d-X", "FLWPUBK_TEST-1234-X"):
+        out = scrub(f"rejected {token} now", [])
+        assert token not in out and out == f"rejected {REDACTED} now"

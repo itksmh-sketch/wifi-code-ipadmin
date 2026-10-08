@@ -16,9 +16,9 @@ out of ``shown`` and redaction writes "[redacted]" in place of its value.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
-from src.modules.audit.redact import diff, is_secret_name, snapshot
+from src.modules.audit.redact import REDACTED, diff, is_secret_name, snapshot
 
 
 @dataclass(frozen=True)
@@ -70,3 +70,21 @@ ROUTER_CREDENTIAL = _fields("RouterCredential", ("api_username", "api_port", "us
 CONFIG_TEMPLATE = _fields("ConfigTemplate", ("name", "description", "is_default", "template_data"), hidden=("template_data",))
 
 ALL = (PLAN, VOUCHER, TOWN, SITE, ROUTER, ROUTER_REMOVAL, ROUTER_WIREGUARD, ROUTER_CREDENTIAL, CONFIG_TEMPLATE)
+
+
+# Payment and SMS provider credentials are one encrypted blob of catalog
+# fields, so they are compared field by field after decrypting. Only these
+# plain identifiers show their values; any other field that changed is
+# "changed", and "[redacted]" when the catalog marks it secret or its name
+# looks secret (public_key included: a row never carries a key).
+CREDENTIAL_SHOWN = frozenset({"username", "from", "sender_id"})
+
+
+def credential_diff(before: dict | None, after: dict | None, *, secret_fields: Iterable[str] = ()) -> dict | None:
+    """Field changes between two decrypted credential blobs, or None. A field
+    whose value is the same on both sides is not listed, secret or not."""
+    changes = diff(before, after, shown=CREDENTIAL_SHOWN)
+    if not changes:
+        return None
+    secret = set(secret_fields)
+    return {name: (REDACTED if name in secret else value) for name, value in changes.items()}

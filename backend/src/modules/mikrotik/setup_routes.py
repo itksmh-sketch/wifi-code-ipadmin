@@ -305,11 +305,16 @@ async def apply_radius(router_id: uuid.UUID, body: RadiusApplyRequest, db: Async
     )
 
 
-@router.get("/routers/{router_id}/nas-secret", response_model=NasSecretResponse, dependencies=[Depends(require_perm(SECRETS)), Depends(require_recent_pin)])
+@router.get("/routers/{router_id}/nas-secret", response_model=NasSecretResponse, dependencies=[Depends(audit.audited), Depends(require_perm(SECRETS)), Depends(require_recent_pin)])
 async def nas_secret(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     router_row = await _load_router(db, router_id, tenant)
     secret = _router_secret(router_row)
     tail = secret[-3:] if len(secret) >= 3 else secret
+    # That it was viewed, by whom: never the secret, nor the hint it shows.
+    # Committed before the response, so a failed write shows nothing.
+    audit.record(db, "router.nas_secret_view", target_type="router", target_id=router_row.id,
+                 summary=f"Viewed the NAS secret hint of router {router_row.name}")
+    await db.commit()
     return NasSecretResponse(masked="●" * 8, hint=f"ends in …{tail}")
 
 

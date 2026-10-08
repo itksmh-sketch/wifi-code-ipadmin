@@ -23,6 +23,8 @@ from src.db.models import (
 )
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_recent_pin
 from src.middleware.permissions import BILLING_READ, READ, SECRETS, require_perm
+from src.modules import audit
+from src.modules.audit.redact import scrub
 from src.modules.billing import service
 from src.modules.billing.schemas import BillingStatusResponse, InvoiceResponse, PayInvoiceResponse
 
@@ -97,7 +99,7 @@ async def get_invoice(
 @router.post(
     "/invoices/{invoice_id}/pay",
     response_model=PayInvoiceResponse,
-    dependencies=[Depends(require_perm(SECRETS)), Depends(require_recent_pin)],
+    dependencies=[Depends(audit.audited), Depends(require_perm(SECRETS)), Depends(require_recent_pin)],
 )
 async def pay_invoice(
     invoice_id: uuid.UUID,
@@ -121,12 +123,42 @@ async def pay_invoice(
         await db.execute(select(ISPOperator).where(ISPOperator.id == tenant.isp_operator_id))
     ).scalar_one_or_none()
 
+    detail = {"invoice_number": invoice.invoice_number, "amount_ghs": invoice.amount_ghs,
+              "invoice_status": invoice.status, "reference": f"INV-{invoice.id}"}
     try:
         redirect_url = await service.initiate_invoice_payment(db, invoice, operator)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        # Opens a checkout with the platform's Paystack key: an error that
+        # echoes it is scrubbed before it is stored.
+        await db.rollback()
+        error = scrub(exc, await _platform_key_values(db))
+        await audit.record_detached(
+            "billing.invoice_pay", target_type="invoice", target_id=invoice_id,
+            summary=f"Could not start paying invoice {detail['invoice_number']} (GHS {detail['amount_ghs']})",
+            detail={**detail, "outcome": "failed", "error": error},
+        )
+        if isinstance(exc, ValueError):
+            # The platform's key is never the operator's to see, even in part.
+            raise HTTPException(400, error)
+        raise
 
+    # The checkout link itself is not stored in the row.
+    await audit.record_detached(
+        "billing.invoice_pay", target_type="invoice", target_id=invoice_id,
+        summary=f"Started paying invoice {detail['invoice_number']} (GHS {detail['amount_ghs']})",
+        detail={**detail, "outcome": "checkout_opened"},
+    )
     return PayInvoiceResponse(redirect_url=redirect_url, invoice_id=invoice.id)
+
+
+async def _platform_key_values(db: AsyncSession) -> list[str]:
+    from src.modules.platform.payment_credentials_service import resolve_paystack_keys
+
+    try:
+        keys = await resolve_paystack_keys(db)
+    except Exception:
+        return []
+    return [v for v in (getattr(keys, name, None) for name in ("secret_key", "public_key", "webhook_secret")) if v]
 
 
 # --- Read-only history (operator's own records) ---

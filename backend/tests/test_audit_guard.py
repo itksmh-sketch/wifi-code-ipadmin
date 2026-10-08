@@ -85,6 +85,20 @@ AUDITED = {
     ("POST", "/api/v1/admin/routers/{router_id}/setup/radius/apply"),
     ("DELETE", "/api/v1/admin/routers/{router_id}/wireguard"),
     ("POST", "/api/v1/admin/routers/{router_id}/wireguard/setup"),
+    # P4 batch 3: payments, payment and SMS credentials, invoice pay
+    ("POST", "/api/v1/billing/invoices/{invoice_id}/pay"),
+    ("DELETE", "/api/v1/payment-credentials/{provider}"),
+    ("PUT", "/api/v1/payment-credentials/{provider}"),
+    ("POST", "/api/v1/payment-credentials/{provider}/activate"),
+    ("POST", "/api/v1/payment-credentials/{provider}/test"),
+    ("POST", "/api/v1/payments/reconcile"),
+    ("PUT", "/api/v1/payments/{payment_id}/refund"),
+    ("PUT", "/api/v1/payments/{payment_id}/verify"),
+    ("POST", "/api/v1/sms-credentials/activate-platform"),
+    ("DELETE", "/api/v1/sms-credentials/{provider}"),
+    ("PUT", "/api/v1/sms-credentials/{provider}"),
+    ("POST", "/api/v1/sms-credentials/{provider}/activate"),
+    ("POST", "/api/v1/sms-credentials/{provider}/test"),
 }
 
 # Change nothing worth a row: token renewal, previews, a check that only
@@ -124,20 +138,6 @@ PENDING = {
     ("PUT", "/api/v1/admin/resellers/{reseller_id}"),
     ("PUT", "/api/v1/admin/resellers/{reseller_id}/topup"),
     ("PUT", "/api/v1/sms-template/voucher"),
-    # Money and credentials
-    ("POST", "/api/v1/billing/invoices/{invoice_id}/pay"),
-    ("DELETE", "/api/v1/payment-credentials/{provider}"),
-    ("PUT", "/api/v1/payment-credentials/{provider}"),
-    ("POST", "/api/v1/payment-credentials/{provider}/activate"),
-    ("POST", "/api/v1/payment-credentials/{provider}/test"),
-    ("POST", "/api/v1/payments/reconcile"),
-    ("PUT", "/api/v1/payments/{payment_id}/refund"),
-    ("PUT", "/api/v1/payments/{payment_id}/verify"),
-    ("POST", "/api/v1/sms-credentials/activate-platform"),
-    ("DELETE", "/api/v1/sms-credentials/{provider}"),
-    ("PUT", "/api/v1/sms-credentials/{provider}"),
-    ("POST", "/api/v1/sms-credentials/{provider}/activate"),
-    ("POST", "/api/v1/sms-credentials/{provider}/test"),
     # Platform owner
     ("PUT", "/api/v1/platform/applications/{application_id}/approve"),
     ("PUT", "/api/v1/platform/applications/{application_id}/reject"),
@@ -176,13 +176,14 @@ PENDING = {
     ("PATCH", "/api/v1/platform/sms-usage-records/{record_id}/diagnostic"),
 }
 
-# Reads that reveal a secret or bulk personal data: these must be audited too
-# (P3 adds their PIN gates, P4 their rows). Listed so the guard can't forget
-# them for being GETs.
-SENSITIVE_READS_PENDING = {
+# Reads that reveal a secret or bulk personal data: audited too, though GETs
+# (P3 added their PIN gates, P4 batch 3 their rows). A new one goes in
+# SENSITIVE_READS_PENDING until it writes a row.
+SENSITIVE_READS_AUDITED = {
     ("GET", "/api/v1/admin/routers/{router_id}/nas-secret"),
     ("GET", "/api/v1/payments/export"),
 }
+SENSITIVE_READS_PENDING: set[tuple[str, str]] = set()
 
 
 def _calls(dependant, seen):
@@ -235,13 +236,14 @@ def test_marker_matches_the_lists():
 
 def test_no_stale_entries():
     every = {(method, path) for method, path, _ in _routes()}
-    assert not (AUDITED | EXEMPT | PENDING | SENSITIVE_READS_PENDING) - every
+    assert not (AUDITED | EXEMPT | PENDING | SENSITIVE_READS_AUDITED | SENSITIVE_READS_PENDING) - every
 
 
-def test_sensitive_reads_are_not_yet_marked():
-    """Flips when P4 marks them: move each one into a tested set then."""
+def test_sensitive_reads_are_marked():
     marked = {(m, p) for m, p, calls in _routes() if _is_audited(calls)}
-    assert not (SENSITIVE_READS_PENDING & marked)
+    assert SENSITIVE_READS_AUDITED <= marked
+    assert not (SENSITIVE_READS_PENDING & marked), "marked now: move it to SENSITIVE_READS_AUDITED"
+    assert not (SENSITIVE_READS_AUDITED & SENSITIVE_READS_PENDING)
 
 
 def test_sign_in_and_sign_out_stay_unauthenticated():

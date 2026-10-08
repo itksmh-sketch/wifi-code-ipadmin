@@ -668,3 +668,301 @@ async def test_failed_disconnect_never_stores_the_api_password_it_echoed(env, te
     [row] = await rows(tenant["operator"], "router.disconnect_user", voucher["id"])
     assert row.detail["outcome"] == "failed" and row.detail["error"] == f"login failure for api/{REDACTED}"
     assert_absent(row, API_PASSWORD)
+
+
+# ── Batch 3: payments, payment and SMS credentials, invoice pay, NAS secret ─
+
+PAYSTACK = {"public_key": "pk_live_PUB0a1b2c3d4e5f6", "secret_key": "sk_live_SEC9z8y7x6w5v4u3t",
+            "webhook_secret": "whsec_HOOK1q2w3e4r5t6y"}
+FLUTTERWAVE = {"public_key": "FLWPUBK-pub112233445566-X", "secret_key": "FLWSECK-sec665544332211-X",
+               "webhook_secret": "flw-hook-778899aabbcc"}
+ARKESEL = {"api_key": "ArkKey-5f4e3d2c1b0a9988", "from": "WIFIZONE"}
+PLATFORM_KEYS = {"secret_key": "sk_live_PLATFORMs3cr3t000111", "public_key": "pk_live_PLATFORMpub000111",
+                 "webhook_secret": "plat-hook-445566778899"}
+PHONE = "233241234567"
+PHONE_FORMS = (PHONE, "0241234567", "241234567")
+ALL_CREDENTIAL_VALUES = (*PAYSTACK.values(), *FLUTTERWAVE.values(), ARKESEL["api_key"], *PLATFORM_KEYS.values())
+
+
+def assert_clean(row, *values):
+    """No value anywhere in the row: summary, changes, detail, target, actor, user agent."""
+    text = json.dumps({"summary": row.summary, "changes": row.changes, "detail": row.detail,
+                       "target_type": row.target_type, "target_id": row.target_id,
+                       "actor_label": row.actor_label, "user_agent": row.user_agent}, default=str)
+    for value in (*values, *ALL_CREDENTIAL_VALUES, *PHONE_FORMS, NAS_SECRET):
+        assert value not in text, f"{value!r} leaked into {row.action}"
+    for fragment in ("sk_live_", "FLWSECK", "pk_live_P"):
+        assert fragment not in text, f"{fragment!r} leaked into {row.action}"
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def providers_offered():
+    """The template offers only Paystack; this suite's clone offers the rest."""
+    from src.db.models import ProviderCatalogEntry
+
+    async with async_session_factory() as db:
+        await db.execute(update(ProviderCatalogEntry).where(ProviderCatalogEntry.provider_key.in_(
+            ["flutterwave", "arkesel", "arkesel_platform"])).values(is_available=True))
+        await db.commit()
+
+
+async def put_creds(env, t, kind, provider, values, **extra):
+    return await env["client"].put(f"/{kind}-credentials/{provider}", headers=t["h"], json={"values": values, **extra})
+
+
+async def test_payment_credentials_rows(env, tenant, providers_offered):
+    c, h = env["client"], tenant["h"]
+    assert (await put_creds(env, tenant, "payment", "paystack", PAYSTACK)).status_code == 200
+    # The same values again: not a change, no row.
+    assert (await put_creds(env, tenant, "payment", "paystack", PAYSTACK)).status_code == 200
+    # Only the webhook secret differs: only it is listed.
+    assert (await put_creds(env, tenant, "payment", "paystack", {**PAYSTACK, "webhook_secret": "whsec_NEW0987654321"})).status_code == 200
+    assert (await put_creds(env, tenant, "payment", "flutterwave", FLUTTERWAVE, activate=True)).status_code == 200
+    assert (await c.post("/payment-credentials/paystack/activate", headers=h)).status_code == 200
+    assert (await c.post("/payment-credentials/paystack/activate", headers=h)).status_code == 200  # already active
+    assert (await c.delete("/payment-credentials/flutterwave", headers=h)).status_code == 200
+
+    added, webhook = await rows(tenant["operator"], "payment_credentials.set", "paystack")
+    assert added.changes == {"public_key": REDACTED, "secret_key": REDACTED, "webhook_secret": REDACTED,
+                             "is_active": {"before": None, "after": True}}
+    assert added.detail == {"provider": "paystack", "created": True, "is_active": True, "deactivated": []}
+    assert webhook.changes == {"webhook_secret": REDACTED}
+    [flw] = await rows(tenant["operator"], "payment_credentials.set", "flutterwave")
+    assert flw.detail["deactivated"] == ["paystack"] and flw.changes["is_active"] == {"before": None, "after": True}
+    [activate] = await rows(tenant["operator"], "payment_credentials.activate", "paystack")
+    assert activate.changes == {"is_active": {"before": False, "after": True}}
+    assert activate.detail["deactivated"] == ["flutterwave"]
+    [deleted] = await rows(tenant["operator"], "payment_credentials.delete", "flutterwave")
+    assert deleted.changes == {"public_key": REDACTED, "secret_key": REDACTED, "webhook_secret": REDACTED}
+    for row in (added, webhook, flw, activate, deleted):
+        assert_actor(row, tenant)
+        assert_clean(row, "whsec_NEW0987654321")
+
+
+async def test_credentials_test_scrubs_a_key_the_provider_echoes(env, tenant, providers_offered, monkeypatch):
+    from types import SimpleNamespace
+
+    from src.modules.payments import credentials_routes
+
+    key = PAYSTACK["secret_key"]
+
+    async def rejected():
+        # Paystack-style: the start of the key, then the whole key further on.
+        raise RuntimeError(f"Invalid key {key[:14]}... (sent {key})")
+
+    async def accepted():
+        return None
+
+    fake = SimpleNamespace(verify_credentials=rejected)
+    monkeypatch.setattr(credentials_routes, "build_payment_provider", lambda *a, **k: fake)
+    assert (await put_creds(env, tenant, "payment", "paystack", PAYSTACK)).status_code == 200
+    res = await env["client"].post("/payment-credentials/paystack/test", headers=tenant["h"])
+    assert res.status_code == 400
+    assert key[:12] not in res.text, "the response is scrubbed too"
+    fake.verify_credentials = accepted
+    assert (await env["client"].post("/payment-credentials/paystack/test", headers=tenant["h"])).status_code == 200
+
+    failed, ok = await rows(tenant["operator"], "payment_credentials.test", "paystack")
+    assert failed.detail == {"provider": "paystack", "outcome": "failed", "error": f"Invalid key {REDACTED}... (sent {REDACTED})"}
+    assert ok.detail == {"provider": "paystack", "outcome": "ok"}
+    from src.db.models import OperatorPaymentCredential
+    async with async_session_factory() as db:
+        stored = (await db.execute(select(OperatorPaymentCredential).where(
+            OperatorPaymentCredential.isp_operator_id == tenant["operator"].id))).scalar_one()
+    assert stored.last_validation_error is None  # cleared by the passing test
+    for row in (failed, ok):
+        assert_actor(row, tenant)
+        assert_clean(row)
+
+
+async def test_sms_credentials_rows(env, tenant, providers_offered, monkeypatch):
+    from src.modules.sms.providers.arkesel import ArkeselSMSProvider
+
+    async def rejected(self):
+        raise RuntimeError(f"Arkesel: invalid api key {ARKESEL['api_key']}")
+
+    monkeypatch.setattr(ArkeselSMSProvider, "verify_credentials", rejected)
+    c, h = env["client"], tenant["h"]
+    assert (await put_creds(env, tenant, "sms", "arkesel", ARKESEL)).status_code == 200
+    assert (await put_creds(env, tenant, "sms", "arkesel", {**ARKESEL, "from": "NEWNAME"})).status_code == 200
+    assert (await c.post("/sms-credentials/arkesel/test", headers=h)).status_code == 400
+    assert (await c.post("/sms-credentials/activate-platform", headers=h)).status_code == 200
+    assert (await c.post("/sms-credentials/arkesel/activate", headers=h)).status_code == 200
+    assert (await c.post("/sms-credentials/activate-platform", headers=h)).status_code == 200
+    assert (await c.delete("/sms-credentials/arkesel", headers=h)).status_code == 200
+
+    added, renamed = await rows(tenant["operator"], "sms_credentials.set", "arkesel")
+    assert added.changes == {"api_key": REDACTED, "from": {"before": None, "after": "WIFIZONE"}, "is_active": {"before": None, "after": True}}
+    assert renamed.changes == {"from": {"before": "WIFIZONE", "after": "NEWNAME"}}, "the unchanged key is not listed"
+    [test] = await rows(tenant["operator"], "sms_credentials.test", "arkesel")
+    assert test.detail["outcome"] == "failed" and test.detail["error"] == f"Arkesel: invalid api key {REDACTED}"
+    platform_first, platform_again = await rows(tenant["operator"], "sms_credentials.activate", "arkesel_platform")
+    assert platform_first.detail["deactivated"] == ["arkesel"]
+    assert platform_again.detail["deactivated"] == ["arkesel"]
+    [back] = await rows(tenant["operator"], "sms_credentials.activate", "arkesel")
+    assert back.detail["deactivated"] == ["arkesel_platform"]
+    [deleted] = await rows(tenant["operator"], "sms_credentials.delete", "arkesel")
+    assert deleted.changes == {"api_key": REDACTED, "from": {"before": "NEWNAME", "after": None}}
+    for row in (added, renamed, test, platform_first, platform_again, back, deleted):
+        assert_actor(row, tenant)
+        assert_clean(row)
+
+
+async def make_payment(env, t, *, status="success") -> str:
+    from decimal import Decimal
+
+    from src.db.models import PaymentTransaction
+
+    made = await make_site(env, t)
+    # Plans with identical settings are refused as duplicates: vary the price.
+    plan = await new_plan(env, t, price_ghs=float(1 + uuid.uuid4().int % 900))
+    async with async_session_factory() as db:
+        tx = PaymentTransaction(
+            isp_operator_id=t["operator"].id, plan_id=uuid.UUID(plan["id"]), site_id=uuid.UUID(made["site"]["id"]),
+            amount_ghs=Decimal("12.50"), payment_method="mtn_momo", provider="paystack", status=status,
+            provider_reference=f"PSK-{uuid.uuid4().hex[:10]}", internal_reference=f"INT-{uuid.uuid4().hex[:12]}",
+            phone_number=PHONE,
+        )
+        db.add(tx)
+        await db.commit()
+        return str(tx.id)
+
+
+async def test_refund_row(env, tenant):
+    pid = await make_payment(env, tenant)
+    res = await env["client"].put(f"/payments/{pid}/refund", headers=tenant["h"])
+    assert res.status_code == 200 and PHONE in res.text  # the API still returns it to the operator
+    [row] = await rows(tenant["operator"], "payment.refund", pid)
+    assert row.changes == {"status": {"before": "success", "after": "refunded"}}
+    assert row.detail["amount_ghs"] == "12.50" and row.detail["provider_reference"].startswith("PSK-")
+    assert (row.detail["outcome"], row.detail["provider_called"]) == ("refunded", False)
+    assert_actor(row, tenant)
+    assert_clean(row)
+
+
+async def test_verify_rows_and_a_scrubbed_provider_error(env, tenant, providers_offered, monkeypatch):
+    from types import SimpleNamespace
+
+    from src.modules.payments.service import PaymentService
+
+    assert (await put_creds(env, tenant, "payment", "paystack", PAYSTACK)).status_code == 200
+    pid = await make_payment(env, tenant, status="pending")
+
+    async def unreachable(self, db, tx):
+        async def verify(*a, **k):
+            raise RuntimeError(f"401 from Paystack: Invalid key {PAYSTACK['secret_key']}")
+        return SimpleNamespace(verify=verify)
+
+    monkeypatch.setattr(PaymentService, "provider_for_transaction", unreachable)
+    assert (await env["client"].put(f"/payments/{pid}/verify", headers=tenant["h"])).status_code == 500
+
+    async def settled(self, db, *, tx, force=False):
+        tx.status = "success"
+        await db.commit()
+        return tx
+
+    monkeypatch.setattr(PaymentService, "refresh_transaction_status", settled)
+    res = await env["client"].put(f"/payments/{pid}/verify", headers=tenant["h"])
+    assert res.status_code == 200, res.text
+
+    failed, ok = await rows(tenant["operator"], "payment.verify", pid)
+    assert (failed.detail["outcome"], failed.detail["status_before"], failed.detail["status_after"]) == ("failed", "pending", "pending")
+    assert failed.detail["error"] == f"401 from Paystack: Invalid key {REDACTED}"
+    assert (ok.detail["outcome"], ok.detail["status_before"], ok.detail["status_after"]) == ("ok", "pending", "success")
+    assert ok.detail["amount_ghs"] == "12.50" and ok.detail["provider_reference"].startswith("PSK-")
+    for row in (failed, ok):
+        assert_actor(row, tenant)
+        assert_clean(row)
+
+
+async def test_export_row_has_filters_and_count_never_data(env, tenant, monkeypatch):
+    await make_payment(env, tenant)
+    await make_payment(env, tenant, status="failed")
+    res = await env["client"].get("/payments/export", headers=tenant["h"], params={"status": "success"})
+    assert res.status_code == 200 and PHONE in res.text, "the file itself has the data"
+    [row] = await rows(tenant["operator"], "payment.export")
+    assert row.detail["row_count"] == 1 and row.detail["filters"]["status"] == "success"
+    assert row.detail["format"] == "csv" and row.summary == "Exported 1 payment(s) as CSV"
+    assert_actor(row, tenant)
+    assert_clean(row)
+    # Fail closed: no row, no file.
+    break_audit(monkeypatch)
+    res = await env["client"].get("/payments/export", headers=tenant["h"])
+    assert res.status_code == 500 and PHONE not in res.text
+    assert len(await rows(tenant["operator"], "payment.export")) == 1
+
+
+async def test_reconcile_row(env, tenant, monkeypatch):
+    from types import SimpleNamespace
+
+    from src.modules.payments import routes as payment_routes
+
+    async def pool():
+        async def enqueue_job(name):
+            return SimpleNamespace(job_id="job-recon-1")
+        return SimpleNamespace(enqueue_job=enqueue_job)
+
+    monkeypatch.setattr(payment_routes, "get_redis_pool", pool)
+    assert (await env["client"].post("/payments/reconcile", headers=tenant["h"])).status_code == 200
+    [row] = await rows(tenant["operator"], "payment.reconcile")
+    assert row.detail == {"queued": True, "job_id": "job-recon-1"} and row.target_id == "job-recon-1"
+    assert_actor(row, tenant)
+    assert_clean(row)
+
+
+async def test_nas_secret_view_row_never_has_the_secret_or_hint(env, tenant, monkeypatch):
+    made = await make_site(env, tenant)
+    rid = await onboard(env, tenant, made["site"]["id"])
+    res = await env["client"].get(f"/admin/routers/{rid}/nas-secret", headers=tenant["h"])
+    assert res.status_code == 200
+    hint = res.json()["hint"]
+    [row] = await rows(tenant["operator"], "router.nas_secret_view", rid)
+    assert row.target_type == "router" and row.changes is None and row.detail is None
+    assert_actor(row, tenant)
+    assert_clean(row, hint, NAS_SECRET[-3:])
+    break_audit(monkeypatch)
+    res = await env["client"].get(f"/admin/routers/{rid}/nas-secret", headers=tenant["h"])
+    assert res.status_code == 500 and "hint" not in res.text
+
+
+async def test_invoice_pay_rows(env, tenant, monkeypatch):
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from src.db.models import OperatorInvoice
+    from src.modules.billing import service as billing_service
+    from src.modules.platform import payment_credentials_service
+
+    now = datetime.now(timezone.utc)
+    async with async_session_factory() as db:
+        invoice = OperatorInvoice(isp_operator_id=tenant["operator"].id, invoice_number=f"INV-T-{uuid.uuid4().hex[:6]}",
+                                  period_start=now - timedelta(days=30), period_end=now, amount_ghs=Decimal("50.00"),
+                                  status="issued", issued_at=now)
+        db.add(invoice)
+        await db.commit()
+        iid = str(invoice.id)
+
+    async def keys(db):
+        return SimpleNamespace(**PLATFORM_KEYS, is_configured=True)
+
+    async def rejected(db, inv, operator):
+        raise ValueError(f"Paystack error: Invalid key {PLATFORM_KEYS['secret_key'][:16]}")
+
+    async def opened(db, inv, operator):
+        return "https://checkout.paystack.com/secret-session-link"
+
+    monkeypatch.setattr(payment_credentials_service, "resolve_paystack_keys", keys)
+    monkeypatch.setattr(billing_service, "initiate_invoice_payment", rejected)
+    res = await env["client"].post(f"/billing/invoices/{iid}/pay", headers=tenant["h"])
+    assert res.status_code == 400 and "sk_live_PLAT" not in res.text and "PLATFORM" not in res.text
+    monkeypatch.setattr(billing_service, "initiate_invoice_payment", opened)
+    res = await env["client"].post(f"/billing/invoices/{iid}/pay", headers=tenant["h"])
+    assert res.status_code == 200, res.text
+
+    failed, ok = await rows(tenant["operator"], "billing.invoice_pay", iid)
+    assert failed.detail["outcome"] == "failed" and failed.detail["error"] == f"Paystack error: Invalid key {REDACTED}"
+    assert ok.detail["outcome"] == "checkout_opened" and ok.detail["amount_ghs"] == "50.00"
+    assert ok.detail["reference"] == f"INV-{iid}"
+    for row in (failed, ok):
+        assert_actor(row, tenant)
+        assert_clean(row, "secret-session-link")

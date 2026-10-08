@@ -9,17 +9,27 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
-from src.db.models import CoAEvent, PaymentTransaction
+from src.db.models import CoAEvent, OperatorPaymentCredential, PaymentTransaction
 from src.jobs.queue import get_redis_pool
 from src.middleware.auth import TenantContext, get_admin_tenant_context
 from src.middleware.permissions import MONEY, READ, require_perm
 from src.middleware.auth import require_recent_pin
+from src.modules import audit
+from src.modules.audit.redact import scrub
+from src.modules.credentials.service import operator_credential_values
 from src.modules.payments.dependencies import get_payment_service
 from src.modules.payments.filters import REAL_TRANSACTIONS_ONLY
 from src.modules.payments.service import PaymentService
 from src.modules.payments.types import PaymentMethod, PaymentStatus
 
 router = APIRouter(prefix="/payments", tags=["payments"])
+
+
+def _payment_detail(tx: PaymentTransaction, **extra) -> dict:
+    """What a row says about one payment: never the customer's phone number."""
+    return {"amount_ghs": tx.amount_ghs, "currency": tx.currency, "provider": tx.provider,
+            "payment_method": tx.payment_method, "provider_reference": tx.provider_reference,
+            "internal_reference": tx.internal_reference, **extra}
 
 
 def _payment_filters(
@@ -144,7 +154,7 @@ async def payment_summary(db: AsyncSession = Depends(get_db), tenant: TenantCont
     }
 
 
-@router.put("/{payment_id}/verify", dependencies=[Depends(require_perm(MONEY))])
+@router.put("/{payment_id}/verify", dependencies=[Depends(audit.audited), Depends(require_perm(MONEY))])
 async def verify_payment(
     payment_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -158,10 +168,30 @@ async def verify_payment(
         raise HTTPException(status_code=404, detail="Payment not found")
     if not tx.provider_reference:
         raise HTTPException(status_code=400, detail="Payment has no provider reference")
-    return await payment_service.refresh_transaction_status(db, tx=tx, force=True)
+    status_before = tx.status
+    detail = _payment_detail(tx, status_before=status_before)
+    # The provider call commits its own result: the row commits on its own,
+    # after it, with what happened.
+    try:
+        tx = await payment_service.refresh_transaction_status(db, tx=tx, force=True)
+    except Exception as exc:
+        await db.rollback()
+        error = scrub(exc, await operator_credential_values(db, OperatorPaymentCredential, tenant.isp_operator_id))
+        await audit.record_detached(
+            "payment.verify", target_type="payment", target_id=payment_id,
+            summary=f"Re-checked payment {detail['internal_reference']} with the provider: failed",
+            detail={**detail, "status_after": status_before, "outcome": "failed", "error": error},
+        )
+        raise
+    await audit.record_detached(
+        "payment.verify", target_type="payment", target_id=payment_id,
+        summary=f"Re-checked payment {tx.internal_reference} with the provider: {status_before} -> {tx.status}",
+        detail={**detail, "provider_reference": tx.provider_reference, "status_after": tx.status, "outcome": "ok"},
+    )
+    return tx
 
 
-@router.put("/{payment_id}/refund", dependencies=[Depends(require_perm(MONEY)), Depends(require_recent_pin)])
+@router.put("/{payment_id}/refund", dependencies=[Depends(audit.audited), Depends(require_perm(MONEY)), Depends(require_recent_pin)])
 async def refund_payment(
     payment_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -177,19 +207,32 @@ async def refund_payment(
     tx.status = PaymentStatus.REFUNDED.value
     tx.completed_at = datetime.now(timezone.utc)
     payment_service._log_status_change(tx, old_status, tx.status, "manual")
+    # Marks the payment refunded here; no money moves through the provider.
+    audit.record(
+        db, "payment.refund", target_type="payment", target_id=tx.id,
+        summary=f"Marked payment {tx.internal_reference} (GHS {tx.amount_ghs}) as refunded",
+        changes={"status": {"before": old_status, "after": tx.status}} if old_status != tx.status else None,
+        detail=_payment_detail(tx, outcome="refunded", provider_called=False),
+    )
     await db.commit()
     await db.refresh(tx)
     return tx
 
 
-@router.post("/reconcile", dependencies=[Depends(require_perm(MONEY))])
+@router.post("/reconcile", dependencies=[Depends(audit.audited), Depends(require_perm(MONEY))])
 async def trigger_reconcile(_=Depends(get_admin_tenant_context)):
     redis = await get_redis_pool()
     job = await redis.enqueue_job("run_payment_reconciliation")
-    return {"queued": True, "job_id": job.job_id if job else None}
+    job_id = job.job_id if job else None
+    await audit.record_detached(
+        "payment.reconcile", target_type="job", target_id=job_id,
+        summary="Started a payment reconciliation run" if job_id else "Asked for a payment reconciliation run (already queued)",
+        detail={"queued": job is not None, "job_id": job_id},
+    )
+    return {"queued": True, "job_id": job_id}
 
 
-@router.get("/export", dependencies=[Depends(require_perm(MONEY)), Depends(require_recent_pin)])
+@router.get("/export", dependencies=[Depends(audit.audited), Depends(require_perm(MONEY)), Depends(require_recent_pin)])
 async def export_payments_csv(
     format: str = "csv",
     status: str | None = None,
@@ -208,6 +251,16 @@ async def export_payments_csv(
     if filters:
         stmt = stmt.where(and_(*filters))
     rows = (await db.execute(stmt)).scalars().all()
+    # Bulk personal data: the row commits before a byte of the file is sent,
+    # and a failed audit write means no export. Filters and a count only.
+    audit.record(
+        db, "payment.export", target_type="payments_export", target_id=None,
+        summary=f"Exported {len(rows)} payment(s) as CSV",
+        detail={"format": format, "row_count": len(rows), "filters": {
+            "status": status, "payment_method": payment_method, "site_id": site_id,
+            "start_date": start_date, "end_date": end_date}},
+    )
+    await db.commit()
 
     output = StringIO()
     writer = csv.writer(output)
