@@ -1,14 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { apiCall } from '../App';
+import { apiCall, usePermissions } from '../App';
 import PageHeader from '../components/PageHeader';
 
 export default function TownsSites() {
+    const { can } = usePermissions();
     const [towns, setTowns] = useState([]);
     const [sites, setSites] = useState({});
     const [showTownForm, setShowTownForm] = useState(false);
     const [showSiteForm, setShowSiteForm] = useState(null);
     const [newTown, setNewTown] = useState({ name: '', region: '' });
     const [newSite, setNewSite] = useState({ name: '', address: '' });
+    const [editTown, setEditTown] = useState(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState('');
 
@@ -58,6 +60,22 @@ export default function TownsSites() {
         }
     };
 
+    const saveTown = async () => {
+        const name = editTown.name.trim();
+        const region = editTown.region.trim();
+        if (!name || !region) {
+            alert('Name and region are required.');
+            return;
+        }
+        try {
+            await apiCall(`/towns/${editTown.id}`, { method: 'PUT', body: JSON.stringify({ name, region }) });
+            setEditTown(null);
+            fetchData();
+        } catch (e) {
+            alert(e.message);
+        }
+    };
+
     const createSite = async (townId) => {
         try {
             await apiCall(`/towns/${townId}/sites`, { method: 'POST', body: JSON.stringify(newSite) });
@@ -98,6 +116,26 @@ export default function TownsSites() {
                 </div>
             )}
 
+            {editTown && (
+                <div className="modal-overlay" onClick={() => setEditTown(null)}>
+                    <div className="modal" onClick={e => e.stopPropagation()}>
+                        <h2>Edit Town</h2>
+                        <div className="form-group">
+                            <label>Name</label>
+                            <input value={editTown.name} onChange={e => setEditTown({ ...editTown, name: e.target.value })} />
+                        </div>
+                        <div className="form-group">
+                            <label>Region</label>
+                            <input value={editTown.region} onChange={e => setEditTown({ ...editTown, region: e.target.value })} />
+                        </div>
+                        <div className="gap-2">
+                            <button className="btn btn-primary" onClick={saveTown}>Save</button>
+                            <button className="btn" style={{ background: '#e5e7eb' }} onClick={() => setEditTown(null)}>Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {loadError && <p style={{ color: '#b45309' }}>{loadError}</p>}
 
             {Array.isArray(towns) && towns.length === 0 && !loadError && (
@@ -108,7 +146,13 @@ export default function TownsSites() {
                 <div key={town.id} className="card" style={{ marginBottom: 16 }}>
                     <div className="flex-between">
                         <h3 style={{ fontSize: 16 }}>{town.name} <span style={{ color: '#9ca3af', fontWeight: 400 }}>({town.region})</span></h3>
-                        <button className="btn btn-primary btn-sm" onClick={() => setShowSiteForm(town.id)}>+ Add Site</button>
+                        <div className="gap-2">
+                            {can('config') && (
+                                <button className="btn btn-sm" style={{ background: '#e5e7eb' }}
+                                    onClick={() => setEditTown({ id: town.id, name: town.name || '', region: town.region || '' })}>Edit</button>
+                            )}
+                            <button className="btn btn-primary btn-sm" onClick={() => setShowSiteForm(town.id)}>+ Add Site</button>
+                        </div>
                     </div>
 
                     {showSiteForm === town.id && (
