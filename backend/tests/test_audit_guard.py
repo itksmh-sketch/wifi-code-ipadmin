@@ -99,6 +99,26 @@ AUDITED = {
     ("PUT", "/api/v1/sms-credentials/{provider}"),
     ("POST", "/api/v1/sms-credentials/{provider}/activate"),
     ("POST", "/api/v1/sms-credentials/{provider}/test"),
+    # P4 batch 4: operator accounts, resellers, commission, branding, SMS template
+    ("POST", "/api/v1/auth/me/password"),
+    ("POST", "/api/v1/auth/me/phone"),
+    ("POST", "/api/v1/auth/me/pin/forgot"),
+    ("POST", "/api/v1/auth/onboarding/otp/verify"),
+    ("POST", "/api/v1/auth/onboarding/password"),
+    ("POST", "/api/v1/auth/onboarding/phone"),
+    ("POST", "/api/v1/auth/reset/request"),
+    ("POST", "/api/v1/auth/reset/security-question"),
+    ("POST", "/api/v1/auth/reset/set-password"),
+    ("POST", "/api/v1/auth/reset/verify-otp"),
+    ("PUT", "/api/v1/admin/branding"),
+    ("POST", "/api/v1/admin/branding/logo"),
+    ("POST", "/api/v1/admin/commission-rules"),
+    ("DELETE", "/api/v1/admin/commission-rules/{rule_id}"),
+    ("PUT", "/api/v1/admin/commission-rules/{rule_id}"),
+    ("POST", "/api/v1/admin/resellers"),
+    ("PUT", "/api/v1/admin/resellers/{reseller_id}"),
+    ("PUT", "/api/v1/admin/resellers/{reseller_id}/topup"),
+    ("PUT", "/api/v1/sms-template/voucher"),
 }
 
 # Change nothing worth a row: token renewal, previews, a check that only
@@ -117,27 +137,6 @@ EXEMPT = {
 
 # P4 backlog, one comment per batch.
 PENDING = {
-    # Operator accounts (onboarding, password, reset, phone, PIN recovery)
-    ("POST", "/api/v1/auth/me/password"),
-    ("POST", "/api/v1/auth/me/phone"),
-    ("POST", "/api/v1/auth/me/pin/forgot"),
-    ("POST", "/api/v1/auth/onboarding/otp/verify"),
-    ("POST", "/api/v1/auth/onboarding/password"),
-    ("POST", "/api/v1/auth/onboarding/phone"),
-    ("POST", "/api/v1/auth/reset/request"),
-    ("POST", "/api/v1/auth/reset/security-question"),
-    ("POST", "/api/v1/auth/reset/set-password"),
-    ("POST", "/api/v1/auth/reset/verify-otp"),
-    # Catalogue and configuration (branding, resellers, templates)
-    ("PUT", "/api/v1/admin/branding"),
-    ("POST", "/api/v1/admin/branding/logo"),
-    ("POST", "/api/v1/admin/commission-rules"),
-    ("DELETE", "/api/v1/admin/commission-rules/{rule_id}"),
-    ("PUT", "/api/v1/admin/commission-rules/{rule_id}"),
-    ("POST", "/api/v1/admin/resellers"),
-    ("PUT", "/api/v1/admin/resellers/{reseller_id}"),
-    ("PUT", "/api/v1/admin/resellers/{reseller_id}/topup"),
-    ("PUT", "/api/v1/sms-template/voucher"),
     # Platform owner
     ("PUT", "/api/v1/platform/applications/{application_id}/approve"),
     ("PUT", "/api/v1/platform/applications/{application_id}/reject"),

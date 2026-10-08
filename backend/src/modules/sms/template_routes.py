@@ -17,6 +17,8 @@ from src.db.base import get_db
 from src.db.models import ISPOperator
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
 from src.middleware.permissions import CONFIG, require_perm
+from src.modules import audit
+from src.modules.audit.fields import VOUCHER_SMS_TEMPLATE
 from src.modules.sms import templates
 from src.modules.vouchers.engine import DEFAULT_CODE_LENGTH, MAX_CODE_LENGTH
 
@@ -97,13 +99,14 @@ async def preview_voucher_template(body: VoucherTemplatePreview, _: TenantContex
     }
 
 
-@router.put("/voucher", dependencies=[Depends(require_perm(CONFIG))])
+@router.put("/voucher", dependencies=[Depends(audit.audited), Depends(require_perm(CONFIG))])
 async def set_voucher_template(
     body: VoucherTemplateUpdate,
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(require_active_operator),
 ):
     operator = await _operator(db, tenant)
+    before = VOUCHER_SMS_TEMPLATE.snapshot(operator)
     if body.template is None:
         operator.voucher_sms_template = None
     else:
@@ -111,6 +114,11 @@ async def set_voucher_template(
         if error:
             raise HTTPException(status_code=400, detail=error)
         operator.voucher_sms_template = body.template.strip()
+    changes = VOUCHER_SMS_TEMPLATE.diff(before, VOUCHER_SMS_TEMPLATE.snapshot(operator))
+    if changes:
+        audit.record(db, "sms_template.update", target_type="operator", target_id=operator.id,
+                     summary="Reset the voucher SMS template to the default" if body.template is None
+                     else "Edited the voucher SMS template", changes=changes)
     await db.commit()
     await db.refresh(operator)
     logger.info(

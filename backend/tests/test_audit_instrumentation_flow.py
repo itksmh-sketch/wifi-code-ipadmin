@@ -1097,3 +1097,235 @@ async def test_platform_provider_error_stores_no_platform_key(env):
         await db.commit()
         out = await stored_text.platform_error(db, f"Arkesel 401: api key {key} invalid ({key[:10]}…)")
     assert out == f"Arkesel 401: api key {REDACTED} invalid ({REDACTED}…)"
+
+
+# ── Batch 4: resellers, commission, branding, SMS template, accounts ────────
+
+ADMIN_PHONE_FORMS = ("233244000777", "0244000777", "244000777")
+RESELLER_PASSWORD = "ResellerPass-77x"
+RESELLER_PHONE_FORMS = ("233201112223", "0201112223", "201112223")
+
+
+def assert_none_of(row, *values):
+    text = json.dumps({"summary": row.summary, "changes": row.changes, "detail": row.detail,
+                       "target_type": row.target_type, "target_id": row.target_id,
+                       "actor_label": row.actor_label, "user_agent": row.user_agent}, default=str)
+    for value in values:
+        assert value and value not in text, f"{value!r} leaked into {row.action}"
+
+
+async def all_rows(operator, action):
+    """rows() leaves out auth.*; these tests want them."""
+    async with async_session_factory() as db:
+        q = select(AuditLog).where(AuditLog.isp_operator_id == operator.id, AuditLog.action == action)
+        return (await db.execute(q.order_by(AuditLog.created_at))).scalars().all()
+
+
+async def test_reseller_rows(env, tenant):
+    c, h = env["client"], tenant["h"]
+    email = f"res-{uuid.uuid4().hex[:8]}@throwaway.test"
+    rid = (await c.post("/admin/resellers", headers=h, json={"name": "Kofi", "email": email, "phone": "0201112223",
+                                                            "password": RESELLER_PASSWORD})).json()["id"]
+    assert (await c.put(f"/admin/resellers/{rid}", headers=h, json={"name": "Kofi A"})).status_code == 200
+    assert (await c.put(f"/admin/resellers/{rid}", headers=h, json={"name": "Kofi A"})).status_code == 200  # no-op
+    assert (await c.put(f"/admin/resellers/{rid}", headers=h, json={"password": "NewResPass-88y", "phone": "0201112224"})).status_code == 200
+    assert (await c.put(f"/admin/resellers/{rid}/topup", headers=h, json={"amount_ghs": 25, "description": "float"})).status_code == 200
+
+    [created] = await rows(tenant["operator"], "reseller.create", rid)
+    assert created.changes["email"] == {"before": None, "after": email} and created.changes["password_hash"] == REDACTED
+    assert created.changes["phone"] == "changed"
+    renamed, secured = await rows(tenant["operator"], "reseller.update", rid)
+    assert renamed.changes == {"name": {"before": "Kofi", "after": "Kofi A"}}, "no password, no phone: not touched"
+    assert secured.changes == {"password_hash": REDACTED, "phone": "changed"}
+    [topup] = await rows(tenant["operator"], "reseller.topup", rid)
+    assert (topup.detail["amount_ghs"], topup.detail["balance_after_ghs"], topup.detail["description"]) == ("25.00", "25.00", "float")
+    for row in (created, renamed, secured, topup):
+        assert_actor(row, tenant)
+        assert_none_of(row, RESELLER_PASSWORD, "NewResPass-88y", *RESELLER_PHONE_FORMS, "0201112224")
+
+
+async def test_commission_rule_rows(env, tenant):
+    c, h = env["client"], tenant["h"]
+    plan = await new_plan(env, tenant, price_ghs=float(1 + uuid.uuid4().int % 900))
+    rule_id = (await c.post("/admin/commission-rules", headers=h, json={"plan_id": plan["id"], "type": "percentage", "value": 10})).json()["id"]
+    assert (await c.put(f"/admin/commission-rules/{rule_id}", headers=h, json={"value": 12})).status_code == 200
+    assert (await c.put(f"/admin/commission-rules/{rule_id}", headers=h, json={"value": "12"})).status_code == 200  # same value
+    assert (await c.delete(f"/admin/commission-rules/{rule_id}", headers=h)).status_code == 200
+    assert (await c.delete(f"/admin/commission-rules/{rule_id}", headers=h)).status_code == 200  # already gone: no row
+    created, = await rows(tenant["operator"], "commission_rule.create", rule_id)
+    assert created.changes["plan_id"] == {"before": None, "after": plan["id"]} and created.changes["value"]["after"] == "10.0000"
+    [updated] = await rows(tenant["operator"], "commission_rule.update", rule_id)
+    assert updated.changes == {"value": {"before": "10.0000", "after": "12.0000"}}
+    [deleted] = await rows(tenant["operator"], "commission_rule.delete", rule_id)
+    assert deleted.changes["value"] == {"before": "12.0000", "after": None}
+    for row in (created, updated, deleted):
+        assert_actor(row, tenant)
+
+
+async def test_branding_rows_and_logo_fails_closed(env, tenant, monkeypatch, tmp_path):
+    from src.modules.branding import routes as branding_routes
+
+    monkeypatch.setattr(branding_routes, "_LOGO_DIR", str(tmp_path))
+    c, h = env["client"], tenant["h"]
+    body = {"primary_color": "#112233", "portal_contact_phone": "0244555666", "portal_welcome_message": "Karibu"}
+    assert (await c.put("/admin/branding", headers=h, json=body)).status_code == 200
+    assert (await c.put("/admin/branding", headers=h, json=body)).status_code == 200  # no-op
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    res = await c.post("/admin/branding/logo", headers=h, files={"file": ("l.png", png, "image/png")})
+    assert res.status_code == 200, res.text
+    [edit] = await rows(tenant["operator"], "branding.update")
+    assert edit.changes["primary_color"]["after"] == "#112233" and edit.changes["portal_contact_phone"] == "changed"
+    assert edit.changes["portal_welcome_message"] == {"before": None, "after": "Karibu"}
+    [logo] = await rows(tenant["operator"], "branding.logo_upload")
+    assert logo.changes["logo_url"]["after"] == res.json()["logo_url"] and logo.detail == {"content_type": "image/png", "bytes": len(png)}
+    for row in (edit, logo):
+        assert_actor(row, tenant)
+        assert_none_of(row, "0244555666", "244555666")
+    # Fail closed: no row, and the current logo is neither replaced nor deleted.
+    current = os.listdir(tmp_path)
+    break_audit(monkeypatch)
+    assert (await c.post("/admin/branding/logo", headers=h, files={"file": ("m.png", png, "image/png")})).status_code == 500
+    assert os.listdir(tmp_path) == current
+    assert len(await rows(tenant["operator"], "branding.logo_upload")) == 1
+
+
+async def test_sms_template_rows(env, tenant):
+    c, h = env["client"], tenant["h"]
+    assert (await c.put("/sms-template/voucher", headers=h, json={"template": "Your WiFi code: {code}"})).status_code == 200
+    assert (await c.put("/sms-template/voucher", headers=h, json={"template": "Your WiFi code: {code}"})).status_code == 200
+    assert (await c.put("/sms-template/voucher", headers=h, json={"template": None})).status_code == 200
+    edited, reset = await rows(tenant["operator"], "sms_template.update")
+    assert edited.changes == {"voucher_sms_template": {"before": None, "after": "Your WiFi code: {code}"}}
+    assert reset.changes == {"voucher_sms_template": {"before": "Your WiFi code: {code}", "after": None}}
+    assert reset.summary == "Reset the voucher SMS template to the default"
+    for row in (edited, reset):
+        assert_actor(row, tenant)
+
+
+@pytest.fixture
+def sent_codes(monkeypatch):
+    """Every OTP the account routes would text, captured instead of sent."""
+    from types import SimpleNamespace
+
+    from src.modules.admin_accounts import routes as account_routes
+
+    codes = []
+
+    async def send(phone, code, purpose=None, **kw):
+        codes.append(code)
+        return SimpleNamespace(success=True, error=None)
+
+    monkeypatch.setattr(account_routes, "send_otp_sms", send)
+    return codes
+
+
+async def test_signed_in_account_rows(env, tenant, sent_codes):
+    c, admin = env["client"], tenant["admin"]
+    assert (await c.post("/auth/me/pin/forgot", headers=tenant["h"])).status_code == 200
+    assert (await c.post("/auth/me/phone", headers=tenant["h"], json={"phone": "0244000778"})).status_code == 200
+    wrong = await c.post("/auth/me/password", headers=tenant["h"], json={
+        "current_password": "Not-The-Password-1", "new_password": "Brand-New-Pass-42", "confirm_password": "Brand-New-Pass-42"})
+    assert wrong.status_code == 400
+    ok = await c.post("/auth/me/password", headers=tenant["h"], json={
+        "current_password": PASSWORD, "new_password": "Brand-New-Pass-42", "confirm_password": "Brand-New-Pass-42"})
+    assert ok.status_code == 200, ok.text
+
+    [pin] = await rows(tenant["operator"], "account.pin_reset_code_sent")
+    assert pin.detail == {"phone": "+233 •••• ••• 777", "outcome": "sent"}
+    [phone] = await rows(tenant["operator"], "account.phone_change_code_sent")
+    assert phone.detail == {"phone": "+233 •••• ••• 778", "changing": True, "outcome": "sent"}
+    [failed] = await rows(tenant["operator"], "account.password_change_failed")
+    assert failed.detail == {"reason": "wrong_current_password"}
+    [changed] = await rows(tenant["operator"], "account.password_changed")
+    assert changed.changes == {"password": REDACTED}
+    for row in (pin, phone, failed, changed):
+        assert_actor(row, tenant)
+        assert row.target_id == str(admin.id)
+        assert_none_of(row, PASSWORD, "Not-The-Password-1", "Brand-New-Pass-42", *ADMIN_PHONE_FORMS,
+                       "233244000778", "0244000778", *sent_codes)
+
+
+async def test_onboarding_rows(env, sent_codes):
+    from src.modules.admin_accounts.security_questions import SECURITY_QUESTIONS
+
+    operator = await make_operator()
+    async with async_session_factory() as db:
+        admin = AdminUser(isp_operator_id=operator.id, email=f"o-{uuid.uuid4().hex[:10]}@throwaway.test",
+                          password_hash=hash_password(PASSWORD), role="superadmin", is_active=True,
+                          must_complete_onboarding=True, must_change_password=False)
+        db.add(admin)
+        await db.commit()
+    res = await env["client"].post("/auth/login", json={"email": admin.email, "password": PASSWORD})
+    assert res.status_code == 200, res.text
+    h = {"Authorization": f"Bearer {res.json()['access_token']}"}
+    c = env["client"]
+    assert (await c.post("/auth/onboarding/phone", headers=h, json={"phone": "0244333999"})).status_code == 200
+    assert (await c.post("/auth/onboarding/otp/verify", headers=h, json={"code": "000000" if sent_codes[0] != "000000" else "111111"})).status_code == 400
+    assert (await c.post("/auth/onboarding/otp/verify", headers=h, json={"code": sent_codes[0]})).status_code == 200
+    question = sorted(SECURITY_QUESTIONS)[0]
+    done = await c.post("/auth/onboarding/password", headers=h, json={
+        "new_password": "Onboard-Pass-55z", "confirm_password": "Onboard-Pass-55z",
+        "security_question": question, "security_answer": "Accra Academy"})
+    assert done.status_code == 200, done.text
+
+    t = {"operator": operator, "admin": admin}
+    [sent] = await rows(operator, "account.onboarding_code_sent")
+    [failed] = await rows(operator, "account.onboarding_code_failed")
+    [verified] = await rows(operator, "account.onboarding_phone_verified")
+    [completed] = await rows(operator, "account.setup_completed")
+    assert sent.detail == {"phone": "+233 •••• ••• 999", "outcome": "sent"}
+    assert verified.detail == {"phone": "+233 •••• ••• 999"}
+    assert completed.changes == {"password": REDACTED, "security_answer": REDACTED, "security_question": "changed"}
+    assert completed.detail == {"mode": "onboarding"}
+    for row in (sent, failed, verified, completed):
+        assert_actor(row, t)
+        assert_none_of(row, PASSWORD, "Onboard-Pass-55z", "Accra Academy", "accra academy", question,
+                       "233244333999", "0244333999", "244333999", *sent_codes)
+
+
+async def test_password_reset_rows(env, tenant, sent_codes):
+    from src.modules.admin_accounts.security_questions import SECURITY_QUESTIONS
+
+    admin = tenant["admin"]
+    question = sorted(SECURITY_QUESTIONS)[1]
+    async with async_session_factory() as db:
+        await db.execute(update(AdminUser).where(AdminUser.id == admin.id).values(
+            security_question=question, security_answer_hash=hash_password("kumasi")))
+        await db.commit()
+    c = env["client"]
+    # An unknown email: the same answer, and no row anywhere.
+    assert (await c.post("/auth/reset/request", json={"email": "nobody-here@throwaway.test"})).status_code == 200
+    assert (await c.post("/auth/reset/request", json={"email": admin.email})).status_code == 200
+    assert (await c.post("/auth/reset/verify-otp", json={"email": admin.email, "code": "000000" if sent_codes[0] != "000000" else "111111"})).status_code == 400
+    granted = await c.post("/auth/reset/verify-otp", json={"email": admin.email, "code": sent_codes[0]})
+    assert granted.status_code == 200
+    token = granted.json()["reset_token"]
+    assert (await c.post("/auth/reset/security-question", json={"email": admin.email})).status_code == 200  # lookup: no row
+    assert (await c.post("/auth/reset/security-question", json={"email": admin.email, "answer": "takoradi"})).status_code == 400
+    answered = await c.post("/auth/reset/security-question", json={"email": admin.email, "answer": "Kumasi"})
+    assert answered.status_code == 200
+    done = await c.post("/auth/reset/set-password", json={"reset_token": token, "new_password": "Reset-Pass-66q", "confirm_password": "Reset-Pass-66q"})
+    assert done.status_code == 200, done.text
+
+    op = tenant["operator"]
+    [requested] = await all_rows(op, "auth.reset_requested")
+    [code_failed] = await all_rows(op, "auth.reset_code_failed")
+    [code_ok] = await all_rows(op, "auth.reset_code_verified")
+    [answer_failed] = await all_rows(op, "auth.reset_answer_failed")
+    [answer_ok] = await all_rows(op, "auth.reset_answer_verified")
+    [reset] = await all_rows(op, "auth.password_reset")
+    # Nobody has proved who they are yet: the system is the actor.
+    for row in (requested, code_failed, answer_failed):
+        assert (row.actor_type, row.actor_id) == ("system", None) and row.target_id == str(admin.id)
+        assert str(row.ip) == "127.0.0.1" and row.user_agent
+    for row in (code_ok, answer_ok, reset):
+        assert_actor(row, tenant)
+    assert requested.detail == {"phone": "+233 •••• ••• 777"}
+    assert answer_failed.detail == {"locked": False, "attempts": 1}
+    assert reset.changes == {"password": REDACTED} and reset.detail == {"via": "otp"}
+    async with async_session_factory() as db:
+        stray = (await db.execute(select(AuditLog).where(AuditLog.action.startswith("auth.reset"),
+                                                         AuditLog.summary.contains("nobody-here")))).scalars().all()
+    assert stray == []
+    for row in (requested, code_failed, code_ok, answer_failed, answer_ok, reset):
+        assert_none_of(row, token, "Reset-Pass-66q", "kumasi", "Kumasi", "takoradi", *ADMIN_PHONE_FORMS, *sent_codes)

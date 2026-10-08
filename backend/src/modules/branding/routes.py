@@ -18,6 +18,8 @@ from src.db.base import get_db
 from src.db.models import ISPOperator
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
 from src.middleware.permissions import CONFIG, READ, require_perm
+from src.modules import audit
+from src.modules.audit.fields import BRANDING
 from src.modules.branding.preview_store import set_preview_draft
 from src.modules.branding.service import build_branding
 from src.portal.routes import PORTAL_DIR
@@ -57,7 +59,7 @@ async def get_branding(
     return build_branding(await _get_operator(db, tenant.isp_operator_id))
 
 
-@router.put("", response_model=BrandingResponse, dependencies=[Depends(require_perm(CONFIG))])
+@router.put("", response_model=BrandingResponse, dependencies=[Depends(audit.audited), Depends(require_perm(CONFIG))])
 async def update_branding(
     body: BrandingUpdate,
     db: AsyncSession = Depends(get_db),
@@ -67,6 +69,7 @@ async def update_branding(
     # Only fields present in the request are touched; an explicit null clears a
     # field back to the platform default (build_branding fills it on read).
     fields = body.model_dump(exclude_unset=True)
+    before = BRANDING.snapshot(operator)
     for attr in (
         "portal_display_name",
         "primary_color",
@@ -80,6 +83,10 @@ async def update_branding(
         if attr in fields:
             setattr(operator, attr, fields[attr])
     operator.updated_at = datetime.now(timezone.utc)
+    changes = BRANDING.diff(before, BRANDING.snapshot(operator))
+    if changes:
+        audit.record(db, "branding.update", target_type="operator", target_id=operator.id,
+                     summary="Edited portal branding", changes=changes)
     await db.commit()
     await db.refresh(operator)
     return build_branding(operator)
@@ -109,7 +116,7 @@ async def post_preview_draft(
     await set_preview_draft(str(tenant.isp_operator_id), body.model_dump(exclude_unset=True))
 
 
-@router.post("/logo", response_model=BrandingResponse, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/logo", response_model=BrandingResponse, dependencies=[Depends(audit.audited), Depends(require_perm(CONFIG))])
 async def upload_logo(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
@@ -126,6 +133,19 @@ async def upload_logo(
         raise HTTPException(status_code=400, detail="Logo file is empty")
 
     operator = await _get_operator(db, tenant.isp_operator_id)
+    stamp = int(datetime.now(timezone.utc).timestamp())
+    filename = f"logo_{operator.id}_{stamp}.{ext}"
+
+    # The row is flushed before any file is touched: a failed audit write
+    # leaves the current logo in place rather than deleted underneath it.
+    before = BRANDING.snapshot(operator)
+    operator.logo_url = f"{_LOGO_URL_PREFIX}/{filename}"
+    operator.updated_at = datetime.now(timezone.utc)
+    audit.record(db, "branding.logo_upload", target_type="operator", target_id=operator.id,
+                 summary="Uploaded a new portal logo",
+                 changes=BRANDING.diff(before, BRANDING.snapshot(operator)),
+                 detail={"content_type": file.content_type, "bytes": len(contents)})
+    await db.flush()
 
     os.makedirs(_LOGO_DIR, exist_ok=True)
     # Remove any previous logo for this operator (any extension) so we don't leave
@@ -136,13 +156,9 @@ async def upload_logo(
         except OSError:
             pass
 
-    stamp = int(datetime.now(timezone.utc).timestamp())
-    filename = f"logo_{operator.id}_{stamp}.{ext}"
     with open(os.path.join(_LOGO_DIR, filename), "wb") as fh:
         fh.write(contents)
 
-    operator.logo_url = f"{_LOGO_URL_PREFIX}/{filename}"
-    operator.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(operator)
     return build_branding(operator)

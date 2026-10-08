@@ -9,6 +9,8 @@ from src.db.base import get_db
 from src.db.models import CommissionRule, Plan, Reseller, ResellerWallet, ResellerVoucherAllocation, Voucher
 from src.middleware.auth import TenantContext, get_admin_tenant_context
 from src.middleware.permissions import CONFIG, MONEY, require_perm
+from src.modules import audit
+from src.modules.audit.fields import COMMISSION_RULE, RESELLER
 from src.modules.resellers.wallet_service import WalletService
 from src.utils.reseller_auth import hash_reseller_password
 
@@ -44,7 +46,7 @@ async def admin_list_resellers(db: AsyncSession = Depends(get_db), tenant: Tenan
     return out
 
 
-@router.post("/resellers")
+@router.post("/resellers", dependencies=[Depends(audit.audited)])
 async def admin_create_reseller(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(CONFIG, active=True))):
     # Expected keys: name,email,phone,password,role,town_id,site_id
     email = (payload.get("email") or "").strip().lower()
@@ -71,6 +73,10 @@ async def admin_create_reseller(payload: dict, db: AsyncSession = Depends(get_db
 
     wallet = ResellerWallet(reseller_id=reseller.id, balance_ghs=Decimal("0.00"))
     db.add(wallet)
+    await db.refresh(reseller)
+    audit.record(db, "reseller.create", target_type="reseller", target_id=reseller.id,
+                 summary=f"Added reseller {reseller.name} ({reseller.email})",
+                 changes=RESELLER.diff(None, RESELLER.snapshot(reseller)))
     await db.commit()
     await db.refresh(reseller)
     return {"id": str(reseller.id)}
@@ -124,13 +130,14 @@ async def admin_get_reseller(reseller_id: uuid.UUID, db: AsyncSession = Depends(
     }
 
 
-@router.put("/resellers/{reseller_id}")
+@router.put("/resellers/{reseller_id}", dependencies=[Depends(audit.audited)])
 async def admin_update_reseller(reseller_id: uuid.UUID, payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(CONFIG))):
     reseller = (
         await db.execute(select(Reseller).where(Reseller.id == reseller_id, Reseller.isp_operator_id == tenant.isp_operator_id))
     ).scalar_one_or_none()
     if not reseller:
         raise HTTPException(status_code=404, detail="Reseller not found")
+    before = RESELLER.snapshot(reseller)
 
     if "email" in payload and payload["email"]:
         new_email = payload["email"].strip().lower()
@@ -147,11 +154,19 @@ async def admin_update_reseller(reseller_id: uuid.UUID, payload: dict, db: Async
     if payload.get("password"):
         reseller.password_hash = hash_reseller_password(payload["password"])
 
+    # Compared after a round trip, so "town_id" sent as text against a stored
+    # UUID is not a change.
+    await db.flush()
+    await db.refresh(reseller)
+    changes = RESELLER.diff(before, RESELLER.snapshot(reseller))
+    if changes:
+        audit.record(db, "reseller.update", target_type="reseller", target_id=reseller.id,
+                     summary=f"Edited reseller {reseller.name}", changes=changes)
     await db.commit()
     return {"ok": True}
 
 
-@router.put("/resellers/{reseller_id}/topup")
+@router.put("/resellers/{reseller_id}/topup", dependencies=[Depends(audit.audited)])
 async def admin_reseller_topup(reseller_id: uuid.UUID, payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(MONEY, active=True))):
     amount = payload.get("amount_ghs")
     if amount is None:
@@ -171,13 +186,18 @@ async def admin_reseller_topup(reseller_id: uuid.UUID, payload: dict, db: AsyncS
         ).scalar_one_or_none()
         if not reseller:
             raise HTTPException(status_code=404, detail="Reseller not found")
-        await wallet_service.topup(
+        wallet_tx = await wallet_service.topup(
             db,
             reseller_id=reseller_id,
             amount_ghs=amount_dec,
             description=description,
             triggered_by="admin",
         )
+        # Credit an operator hands out: with the wallet change, or not at all.
+        audit.record(db, "reseller.topup", target_type="reseller", target_id=reseller_id,
+                     summary=f"Topped up reseller {reseller.name} by GHS {wallet_tx.amount_ghs}",
+                     detail={"amount_ghs": wallet_tx.amount_ghs, "balance_after_ghs": wallet_tx.balance_after_ghs,
+                             "description": description, "wallet_transaction_reference": wallet_tx.reference})
         if tx_ctx:
             await tx_ctx.__aexit__(None, None, None)
         else:
@@ -249,7 +269,7 @@ async def admin_list_commission_rules(
     ]
 
 
-@router.post("/commission-rules")
+@router.post("/commission-rules", dependencies=[Depends(audit.audited)])
 async def admin_create_commission_rule(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(CONFIG))):
     rule = CommissionRule(
         isp_operator_id=tenant.isp_operator_id,
@@ -260,27 +280,46 @@ async def admin_create_commission_rule(payload: dict, db: AsyncSession = Depends
         is_active=bool(payload.get("is_active", True)),
     )
     db.add(rule)
-    await db.commit()
+    await db.flush()
     await db.refresh(rule)
+    audit.record(db, "commission_rule.create", target_type="commission_rule", target_id=rule.id,
+                 summary=f"Added a {rule.type} commission rule ({rule.value})",
+                 changes=COMMISSION_RULE.diff(None, COMMISSION_RULE.snapshot(rule)))
+    await db.commit()
     return {"id": str(rule.id)}
 
 
-@router.put("/commission-rules/{rule_id}")
+@router.put("/commission-rules/{rule_id}", dependencies=[Depends(audit.audited)])
 async def admin_update_commission_rule(rule_id: uuid.UUID, payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(CONFIG))):
     rule = (
         await db.execute(select(CommissionRule).where(CommissionRule.id == rule_id, CommissionRule.isp_operator_id == tenant.isp_operator_id))
     ).scalar_one_or_none()
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
+    before = COMMISSION_RULE.snapshot(rule)
     for field in ("reseller_id", "plan_id", "type", "value", "is_active"):
         if field in payload:
             setattr(rule, field, payload[field])
+    await db.flush()
+    await db.refresh(rule)
+    changes = COMMISSION_RULE.diff(before, COMMISSION_RULE.snapshot(rule))
+    if changes:
+        audit.record(db, "commission_rule.update", target_type="commission_rule", target_id=rule.id,
+                     summary="Edited a commission rule", changes=changes)
     await db.commit()
     return {"ok": True}
 
 
-@router.delete("/commission-rules/{rule_id}")
+@router.delete("/commission-rules/{rule_id}", dependencies=[Depends(audit.audited)])
 async def admin_delete_commission_rule(rule_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(CONFIG))):
+    rule = (
+        await db.execute(select(CommissionRule).where(CommissionRule.id == rule_id, CommissionRule.isp_operator_id == tenant.isp_operator_id))
+    ).scalar_one_or_none()
+    # Unchanged contract: deleting a rule that isn't there is still {"ok": true}, with no row.
+    if rule is not None:
+        audit.record(db, "commission_rule.delete", target_type="commission_rule", target_id=rule.id,
+                     summary=f"Deleted a {rule.type} commission rule ({rule.value})",
+                     changes=COMMISSION_RULE.diff(COMMISSION_RULE.snapshot(rule), None))
     await db.execute(delete(CommissionRule).where(CommissionRule.id == rule_id, CommissionRule.isp_operator_id == tenant.isp_operator_id))
     await db.commit()
     return {"ok": True}

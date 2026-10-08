@@ -69,7 +69,24 @@ ROUTER_CREDENTIAL = _fields("RouterCredential", ("api_username", "api_port", "us
 # anything, so a row says only that it changed.
 CONFIG_TEMPLATE = _fields("ConfigTemplate", ("name", "description", "is_default", "template_data"), hidden=("template_data",))
 
-ALL = (PLAN, VOUCHER, TOWN, SITE, ROUTER, ROUTER_REMOVAL, ROUTER_WIREGUARD, ROUTER_CREDENTIAL, CONFIG_TEMPLATE)
+# Portal branding. The contact phone is a real number: a row says only that it
+# changed.
+BRANDING = _fields("ISPOperator", (
+    "portal_display_name", "primary_color", "accent_color", "background_gradient_start",
+    "portal_welcome_message", "portal_template", "portal_contact_phone", "portal_contact_email", "logo_url",
+), hidden=("portal_contact_phone",))
+
+VOUCHER_SMS_TEMPLATE = _fields("ISPOperator", ("voucher_sms_template",))
+
+# password_hash is secret-named: "[redacted]" when a new password was set,
+# absent otherwise. The phone shows only as changed.
+RESELLER = _fields("Reseller", ("name", "email", "phone", "role", "town_id", "site_id", "is_active", "password_hash"),
+                   hidden=("phone",))
+
+COMMISSION_RULE = _fields("CommissionRule", ("reseller_id", "plan_id", "type", "value", "is_active"))
+
+ALL = (PLAN, VOUCHER, TOWN, SITE, ROUTER, ROUTER_REMOVAL, ROUTER_WIREGUARD, ROUTER_CREDENTIAL, CONFIG_TEMPLATE,
+       BRANDING, VOUCHER_SMS_TEMPLATE, RESELLER, COMMISSION_RULE)
 
 
 # Payment and SMS provider credentials are one encrypted blob of catalog

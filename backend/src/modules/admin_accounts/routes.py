@@ -107,6 +107,42 @@ def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
 
+# ── Audit rows for account changes ────────────────────────────────────────
+#
+# Signed in: the admin is the actor. Not signed in (the forgot-password
+# routes): only a real account gets a row, as with failed sign-ins. A request
+# or a failed attempt is recorded with the system as actor (nobody has proved
+# who they are) and written after the response has gone, so the row adds no
+# timing difference against an unknown email. A step that proves identity
+# (code verified, answer right, password reset) has the admin as actor.
+# Phone numbers appear only masked to the last 3 digits.
+
+
+def _own_row(db: AsyncSession, admin: AdminUser, action: str, summary: str, **kwargs) -> None:
+    """A row in the caller's transaction, by the admin, about themselves."""
+    audit.record(db, action, actor=audit.Actor.for_admin(admin), isp_operator_id=admin.isp_operator_id,
+                 target_type="admin_user", target_id=admin.id, summary=summary, **kwargs)
+
+
+async def _own_row_detached(admin: AdminUser, action: str, summary: str, **kwargs) -> None:
+    """The same, committed on its own: an SMS already sent, a refused attempt."""
+    await audit.record_detached(action, actor=audit.Actor.for_admin(admin), isp_operator_id=admin.isp_operator_id,
+                                target_type="admin_user", target_id=admin.id, summary=summary, **kwargs)
+
+
+def _anonymous_row(background: BackgroundTasks, admin: AdminUser, action: str, summary: str, detail: dict | None = None) -> None:
+    background.add_task(
+        audit.record_detached, action, actor=audit.Actor.system(), isp_operator_id=admin.isp_operator_id,
+        target_type="admin_user", target_id=admin.id, summary=summary, detail=detail,
+        request_info=audit.current_request_info(),
+    )
+
+
+def _rejected(background: BackgroundTasks, detail: str) -> JSONResponse:
+    """The 400 _bad_request would raise, returned so its background row runs."""
+    return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"detail": detail}, background=background)
+
+
 def _question_list() -> list[dict]:
     return [{"key": key, "text": text} for key, text in SECURITY_QUESTIONS.items()]
 
@@ -193,7 +229,7 @@ async def onboarding_status(admin: AdminUser = Depends(get_authenticated_admin))
     }
 
 
-@router.post("/onboarding/phone", dependencies=[Depends(require_perm(SELF, onboarding=True))])
+@router.post("/onboarding/phone", dependencies=[Depends(audit.audited), Depends(require_perm(SELF, onboarding=True))])
 async def onboarding_send_code(
     body: OnboardingPhoneRequest,
     request: Request,
@@ -212,6 +248,9 @@ async def onboarding_send_code(
     await db.commit()
 
     result = await send_otp_sms(phone, code, purpose="onboarding")
+    await _own_row_detached(admin, "account.onboarding_code_sent",
+                            f"Sent a setup code to {mask_phone(phone)}" + ("" if result.success else " (SMS failed)"),
+                            detail={"phone": mask_phone(phone), "outcome": "sent" if result.success else "sms_failed"})
     if not result.success:
         # Never leave a live code the admin never received.
         row.consumed_at = datetime.now(timezone.utc)
@@ -223,7 +262,7 @@ async def onboarding_send_code(
     return {"status": "sent", "phone": mask_phone(phone), "expires_in_seconds": OTP_TTL_MINUTES * 60}
 
 
-@router.post("/onboarding/otp/verify", dependencies=[Depends(require_perm(SELF, onboarding=True))])
+@router.post("/onboarding/otp/verify", dependencies=[Depends(audit.audited), Depends(require_perm(SELF, onboarding=True))])
 async def onboarding_verify_code(
     body: OtpVerifyRequest,
     request: Request,
@@ -236,15 +275,18 @@ async def onboarding_verify_code(
 
     result = await otp_service.verify_code(db, admin_user_id=admin.id, purpose="onboarding", code=body.code)
     if not result.ok:
+        await _own_row_detached(admin, "account.onboarding_code_failed", "Entered a wrong or expired setup code")
         raise _bad_request(otp_service.failure_message(result))
 
     admin.phone = result.row.phone
     admin.phone_verified = True
+    _own_row(db, admin, "account.onboarding_phone_verified", f"Verified phone {mask_phone(admin.phone)}",
+             detail={"phone": mask_phone(admin.phone)})
     await db.commit()
     return {"status": "verified", "phone": mask_phone(admin.phone)}
 
 
-@router.post("/onboarding/password", dependencies=[Depends(require_perm(SELF, onboarding=True))])
+@router.post("/onboarding/password", dependencies=[Depends(audit.audited), Depends(require_perm(SELF, onboarding=True))])
 async def onboarding_set_password(
     body: OnboardingPasswordRequest,
     request: Request,
@@ -270,6 +312,11 @@ async def onboarding_set_password(
         admin.security_question = body.security_question
         admin.security_answer_hash = hash_password(answer)
     admin.must_complete_onboarding = False
+    # Secret-named keys: a row says "[redacted]", i.e. set, never the value.
+    changed = {"password": "changed", **({"security_answer": "changed", "security_question": "changed"} if mode == "onboarding" or question_given else {})}
+    _own_row(db, admin, "account.setup_completed",
+             "Finished account setup" if mode == "onboarding" else "Set a new password after a platform reset",
+             changes=changed, detail={"mode": mode})
     await db.commit()
     logger.info("admin_setup_password_set admin_id=%s mode=%s", admin.id, mode)
     # The temp-password session is now invalid (token_version bumped).
@@ -285,7 +332,7 @@ class ChangePasswordRequest(BaseModel):
     confirm_password: str = Field(max_length=256)
 
 
-@router.post("/me/password", response_model=TokenResponse, dependencies=[Depends(require_perm(SELF))])
+@router.post("/me/password", response_model=TokenResponse, dependencies=[Depends(audit.audited), Depends(require_perm(SELF))])
 async def change_my_password(
     body: ChangePasswordRequest,
     request: Request,
@@ -304,6 +351,8 @@ async def change_my_password(
     await enforce_rate_limit(f"acct:{admin.id}", "admin:password-change", limit=5, window_seconds=900)
 
     if not verify_password(body.current_password, admin.password_hash):
+        await _own_row_detached(admin, "account.password_change_failed", "Password change refused: wrong current password",
+                                detail={"reason": "wrong_current_password"})
         raise _bad_request("Your current password is incorrect.")
     _validate_new_password(admin, body.new_password, body.confirm_password)
 
@@ -313,6 +362,8 @@ async def change_my_password(
         .where(AdminOtpCode.admin_user_id == admin.id, AdminOtpCode.consumed_at.is_(None))
         .values(consumed_at=datetime.now(timezone.utc))
     )
+    _own_row(db, admin, "account.password_changed", "Changed their password (other sessions signed out)",
+             changes={"password": "changed"})
     await db.commit()
     await db.refresh(admin)
     logger.info("admin_password_changed admin_id=%s", admin.id)
@@ -373,7 +424,7 @@ async def _send_reset_code_in_background(phone: str, code: str) -> None:
         logger.error("admin_reset_sms_failed phone=%s error=%s", mask_phone(phone), result.error)
 
 
-@router.post("/reset/request")
+@router.post("/reset/request", dependencies=[Depends(audit.audited)])
 async def reset_request(
     body: ResetRequest,
     request: Request,
@@ -393,11 +444,13 @@ async def reset_request(
     await db.commit()
     # Sent after the response so SMS latency can't reveal that the account exists.
     background.add_task(_send_reset_code_in_background, admin.phone, code)
+    _anonymous_row(background, admin, "auth.reset_requested", f"Password reset code requested for {admin.email}",
+                   detail={"phone": mask_phone(admin.phone)})
     return {"status": "ok", "message": RESET_REQUEST_MESSAGE}
 
 
-@router.post("/reset/verify-otp")
-async def reset_verify_otp(body: ResetVerifyOtpRequest, request: Request, db: AsyncSession = Depends(get_db)):
+@router.post("/reset/verify-otp", dependencies=[Depends(audit.audited)])
+async def reset_verify_otp(body: ResetVerifyOtpRequest, request: Request, background: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     email = _email_key(body.email)
     await enforce_rate_limit(_client_ip(request), "admin:reset-verify", limit=20, window_seconds=900)
     await enforce_rate_limit(_email_bucket(email), "admin:reset-verify", limit=10, window_seconds=900)
@@ -411,7 +464,9 @@ async def reset_verify_otp(body: ResetVerifyOtpRequest, request: Request, db: As
     if not result.ok:
         # One message for every failure mode: a distinct "locked"/"expired"
         # answer would tell an attacker the account is real.
-        raise _bad_request(RESET_CODE_FAILED)
+        _anonymous_row(background, admin, "auth.reset_code_failed", f"Wrong or expired reset code for {admin.email}")
+        return _rejected(background, RESET_CODE_FAILED)
+    _own_row(db, admin, "auth.reset_code_verified", "Verified a password reset code", detail={"via": "otp"})
     await db.commit()
     return {
         "status": "verified",
@@ -421,8 +476,8 @@ async def reset_verify_otp(body: ResetVerifyOtpRequest, request: Request, db: As
     }
 
 
-@router.post("/reset/security-question")
-async def reset_security_question(body: SecurityQuestionRequest, request: Request, db: AsyncSession = Depends(get_db)):
+@router.post("/reset/security-question", dependencies=[Depends(audit.audited)])
+async def reset_security_question(body: SecurityQuestionRequest, request: Request, background: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     email = _email_key(body.email)
     await enforce_rate_limit(_client_ip(request), "admin:reset-question", limit=20, window_seconds=900)
 
@@ -444,15 +499,22 @@ async def reset_security_question(body: SecurityQuestionRequest, request: Reques
     if int(admin.security_answer_attempt_count or 0) >= SECURITY_ANSWER_MAX_ATTEMPTS:
         # Locked until a successful reset (via OTP) clears the counter.
         verify_password(answer, _DUMMY_HASH)
-        raise _bad_request(RESET_ANSWER_FAILED)
+        _anonymous_row(background, admin, "auth.reset_answer_failed", f"Security answer tried while locked for {admin.email}",
+                       detail={"locked": True, "attempts": int(admin.security_answer_attempt_count or 0)})
+        return _rejected(background, RESET_ANSWER_FAILED)
 
     if not verify_password(answer, admin.security_answer_hash):
         admin.security_answer_attempt_count = int(admin.security_answer_attempt_count or 0) + 1
         await db.commit()
-        if admin.security_answer_attempt_count >= SECURITY_ANSWER_MAX_ATTEMPTS:
+        locked = admin.security_answer_attempt_count >= SECURITY_ANSWER_MAX_ATTEMPTS
+        if locked:
             logger.warning("admin_security_answer_locked admin_id=%s", admin.id)
-        raise _bad_request(RESET_ANSWER_FAILED)
+        _anonymous_row(background, admin, "auth.reset_answer_failed", f"Wrong security answer for {admin.email}",
+                       detail={"locked": locked, "attempts": int(admin.security_answer_attempt_count)})
+        return _rejected(background, RESET_ANSWER_FAILED)
 
+    _own_row(db, admin, "auth.reset_answer_verified", "Answered their security question for a password reset",
+             detail={"via": "security_question"})
     await db.commit()
     return {
         "status": "verified",
@@ -462,7 +524,7 @@ async def reset_security_question(body: SecurityQuestionRequest, request: Reques
     }
 
 
-@router.post("/reset/set-password")
+@router.post("/reset/set-password", dependencies=[Depends(audit.audited)])
 async def reset_set_password(body: ResetSetPasswordRequest, request: Request, db: AsyncSession = Depends(get_db)):
     await enforce_rate_limit(_client_ip(request), "admin:reset-set-password", limit=10, window_seconds=900)
     grant = verify_password_reset_token(body.reset_token)
@@ -495,6 +557,8 @@ async def reset_set_password(body: ResetSetPasswordRequest, request: Request, db
         )
         .values(consumed_at=datetime.now(timezone.utc))
     )
+    _own_row(db, admin, "auth.password_reset", "Reset their password (all sessions signed out)",
+             changes={"password": "changed"}, detail={"via": grant.get("via")})
     await db.commit()
     logger.info("admin_password_reset admin_id=%s via=%s", admin.id, grant.get("via"))
     return {"status": "password_reset"}
@@ -694,7 +758,7 @@ async def verify_my_pin(
     return {"status": "verified", "verified_until": until.isoformat()}
 
 
-@router.post("/me/pin/forgot", dependencies=[Depends(require_perm(SELF))])
+@router.post("/me/pin/forgot", dependencies=[Depends(audit.audited), Depends(require_perm(SELF))])
 async def forgot_my_pin(
     request: Request,
     admin: AdminUser = Depends(get_current_user),
@@ -719,6 +783,9 @@ async def forgot_my_pin(
     await db.commit()
 
     result = await send_otp_sms(admin.phone, code, purpose="pin_reset")
+    await _own_row_detached(admin, "account.pin_reset_code_sent",
+                            f"Sent a PIN reset code to {mask_phone(admin.phone)}" + ("" if result.success else " (SMS failed)"),
+                            detail={"phone": mask_phone(admin.phone), "outcome": "sent" if result.success else "sms_failed"})
     if not result.success:
         # Never leave a live code the admin never received.
         row.consumed_at = datetime.now(timezone.utc)
@@ -886,7 +953,7 @@ async def my_security_status(
     }
 
 
-@router.post("/me/phone", dependencies=[Depends(require_perm(SELF)), Depends(require_recent_pin)])
+@router.post("/me/phone", dependencies=[Depends(audit.audited), Depends(require_perm(SELF)), Depends(require_recent_pin)])
 async def request_phone_change(
     body: PhoneChangeRequest,
     request: Request,
@@ -919,6 +986,10 @@ async def request_phone_change(
     await db.commit()
 
     result = await send_otp_sms(phone, code, purpose="phone_change")
+    await _own_row_detached(admin, "account.phone_change_code_sent",
+                            f"Sent a code to {mask_phone(phone)} to " + ("change" if changing else "re-verify") + " their phone"
+                            + ("" if result.success else " (SMS failed)"),
+                            detail={"phone": mask_phone(phone), "changing": changing, "outcome": "sent" if result.success else "sms_failed"})
     if not result.success:
         row.consumed_at = datetime.now(timezone.utc)
         await db.commit()
