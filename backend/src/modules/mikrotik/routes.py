@@ -37,6 +37,7 @@ from src.modules.mikrotik.types import (
     RouterRemovalSummary,
     TempInterfacesRequest,
 )
+from src.middleware.tenant_refs import load_owned
 from src.modules import audit
 from src.modules.audit.fields import CONFIG_TEMPLATE, ROUTER, ROUTER_CREDENTIAL
 from src.modules.audit.redact import mask_code, scrub
@@ -360,6 +361,9 @@ async def provision_router(router_id: uuid.UUID, body: ProvisionRequest, db: Asy
     ).scalar_one_or_none()
     if router_row is None:
         raise HTTPException(status_code=404, detail="Router not found")
+    if body.template_id is not None:
+        # The caller's own template or a platform-wide one, as apply-template allows.
+        await load_owned(db, ConfigTemplate, body.template_id, tenant.isp_operator_id, label="Config template", allow_global=True)
     try:
         await provisioner.ensure_router_credentials(str(router_id))
     except RouterCredentialsMissingError as exc:
@@ -455,9 +459,9 @@ async def disconnect_router_user(
         ).scalar_one_or_none()
         voucher_id = str(voucher.id) if voucher else None
     elif voucher_id is not None:
-        voucher = (
-            await db.execute(select(Voucher).where(Voucher.id == voucher_id, Voucher.isp_operator_id == tenant.isp_operator_id))
-        ).scalar_one_or_none()
+        # Before the router is touched: another operator's voucher id is a 404,
+        # never a CoA event recorded against it.
+        voucher = await load_owned(db, Voucher, voucher_id, tenant.isp_operator_id, label="Voucher")
     if voucher_id is None:
         raise HTTPException(status_code=422, detail="voucher_id or username matching a voucher is required for audit logging")
     if body.username:

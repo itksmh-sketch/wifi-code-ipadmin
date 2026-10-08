@@ -97,6 +97,10 @@ class ConfigTemplateService:
         router = await db.get(Router, router_id)
         if router is None:
             raise TemplateValidationError("Router not found")
+        # The routes check this too; here it holds for any caller. Another
+        # operator's template reads as missing, never runs on this router.
+        if template.isp_operator_id is not None and template.isp_operator_id != router.isp_operator_id:
+            raise TemplateValidationError("Config template not found")
 
         from src.modules.mikrotik.radius_host import resolve_radius_host
 

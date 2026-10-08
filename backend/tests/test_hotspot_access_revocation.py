@@ -256,6 +256,13 @@ def disconnect_app(monkeypatch):
 
     monkeypatch.setattr(routes.audit, "record_detached", no_audit)
 
+    # The voucher_id must be the operator's own (load_owned 404s otherwise);
+    # the fake db has no rows, so stand in for that lookup.
+    async def own_voucher(db, model, row_id, operator_id, **kwargs):
+        return SimpleNamespace(id=row_id, code="ABCD-EFGH")
+
+    monkeypatch.setattr(routes, "load_owned", own_voucher)
+
     app.dependency_overrides[get_db] = fake_db
     monkeypatch.setattr(routes, "_ensure_router_in_tenant", fake_ensure)
     return SimpleNamespace(client=TestClient(app, raise_server_exceptions=False), db=db)

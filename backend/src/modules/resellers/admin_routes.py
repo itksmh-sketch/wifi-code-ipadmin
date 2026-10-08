@@ -6,9 +6,10 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import get_db
-from src.db.models import CommissionRule, Plan, Reseller, ResellerWallet, ResellerVoucherAllocation, Voucher
+from src.db.models import CommissionRule, Plan, Reseller, ResellerWallet, ResellerVoucherAllocation, Site, Town, Voucher
 from src.middleware.auth import TenantContext, get_admin_tenant_context
 from src.middleware.permissions import CONFIG, MONEY, require_perm
+from src.middleware.tenant_refs import load_owned
 from src.modules import audit
 from src.modules.audit.fields import COMMISSION_RULE, RESELLER
 from src.modules.resellers.wallet_service import WalletService
@@ -16,6 +17,22 @@ from src.utils.reseller_auth import hash_reseller_password
 
 router = APIRouter(prefix="/admin", tags=["admin-resellers"])
 wallet_service = WalletService()
+
+# Body fields that name another row, and what each must be. A null clears the
+# reference; anything else has to be the caller's own row (404 otherwise).
+_RESELLER_REFS = {"town_id": (Town, "Town"), "site_id": (Site, "Site")}
+_RULE_REFS = {"reseller_id": (Reseller, "Reseller"), "plan_id": (Plan, "Plan")}
+
+
+async def _owned_refs(db: AsyncSession, payload: dict, refs: dict, operator_id) -> dict:
+    """The referenced ids present in ``payload``, each checked to be the caller's."""
+    checked = {}
+    for field, (model, label) in refs.items():
+        if field not in payload:
+            continue
+        value = payload[field]
+        checked[field] = None if value in (None, "") else (await load_owned(db, model, value, operator_id, label=label)).id
+    return checked
 
 
 @router.get("/resellers", dependencies=[Depends(require_perm(CONFIG))])
@@ -56,6 +73,7 @@ async def admin_create_reseller(payload: dict, db: AsyncSession = Depends(get_db
     exists = (await db.execute(select(Reseller).where(Reseller.email == email))).scalar_one_or_none()
     if exists:
         raise HTTPException(status_code=400, detail="Email already exists")
+    refs = await _owned_refs(db, payload, _RESELLER_REFS, tenant.isp_operator_id)
 
     reseller = Reseller(
         isp_operator_id=tenant.isp_operator_id,
@@ -64,8 +82,8 @@ async def admin_create_reseller(payload: dict, db: AsyncSession = Depends(get_db
         phone=payload.get("phone"),
         password_hash=hash_reseller_password(payload["password"]),
         role=payload.get("role") or "reseller",
-        town_id=payload.get("town_id"),
-        site_id=payload.get("site_id"),
+        town_id=refs.get("town_id"),
+        site_id=refs.get("site_id"),
         is_active=bool(payload.get("is_active", True)),
     )
     db.add(reseller)
@@ -138,6 +156,7 @@ async def admin_update_reseller(reseller_id: uuid.UUID, payload: dict, db: Async
     if not reseller:
         raise HTTPException(status_code=404, detail="Reseller not found")
     before = RESELLER.snapshot(reseller)
+    refs = await _owned_refs(db, payload, _RESELLER_REFS, tenant.isp_operator_id)
 
     if "email" in payload and payload["email"]:
         new_email = payload["email"].strip().lower()
@@ -147,9 +166,11 @@ async def admin_update_reseller(reseller_id: uuid.UUID, payload: dict, db: Async
                 raise HTTPException(status_code=400, detail="Email already exists")
             reseller.email = new_email
 
-    for field in ("name", "phone", "role", "town_id", "site_id", "is_active"):
+    for field in ("name", "phone", "role", "is_active"):
         if field in payload:
             setattr(reseller, field, payload[field])
+    for field, value in refs.items():
+        setattr(reseller, field, value)
 
     if payload.get("password"):
         reseller.password_hash = hash_reseller_password(payload["password"])
@@ -176,6 +197,9 @@ async def admin_reseller_topup(reseller_id: uuid.UUID, payload: dict, db: AsyncS
         amount_dec = Decimal(str(amount))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid amount_ghs")
+    # Checked here as well as in the wallet, whose ValueError surfaced as a 500.
+    if not amount_dec.is_finite() or amount_dec <= 0:
+        raise HTTPException(status_code=400, detail="amount_ghs must be greater than zero")
 
     tx_ctx = db.begin() if not db.in_transaction() else None
     if tx_ctx:
@@ -271,10 +295,11 @@ async def admin_list_commission_rules(
 
 @router.post("/commission-rules", dependencies=[Depends(audit.audited)])
 async def admin_create_commission_rule(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_perm(CONFIG))):
+    refs = await _owned_refs(db, payload, _RULE_REFS, tenant.isp_operator_id)
     rule = CommissionRule(
         isp_operator_id=tenant.isp_operator_id,
-        reseller_id=payload.get("reseller_id"),
-        plan_id=payload.get("plan_id"),
+        reseller_id=refs.get("reseller_id"),
+        plan_id=refs.get("plan_id"),
         type=payload.get("type") or "percentage",
         value=payload.get("value") or 0,
         is_active=bool(payload.get("is_active", True)),
@@ -297,9 +322,12 @@ async def admin_update_commission_rule(rule_id: uuid.UUID, payload: dict, db: As
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
     before = COMMISSION_RULE.snapshot(rule)
-    for field in ("reseller_id", "plan_id", "type", "value", "is_active"):
+    refs = await _owned_refs(db, payload, _RULE_REFS, tenant.isp_operator_id)
+    for field in ("type", "value", "is_active"):
         if field in payload:
             setattr(rule, field, payload[field])
+    for field, value in refs.items():
+        setattr(rule, field, value)
     await db.flush()
     await db.refresh(rule)
     changes = COMMISSION_RULE.diff(before, COMMISSION_RULE.snapshot(rule))

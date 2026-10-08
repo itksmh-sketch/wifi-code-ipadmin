@@ -1329,3 +1329,134 @@ async def test_password_reset_rows(env, tenant, sent_codes):
     assert stray == []
     for row in (requested, code_failed, code_ok, answer_failed, answer_ok, reset):
         assert_none_of(row, token, "Reset-Pass-66q", "kumasi", "Kumasi", "takoradi", *ADMIN_PHONE_FORMS, *sent_codes)
+
+
+# ── Tenant isolation: ids that name another operator's rows ─────────────────
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def other(env):
+    """Operator B, with one of everything A might try to point at."""
+    operator = await make_operator()
+    admin = await make_admin(operator)
+    h = await sign_in(env, admin)
+    c = env["client"]
+    made = await make_site(env, {"h": h})
+    plan = await new_plan(env, {"h": h}, price_ghs=float(1 + uuid.uuid4().int % 900))
+    reseller = (await c.post("/admin/resellers", headers=h, json={
+        "name": "B res", "email": f"b-{uuid.uuid4().hex[:8]}@throwaway.test", "password": "B-Res-Pass-1"})).json()
+    template = (await c.post("/admin/config-templates", headers=h, json={
+        "name": f"b-tpl-{uuid.uuid4().hex[:6]}", "template_data": {"version": 1, "commands": [{"path": "/ip/dns"}]}})).json()
+    voucher = (await c.post("/vouchers/generate", headers=h, json={"plan_id": plan["id"], "quantity": 1})).json()[0]
+    return {"operator": operator, "h": h, "town": made["town"]["id"], "site": made["site"]["id"], "plan": plan["id"],
+            "reseller": reseller["id"], "template": template["id"], "voucher": voucher["id"]}
+
+
+async def _same_404(res, missing, label):
+    """B's id and an id that exists nowhere get the identical answer."""
+    assert res.status_code == 404 and missing.status_code == 404, (res.text, missing.text)
+    assert res.json() == missing.json() == {"detail": f"{label} not found"}
+
+
+async def test_reseller_cannot_point_at_another_operators_town_or_site(env, tenant, other):
+    from src.db.models import Reseller
+
+    c, h = env["client"], tenant["h"]
+    base = {"name": "A res", "password": "A-Res-Pass-1"}
+    for field, label in (("town_id", "Town"), ("site_id", "Site")):
+        res = await c.post("/admin/resellers", headers=h, json={**base, "email": f"a-{uuid.uuid4().hex[:8]}@throwaway.test", field: other[field[:-3]]})
+        missing = await c.post("/admin/resellers", headers=h, json={**base, "email": f"a-{uuid.uuid4().hex[:8]}@throwaway.test", field: str(uuid.uuid4())})
+        await _same_404(res, missing, label)
+    junk = await c.post("/admin/resellers", headers=h, json={**base, "email": f"a-{uuid.uuid4().hex[:8]}@throwaway.test", "site_id": "not-a-uuid"})
+    assert junk.status_code == 404
+    async with async_session_factory() as db:
+        assert (await db.execute(select(Reseller).where(Reseller.isp_operator_id == tenant["operator"].id))).scalars().all() == []
+
+    # An edit: refused, and the reseller is untouched.
+    own = await make_site(env, tenant)
+    rid = (await c.post("/admin/resellers", headers=h, json={**base, "email": f"a-{uuid.uuid4().hex[:8]}@throwaway.test",
+                                                            "site_id": own["site"]["id"]})).json()["id"]
+    res = await c.put(f"/admin/resellers/{rid}", headers=h, json={"name": "Renamed", "site_id": other["site"]})
+    assert res.status_code == 404
+    async with async_session_factory() as db:
+        row = await db.get(Reseller, uuid.UUID(rid))
+    assert (row.name, str(row.site_id)) == ("A res", own["site"]["id"])
+    # Clearing a reference is still allowed.
+    assert (await c.put(f"/admin/resellers/{rid}", headers=h, json={"site_id": None})).status_code == 200
+
+
+async def test_commission_rule_cannot_point_at_another_operators_plan_or_reseller(env, tenant, other):
+    from src.db.models import CommissionRule
+
+    c, h = env["client"], tenant["h"]
+    for field, label in (("plan_id", "Plan"), ("reseller_id", "Reseller")):
+        res = await c.post("/admin/commission-rules", headers=h, json={field: other[field[:-3]], "type": "percentage", "value": 50})
+        missing = await c.post("/admin/commission-rules", headers=h, json={field: str(uuid.uuid4()), "type": "percentage", "value": 50})
+        await _same_404(res, missing, label)
+    rule_id = (await c.post("/admin/commission-rules", headers=h, json={"type": "percentage", "value": 5})).json()["id"]
+    res = await c.put(f"/admin/commission-rules/{rule_id}", headers=h, json={"value": 99, "plan_id": other["plan"]})
+    assert res.status_code == 404
+    async with async_session_factory() as db:
+        rules = (await db.execute(select(CommissionRule).where(CommissionRule.isp_operator_id == tenant["operator"].id))).scalars().all()
+    assert [(str(r.id), r.plan_id, float(r.value)) for r in rules] == [(rule_id, None, 5.0)]
+
+
+async def test_provision_cannot_use_another_operators_template(env, tenant, other, fake_router_side):
+    from src.db.models import ConfigTemplate, RouterProvisionLog
+    from src.modules.mikrotik.template_engine import ConfigTemplateService, TemplateValidationError
+
+    made = await make_site(env, tenant)
+    rid = await onboard(env, tenant, made["site"]["id"])
+    await _with_credentials(env, tenant, rid)
+    c, h = env["client"], tenant["h"]
+    res = await c.post(f"/admin/routers/{rid}/provision", headers=h, json={"dns_name": "wifi.local", "template_id": other["template"]})
+    missing = await c.post(f"/admin/routers/{rid}/provision", headers=h, json={"dns_name": "wifi.local", "template_id": str(uuid.uuid4())})
+    await _same_404(res, missing, "Config template")
+    async with async_session_factory() as db:
+        assert (await db.execute(select(RouterProvisionLog).where(RouterProvisionLog.router_id == uuid.UUID(rid)))).scalars().all() == []
+        # A platform-wide template is still fine.
+        shared = ConfigTemplate(isp_operator_id=None, name=f"global-{uuid.uuid4().hex[:6]}",
+                                template_data={"version": 1, "commands": [{"path": "/ip/dns"}]})
+        db.add(shared)
+        await db.commit()
+    ok = await c.post(f"/admin/routers/{rid}/provision", headers=h, json={"dns_name": "wifi.local", "template_id": str(shared.id)})
+    assert ok.status_code == 200, ok.text
+    # The engine refuses it too, whoever calls it.
+    async with async_session_factory() as db:
+        with pytest.raises(TemplateValidationError, match="not found"):
+            await ConfigTemplateService().apply_template(db, router_id=rid, template_id=other["template"])
+
+
+async def test_disconnect_cannot_name_another_operators_voucher(env, tenant, other, fake_router_side, monkeypatch):
+    from src.db.models import CoAEvent
+    from src.modules.mikrotik import routes as mt_routes
+
+    calls = []
+
+    async def disconnect(router_id, active_id):
+        calls.append(active_id)
+
+    monkeypatch.setattr(mt_routes.service, "disconnect_hotspot_user", disconnect)
+    made = await make_site(env, tenant)
+    rid = await onboard(env, tenant, made["site"]["id"])
+    c, h = env["client"], tenant["h"]
+    res = await c.post(f"/admin/routers/{rid}/disconnect-user", headers=h, json={"active_id": "*1", "voucher_id": other["voucher"]})
+    missing = await c.post(f"/admin/routers/{rid}/disconnect-user", headers=h, json={"active_id": "*1", "voucher_id": str(uuid.uuid4())})
+    await _same_404(res, missing, "Voucher")
+    assert calls == [], "the router was never contacted"
+    async with async_session_factory() as db:
+        assert (await db.execute(select(CoAEvent).where(CoAEvent.router_id == uuid.UUID(rid)))).scalars().all() == []
+
+
+async def test_topup_refuses_zero_and_negative_amounts(env, tenant):
+    from src.db.models import ResellerWallet
+
+    c, h = env["client"], tenant["h"]
+    rid = (await c.post("/admin/resellers", headers=h, json={"name": "T", "email": f"t-{uuid.uuid4().hex[:8]}@throwaway.test",
+                                                            "password": "T-Res-Pass-1"})).json()["id"]
+    for amount in (0, -5, "-0.01", "NaN", "Infinity"):
+        res = await c.put(f"/admin/resellers/{rid}/topup", headers=h, json={"amount_ghs": amount})
+        assert res.status_code == 400, (amount, res.status_code, res.text)
+    async with async_session_factory() as db:
+        wallet = (await db.execute(select(ResellerWallet).where(ResellerWallet.reseller_id == uuid.UUID(rid)))).scalar_one()
+    assert float(wallet.balance_ghs) == 0.0
+    assert await rows(tenant["operator"], "reseller.topup", rid) == []
