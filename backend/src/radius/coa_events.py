@@ -65,6 +65,11 @@ async def send_disconnect_with_event(
         result = {"status": "failed", "message": str(exc)}
         event.status = "failed"
         event.error_message = str(exc)
+    if event.error_message:
+        from src.modules.audit import stored_text
+
+        event.error_message = await stored_text.router_error(db, router, event.error_message)
+        result["message"] = event.error_message
 
     event.attempt_count = int(event.attempt_count or 0) + 1
     event.last_attempted_at = now

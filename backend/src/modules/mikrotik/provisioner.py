@@ -9,6 +9,7 @@ from sqlalchemy import select
 from src.config import get_settings
 from src.db.base import async_session_factory
 from src.db.models import ConfigTemplate, Router, RouterCredential, RouterProvisionLog
+from src.modules.audit import stored_text
 from src.modules.mikrotik.api_service import MikroTikAPIService, MikroTikOperationError, RouterCredentialsMissingError
 from src.modules.mikrotik.template_engine import ConfigTemplateService, TemplateValidationError
 from src.utils.portal_token import create_portal_router_token
@@ -134,7 +135,7 @@ class MikroTikProvisioner:
             payload = dict(entry)
             payload.setdefault("status", "info")
             payload.setdefault("started_at", datetime.now(timezone.utc).isoformat())
-            commands.append(payload)
+            commands += await stored_text.router_commands(db, log_row.router_id, [payload])
             log_row.commands_executed = commands
             await db.commit()
 
@@ -146,7 +147,9 @@ class MikroTikProvisioner:
             if log_row is None:
                 return
             commands = list(log_row.commands_executed or [])
-            commands.extend(commands_to_add)
+            # Params are masked by name already; a template can still carry a
+            # secret under any name, so every value is scrubbed too.
+            commands.extend(await stored_text.router_commands(db, log_row.router_id, commands_to_add))
             log_row.commands_executed = commands
             await db.commit()
 
@@ -156,6 +159,7 @@ class MikroTikProvisioner:
             if log_row is None:
                 return
             log_row.status = status
-            log_row.error_message = error_message
+            # Staff can read provision logs: never a secret the router echoed.
+            log_row.error_message = await stored_text.router_error(db, log_row.router_id, error_message)
             log_row.completed_at = datetime.now(timezone.utc)
             await db.commit()

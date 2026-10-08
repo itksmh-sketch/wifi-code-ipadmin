@@ -186,7 +186,12 @@ async def send_lockout_notification(admin_id: uuid.UUID, kind: str, event_id: uu
             result = await send_lockout_sms(admin, kind=kind)
             if event is not None:
                 event.sms_sent = bool(result.success)
-                event.sms_error = None if result.success else (result.error or "unknown")
+                if result.success:
+                    event.sms_error = None
+                else:
+                    from src.modules.audit import stored_text
+
+                    event.sms_error = await stored_text.platform_error(db, result.error or "unknown")
                 await db.commit()
     except Exception as exc:  # a notification must never surface as a request error
         logger.error("admin_lockout_sms_failed admin_id=%s kind=%s error=%s", admin_id, kind, exc)

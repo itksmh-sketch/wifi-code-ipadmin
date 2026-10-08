@@ -40,6 +40,7 @@ from src.modules.mikrotik.types import (
 from src.modules import audit
 from src.modules.audit.fields import CONFIG_TEMPLATE, ROUTER, ROUTER_CREDENTIAL
 from src.modules.audit.redact import mask_code, scrub
+from src.modules.audit import stored_text
 from src.modules.audit.router_secrets import router_secret_values
 from src.modules.wireguard.service import WireGuardService
 from src.utils.encryption import decrypt_secret, encrypt_secret
@@ -488,7 +489,7 @@ async def disconnect_router_user(
             isp_operator_id=tenant.isp_operator_id,
             event_type="disconnect",
             status="failed" if error else "confirmed",
-            error_message=str(error)[:500] if error else None,
+            error_message=await stored_text.router_error(db, router_row, error) if error else None,
             # A failed manual click is surfaced to the operator directly; mark it
             # retry-exhausted so coa_retry doesn't fire unrequested CoAs later.
             attempt_count=3 if error else 1,

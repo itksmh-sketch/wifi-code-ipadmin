@@ -966,3 +966,134 @@ async def test_invoice_pay_rows(env, tenant, monkeypatch):
     for row in (failed, ok):
         assert_actor(row, tenant)
         assert_clean(row, "secret-session-link")
+
+
+# ── Stored error text outside audit_log: provision logs, setup status, CoA,
+#    payment failure reasons, platform provider errors ─────────────────────
+
+async def _tunnelled(rid):
+    async with async_session_factory() as db:
+        await db.execute(update(Router).where(Router.id == uuid.UUID(rid)).values(
+            wg_enabled=True, wg_is_connected=True, wg_tunnel_ip=f"10.100.0.{50 + uuid.uuid4().int % 150}"))
+        await db.commit()
+
+
+async def test_provision_failure_stores_no_nas_secret(env, tenant, fake_router_side, monkeypatch):
+    """The router rejects the RADIUS command and quotes it back; a config
+    template put the secret under an innocent param name. Staff can read
+    provision logs, so neither may keep it."""
+    from src.db.models import RouterProvisionLog
+    from src.modules.mikrotik import routes as mt_routes
+    from src.modules.mikrotik.api_service import MikroTikOperationError
+
+    made = await make_site(env, tenant)
+    rid = await onboard(env, tenant, made["site"]["id"])
+    await _with_credentials(env, tenant, rid)
+    log_id = (await env["client"].post(f"/admin/routers/{rid}/provision", headers=tenant["h"], json={"dns_name": "wifi.local"})).json()["log_id"]
+
+    async def rejected(router_id, *, radius_host, radius_secret):
+        raise MikroTikOperationError(
+            f"failure: /radius add address={radius_host} secret={radius_secret} rejected",
+            commands=[{"path": "/radius/add", "params": {"comment": f"nas {radius_secret}", "secret": "***"}}],
+        )
+
+    async def host(router_id):
+        return "10.100.0.1"
+
+    provisioner = mt_routes.provisioner
+    monkeypatch.setattr(provisioner.api_service, "set_radius_server", rejected)
+    monkeypatch.setattr(provisioner, "_radius_host_for", host)
+    await provisioner._run_provision(router_id=rid, log_id=log_id, dns_name="wifi.local", hotspot_interface=None, template_id=None)
+
+    async with async_session_factory() as db:
+        log = await db.get(RouterProvisionLog, uuid.UUID(log_id))
+    assert log.status == "failed"
+    assert log.error_message == f"failure: /radius add address=10.100.0.1 secret={REDACTED} rejected"
+    stored = json.dumps(log.commands_executed)
+    assert NAS_SECRET not in stored and f"nas {REDACTED}" in stored
+    # What a staff user reads back.
+    staff = await make_admin(tenant["operator"], role="staff")
+    listing = await env["client"].get(f"/admin/routers/{rid}/provision-logs", headers=await sign_in(env, staff))
+    assert listing.status_code == 200 and log_id in listing.text
+    assert NAS_SECRET not in listing.text and API_PASSWORD not in listing.text
+
+
+async def test_setup_apply_failure_stores_no_secret_in_log_or_status(env, tenant, fake_router_side, monkeypatch):
+    from src.db.models import RouterProvisionLog, RouterSetupStatus
+    from src.modules.mikrotik import setup_routes
+    from src.modules.mikrotik.api_service import MikroTikOperationError
+
+    async def rejected(router_id, data):
+        raise MikroTikOperationError(f"bad secret={data['radius_secret']}",
+                                     commands=[{"path": "/radius/add", "params": {"comment": data["radius_secret"]}}])
+
+    monkeypatch.setattr(setup_routes.setup, "apply_radius", rejected)
+    made = await make_site(env, tenant)
+    rid = await onboard(env, tenant, made["site"]["id"])
+    await _tunnelled(rid)
+    assert (await env["client"].post(f"/admin/routers/{rid}/setup/radius/apply", headers=tenant["h"], json={})).status_code == 422
+    async with async_session_factory() as db:
+        log = (await db.execute(select(RouterProvisionLog).where(RouterProvisionLog.router_id == uuid.UUID(rid)))).scalar_one()
+        status = (await db.execute(select(RouterSetupStatus).where(RouterSetupStatus.router_id == uuid.UUID(rid)))).scalar_one()
+    assert log.error_message == f"bad secret={REDACTED}"
+    assert NAS_SECRET not in json.dumps(log.commands_executed)
+    assert status.radius_config == {"error": f"bad secret={REDACTED}"}
+
+
+async def test_coa_failure_stores_no_nas_secret(env, tenant, monkeypatch):
+    from types import SimpleNamespace
+
+    from src.radius import coa_events
+
+    made = await make_site(env, tenant)
+    rid = await onboard(env, tenant, made["site"]["id"])
+    await _tunnelled(rid)
+
+    def refused(*, router_ip, router_secret, attributes):
+        raise RuntimeError(f"NAK from {router_ip}: shared secret {router_secret} mismatch")
+
+    async def no_cookies(*a, **k):
+        return 0
+
+    monkeypatch.setattr(coa_events, "send_disconnect_request", refused)
+    monkeypatch.setattr(coa_events, "clear_router_cookies", no_cookies)
+    monkeypatch.setattr(coa_events, "voucher_login_names", lambda *a, **k: [])
+    event = SimpleNamespace(status=None, error_message=None, attempt_count=0, last_attempted_at=None)
+    session = SimpleNamespace(ip_address="10.5.50.20", username="u1", mac_address=None)
+    async with async_session_factory() as db:
+        router = await db.get(Router, uuid.UUID(rid))
+        result = await coa_events.send_disconnect_with_event(db, event=event, router=router, voucher=None, session=session)
+    assert event.status == "failed" and NAS_SECRET not in event.error_message
+    assert event.error_message.endswith(f"shared secret {REDACTED} mismatch")
+    assert NAS_SECRET not in result["message"]
+
+
+async def test_payment_failure_reason_stores_no_key(env, tenant, providers_offered):
+    from src.db.models import PaymentTransaction
+    from src.modules.payments.dependencies import get_payment_service
+
+    assert (await put_creds(env, tenant, "payment", "paystack", PAYSTACK)).status_code == 200
+    pid = await make_payment(env, tenant, status="pending")
+    async with async_session_factory() as db:
+        tx = await db.get(PaymentTransaction, uuid.UUID(pid))
+        await get_payment_service()._resolve_failed_initiation(
+            db, tx=tx, reason=f"Invalid key {PAYSTACK['secret_key']} (prefix {PAYSTACK['secret_key'][:12]})")
+    async with async_session_factory() as db:
+        tx = await db.get(PaymentTransaction, uuid.UUID(pid))
+    assert tx.status == "failed"
+    for column in (tx.failure_reason, tx.display_message):
+        assert column == f"Invalid key {REDACTED} (prefix {REDACTED})"
+
+
+async def test_platform_provider_error_stores_no_platform_key(env):
+    from src.db.models import PlatformNotificationSMSCredential
+    from src.modules.audit import stored_text
+    from src.modules.credentials.service import dump_credentials
+
+    key = "PlatNotifyKey-a1b2c3d4e5f6"
+    async with async_session_factory() as db:
+        db.add(PlatformNotificationSMSCredential(provider="arkesel", credentials_encrypted=dump_credentials(
+            {"api_key": key, "sender_id": "IPADMIN"}), is_active=False))
+        await db.commit()
+        out = await stored_text.platform_error(db, f"Arkesel 401: api key {key} invalid ({key[:10]}…)")
+    assert out == f"Arkesel 401: api key {REDACTED} invalid ({REDACTED}…)"

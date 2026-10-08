@@ -21,6 +21,7 @@ from src.middleware.auth import TenantContext, get_admin_tenant_context, require
 from src.middleware.permissions import CONFIG, READ, SECRETS, require_perm
 from src.middleware.auth import require_recent_pin
 from src.modules import audit
+from src.modules.audit import stored_text
 from src.modules.audit.redact import scrub
 from src.modules.audit.router_secrets import router_secret_values
 from src.modules.mikrotik.api_service import MikroTikOperationError, RouterCredentialsMissingError
@@ -89,8 +90,8 @@ async def _log_apply(
             status=status,
             started_at=datetime.now(timezone.utc),
             completed_at=datetime.now(timezone.utc),
-            error_message=error,
-            commands_executed=commands or [],
+            error_message=await stored_text.router_error(db, router_id, error),
+            commands_executed=await stored_text.router_commands(db, router_id, commands),
         )
     )
     await db.commit()
@@ -120,7 +121,7 @@ async def _run_apply(db, router_id, tenant, section, action, operation_coro, *, 
     except MikroTikOperationError as exc:
         await _audit_apply(db, router_id, section, config_to_store, error=str(exc))
         await _log_apply(db, router_id, tenant, action, "failed", exc.commands, str(exc))
-        await store.record_apply(db, router_id, section, "error", {"error": str(exc)})
+        await store.record_apply(db, router_id, section, "error", {"error": await stored_text.router_error(db, router_id, exc)})
         raise HTTPException(status_code=422, detail=str(exc))
 
     await _audit_apply(db, router_id, section, config_to_store)

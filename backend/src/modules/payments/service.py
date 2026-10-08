@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import ISPOperator, PaymentTransaction, Plan, Voucher
 from src.jobs.voucher_sms import enqueue_voucher_sms
+from src.modules.audit import stored_text
 from src.modules.payments.providers.base import PaymentProvider
 from src.modules.payments.providers.registry import build_payment_provider
 from src.modules.payments.provider_resolver import resolve_active_payment_provider
@@ -86,6 +87,8 @@ class PaymentService:
             return
         old_status = tx.status
         tx.status = PaymentStatus.FAILED.value
+        # The provider's own words, but never a key it echoed back.
+        reason = await stored_text.operator_payment_error(db, tx.isp_operator_id, reason)
         tx.failure_reason = reason
         tx.display_message = reason
         tx.next_action = PaymentNextAction.NONE.value
@@ -299,7 +302,7 @@ class PaymentService:
             tx.provider_reference = result.provider_reference
         tx.provider_state = result.provider_state
         tx.next_action = result.next_action.value
-        tx.display_message = result.display_message
+        tx.display_message = await stored_text.operator_payment_error(db, tx.isp_operator_id, result.display_message)
         tx.payment_channel = result.payment_channel
         if result.provider_payload is not None:
             tx.provider_payload = result.provider_payload
@@ -308,7 +311,7 @@ class PaymentService:
         if getattr(result, "authorization_url", None):
             tx.display_message = result.display_message or "Additional authorization is required."
         if result.failure_reason:
-            tx.failure_reason = result.failure_reason
+            tx.failure_reason = await stored_text.operator_payment_error(db, tx.isp_operator_id, result.failure_reason)
 
         if result.status == PaymentStatus.SUCCESS:
             await db.commit()

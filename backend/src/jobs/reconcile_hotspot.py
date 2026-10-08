@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import async_session_factory
 from src.db.models import Router, RouterCredential, RouterProvisionLog, Session, Voucher
+from src.modules.audit import stored_text
 from src.modules.mikrotik.access_revocation import router_is_reachable
 from src.modules.mikrotik.api_service import MikroTikAPIService
 
@@ -150,7 +151,8 @@ async def _enforce_cookie_policy(db: AsyncSession, service: MikroTikAPIService, 
     except Exception as exc:
         db.add(RouterProvisionLog(
             router_id=router.id, triggered_by=COOKIE_POLICY_TRIGGER, action="update_hotspot", status="failed",
-            started_at=started, completed_at=datetime.now(timezone.utc), error_message=str(exc)[:500],
+            started_at=started, completed_at=datetime.now(timezone.utc),
+            error_message=await stored_text.router_error(db, router, exc),
             commands_executed=[],
         ))
         await db.commit()
@@ -161,7 +163,7 @@ async def _enforce_cookie_policy(db: AsyncSession, service: MikroTikAPIService, 
     db.add(RouterProvisionLog(
         router_id=router.id, triggered_by=COOKIE_POLICY_TRIGGER, action="update_hotspot", status="success",
         started_at=started, completed_at=datetime.now(timezone.utc),
-        commands_executed=[{"change": c} for c in changed],
+        commands_executed=await stored_text.router_commands(db, router, [{"change": c} for c in changed]),
     ))
     await db.commit()
     stats["cookie_policy_applied"] += 1

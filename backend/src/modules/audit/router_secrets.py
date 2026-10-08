@@ -28,17 +28,18 @@ def _decrypted(value: str | None) -> str | None:
 
 async def router_secret_values(db: AsyncSession, router_row: Router) -> list[str]:
     """Read before anything clears them: a tunnel removal blanks the keys."""
+    field = lambda name: getattr(router_row, name, None)  # noqa: E731
     values = [
-        router_row.nas_secret_plain,
-        _decrypted(router_row.nas_secret),
-        router_row.nas_secret,
-        router_row.wg_peer_public_key,
-        _decrypted(router_row.wg_peer_private_key_encrypted),
-        router_row.wg_peer_private_key_encrypted,
+        field("nas_secret_plain"),
+        _decrypted(field("nas_secret")),
+        field("nas_secret"),
+        field("wg_peer_public_key"),
+        _decrypted(field("wg_peer_private_key_encrypted")),
+        field("wg_peer_private_key_encrypted"),
     ]
     try:
         encrypted = (
-            await db.execute(select(RouterCredential.api_password_encrypted).where(RouterCredential.router_id == router_row.id))
+            await db.execute(select(RouterCredential.api_password_encrypted).where(RouterCredential.router_id == field("id")))
         ).scalar_one_or_none()
     except Exception as exc:
         logger.error("audit_router_secrets_unreadable router_id=%s error=%s", router_row.id, exc)

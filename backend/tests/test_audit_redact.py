@@ -219,3 +219,17 @@ def test_scrub_redacts_key_shaped_tokens_even_without_the_secret():
     for token in ("sk_live_abc123", "pk_test_ZZ99", "FLWSECK-0a1b2c3d-X", "FLWPUBK_TEST-1234-X"):
         out = scrub(f"rejected {token} now", [])
         assert token not in out and out == f"rejected {REDACTED} now"
+
+
+def test_scrub_values_keeps_shape_and_length_but_drops_secrets():
+    from src.modules.audit.redact import scrub_values
+
+    secret = "Nas-Secret-9f3k2"
+    long_script = "x" * 3000 + f" key={secret}"
+    commands = [{"path": "/radius/add", "params": {"comment": f"nas {secret}", "port": 1812, "script": long_script}},
+                "plain string", None]
+    out = scrub_values(commands, [secret])
+    assert out[0]["params"]["comment"] == f"nas {REDACTED}" and out[0]["params"]["port"] == 1812
+    assert out[0]["params"]["script"] == "x" * 3000 + f" key={REDACTED}", "uncapped"
+    assert out[1:] == ["plain string", None]
+    assert secret not in str(out)

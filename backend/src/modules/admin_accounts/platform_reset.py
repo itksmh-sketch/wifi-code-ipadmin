@@ -116,7 +116,12 @@ async def reset_admin_password(
     # Only after the commit: never text credentials the database doesn't hold.
     result = await notifications.send_temp_password_sms(admin, temp_password, reason="reset")
     event.sms_sent = bool(result.success)
-    event.sms_error = None if result.success else (result.error or "sms_failed")[:500]
+    if result.success:
+        event.sms_error = None
+    else:
+        from src.modules.audit import stored_text
+
+        event.sms_error = await stored_text.platform_error(db, result.error or "sms_failed")
     await db.commit()
 
     logger.warning(

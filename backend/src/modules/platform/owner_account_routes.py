@@ -89,6 +89,10 @@ async def _alert(event_id: uuid.UUID, send) -> None:
             event = await db.get(PlatformOwnerSecurityEvent, event_id)
             if event is not None:
                 event.sms_sent = success
+                if error is not None:
+                    from src.modules.audit import stored_text
+
+                    error = await stored_text.platform_error(db, error)
                 event.sms_error = error
                 await db.commit()
     except Exception as exc:

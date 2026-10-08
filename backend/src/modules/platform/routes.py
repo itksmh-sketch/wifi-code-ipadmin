@@ -2100,10 +2100,13 @@ async def test_platform_payment_credentials(
             )
             response.raise_for_status()
     except Exception as exc:
+        from src.modules.audit import stored_text
+
+        error = await stored_text.platform_error(db, exc, keys.secret_key, keys.public_key, keys.webhook_secret)
         if row is not None:
-            row.last_validation_error = str(exc)
+            row.last_validation_error = error
             await db.commit()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=error) from exc
 
     if row is not None:
         row.last_validated_at = datetime.now(timezone.utc)
@@ -2211,10 +2214,13 @@ async def test_platform_sms_credentials(
     try:
         detail = await provider.verify_credentials()
     except Exception as exc:
-        row.last_validation_error = str(exc)
+        from src.modules.audit import stored_text
+
+        error = await stored_text.platform_error(db, exc, *values.values())
+        row.last_validation_error = error
         row.last_validated_at = None
         await db.commit()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=error) from exc
 
     row.last_validated_at = datetime.now(timezone.utc)
     row.last_validation_error = None
@@ -2324,10 +2330,13 @@ async def test_platform_notification_sms_credentials(
     try:
         detail = await provider.verify_credentials()
     except Exception as exc:
-        row.last_validation_error = str(exc)
+        from src.modules.audit import stored_text
+
+        error = await stored_text.platform_error(db, exc, *values.values())
+        row.last_validation_error = error
         row.last_validated_at = None
         await db.commit()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=error) from exc
 
     row.last_validated_at = datetime.now(timezone.utc)
     row.last_validation_error = None

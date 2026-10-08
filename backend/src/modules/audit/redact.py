@@ -134,7 +134,7 @@ _KEY_SHAPED_RE = re.compile(
 )
 
 
-def scrub(text: Any, secrets: Iterable[str | None] = ()) -> str | None:
+def scrub(text: Any, secrets: Iterable[str | None] = (), *, cap: bool = True) -> str | None:
     """An error message fit for a row: every secret value used in the call is
     replaced, then the text is capped.
 
@@ -146,16 +146,37 @@ def scrub(text: Any, secrets: Iterable[str | None] = ()) -> str | None:
     1. each whole secret, longest first, so one secret inside another goes whole;
     2. any run of FRAGMENT_MIN or more characters copied out of a secret;
     3. anything shaped like a payment-provider key.
+
+    ``cap=False`` keeps the whole text, for a value that must stay intact
+    (a stored RouterOS command); only an error message is capped.
     """
     if text is None:
         return None
-    text = str(text)[:_SCRUB_SCAN_MAX]
+    text = str(text)
+    if cap:
+        text = text[:_SCRUB_SCAN_MAX]
     values = sorted({str(s) for s in secrets if s}, key=len, reverse=True)
     for secret in values:
         text = text.replace(secret, REDACTED)
     text = _scrub_fragments(text, [s for s in values if len(s) >= FRAGMENT_MIN])
     text = _KEY_SHAPED_RE.sub(REDACTED, text)
-    return jsonable(text)
+    return jsonable(text) if cap else text
+
+
+def scrub_values(value: Any, secrets: Iterable[str | None], _depth: int = 0) -> Any:
+    """``scrub`` every string inside a JSON-like value, uncapped, keeping its
+    shape: for stored command lists, whose params may carry a secret under any
+    key (a config template can put the NAS secret anywhere)."""
+    secrets = list(secrets)
+    if _depth > 20:
+        return value
+    if isinstance(value, str):
+        return scrub(value, secrets, cap=False)
+    if isinstance(value, Mapping):
+        return {k: scrub_values(v, secrets, _depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [scrub_values(v, secrets, _depth + 1) for v in value]
+    return value
 
 
 def _scrub_fragments(text: str, secrets: list[str]) -> str:
