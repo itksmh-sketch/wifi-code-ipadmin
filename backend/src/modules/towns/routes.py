@@ -6,10 +6,14 @@ from src.db.models import Town, Site
 from src.schemas import TownCreate, TownUpdate, TownResponse, SiteCreate, SiteResponse, ErrorResponse
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
 from src.middleware.permissions import CONFIG, READ, require_perm
+from src.modules import audit
+from src.modules.audit.fields import SITE, TOWN
 from typing import List
 import uuid
 
 router = APIRouter(prefix="/towns", tags=["towns"])
+
+_WRITE = [Depends(audit.audited), Depends(require_perm(CONFIG))]
 
 
 @router.get("", response_model=List[TownResponse], dependencies=[Depends(require_perm(READ))])
@@ -18,10 +22,13 @@ async def list_towns(db: AsyncSession = Depends(get_db), tenant: TenantContext =
     return result.scalars().all()
 
 
-@router.post("", response_model=TownResponse, status_code=201, responses={400: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("", response_model=TownResponse, status_code=201, responses={400: {"model": ErrorResponse}}, dependencies=_WRITE)
 async def create_town(body: TownCreate, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     town = Town(isp_operator_id=tenant.isp_operator_id, name=body.name, region=body.region)
     db.add(town)
+    await db.flush()
+    audit.record(db, "town.create", target_type="town", target_id=town.id, summary=f"Added town {town.name}",
+                 changes=TOWN.diff(None, TOWN.snapshot(town)))
     await db.commit()
     await db.refresh(town)
     from src.modules.onboarding import mark_checklist
@@ -39,16 +46,20 @@ async def get_town(town_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenan
     return town
 
 
-@router.put("/{town_id}", response_model=TownResponse, responses={404: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
+@router.put("/{town_id}", response_model=TownResponse, responses={404: {"model": ErrorResponse}}, dependencies=_WRITE)
 async def update_town(town_id: uuid.UUID, body: TownUpdate, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     result = await db.execute(select(Town).where(Town.id == town_id, Town.isp_operator_id == tenant.isp_operator_id))
     town = result.scalar_one_or_none()
     if not town:
         raise HTTPException(status_code=404, detail="Town not found")
+    before = TOWN.snapshot(town)
     if body.name is not None:
         town.name = body.name
     if body.region is not None:
         town.region = body.region
+    changes = TOWN.diff(before, TOWN.snapshot(town))
+    if changes:
+        audit.record(db, "town.update", target_type="town", target_id=town.id, summary=f"Edited town {town.name}", changes=changes)
     await db.commit()
     await db.refresh(town)
     return town
@@ -62,7 +73,7 @@ async def list_sites_in_town(town_id: uuid.UUID, db: AsyncSession = Depends(get_
     return result.scalars().all()
 
 
-@router.post("/{town_id}/sites", response_model=SiteResponse, status_code=201, responses={404: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/{town_id}/sites", response_model=SiteResponse, status_code=201, responses={404: {"model": ErrorResponse}}, dependencies=_WRITE)
 async def create_site(town_id: uuid.UUID, body: SiteCreate, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     town_result = await db.execute(select(Town).where(Town.id == town_id, Town.isp_operator_id == tenant.isp_operator_id))
     town = town_result.scalar_one_or_none()
@@ -70,6 +81,9 @@ async def create_site(town_id: uuid.UUID, body: SiteCreate, db: AsyncSession = D
         raise HTTPException(status_code=404, detail="Town not found")
     site = Site(isp_operator_id=tenant.isp_operator_id, town_id=town_id, name=body.name, address=body.address)
     db.add(site)
+    await db.flush()
+    audit.record(db, "site.create", target_type="site", target_id=site.id, summary=f"Added site {site.name} in {town.name}",
+                 changes=SITE.diff(None, SITE.snapshot(site)))
     await db.commit()
     await db.refresh(site)
     return site

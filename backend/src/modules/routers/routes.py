@@ -10,11 +10,15 @@ from src.db.base import get_db
 from src.db.models import Router, Site
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
 from src.middleware.permissions import CONFIG, READ, require_perm
+from src.modules import audit
+from src.modules.audit.fields import ROUTER
 from src.schemas import ErrorResponse, RouterCreate, RouterResponse, RouterUpdate
 from src.utils.encryption import decrypt_secret, encrypt_secret
 from src.utils.freeradius_reload import reload_freeradius_clients
 
 router = APIRouter(prefix="/sites", tags=["routers"])
+
+_WRITE = [Depends(audit.audited), Depends(require_perm(CONFIG))]
 
 
 @router.get("/{site_id}/routers", response_model=List[RouterResponse], dependencies=[Depends(require_perm(READ))])
@@ -32,7 +36,7 @@ async def list_routers(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), t
     return routers
 
 
-@router.post("/{site_id}/routers", response_model=RouterResponse, status_code=201, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/{site_id}/routers", response_model=RouterResponse, status_code=201, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}, dependencies=_WRITE)
 async def create_router(site_id: uuid.UUID, body: RouterCreate, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     site_result = await db.execute(select(Site).where(Site.id == site_id, Site.isp_operator_id == tenant.isp_operator_id))
     if not site_result.scalar_one_or_none():
@@ -52,6 +56,8 @@ async def create_router(site_id: uuid.UUID, body: RouterCreate, db: AsyncSession
     )
     db.add(r)
     await db.flush()
+    audit.record(db, "router.create", target_type="router", target_id=r.id, summary=f"Added router {r.name}",
+                 changes=ROUTER.diff(None, ROUTER.snapshot(r)))
     from src.modules.onboarding import mark_checklist
     await mark_checklist(db, tenant.isp_operator_id, "router_added")
     await db.commit()
@@ -65,13 +71,14 @@ async def create_router(site_id: uuid.UUID, body: RouterCreate, db: AsyncSession
     return r
 
 
-@router.put("/routers/{router_id}", response_model=RouterResponse, responses={404: {"model": ErrorResponse}}, dependencies=[Depends(require_perm(CONFIG))])
+@router.put("/routers/{router_id}", response_model=RouterResponse, responses={404: {"model": ErrorResponse}}, dependencies=_WRITE)
 async def update_router(router_id: uuid.UUID, body: RouterUpdate, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     result = await db.execute(select(Router).where(Router.id == router_id, Router.isp_operator_id == tenant.isp_operator_id))
     r = result.scalar_one_or_none()
     if not r:
         raise HTTPException(status_code=404, detail="Router not found")
 
+    before = ROUTER.snapshot(r)
     if body.name is not None:
         r.name = body.name
     if body.ip_address is not None:
@@ -85,6 +92,11 @@ async def update_router(router_id: uuid.UUID, body: RouterUpdate, db: AsyncSessi
     if body.is_active is not None:
         r.is_active = body.is_active
 
+    await db.flush()
+    await db.refresh(r)
+    changes = ROUTER.diff(before, ROUTER.snapshot(r))
+    if changes:
+        audit.record(db, "router.update", target_type="router", target_id=r.id, summary=f"Edited router {r.name}", changes=changes)
     await db.commit()
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, reload_freeradius_clients)

@@ -60,10 +60,35 @@ AUDITED = {
     ("POST", "/api/v1/vouchers/print-batch/confirm"),
     ("PUT", "/api/v1/vouchers/{voucher_id}/disable"),
     ("PUT", "/api/v1/vouchers/{voucher_id}/reactivate"),
+    # P4 batch 2: towns/sites, routers, router setup, WireGuard, config templates
+    ("POST", "/api/v1/towns"),
+    ("PUT", "/api/v1/towns/{town_id}"),
+    ("POST", "/api/v1/towns/{town_id}/sites"),
+    ("POST", "/api/v1/sites/{site_id}/routers"),
+    ("PUT", "/api/v1/sites/routers/{router_id}"),
+    ("POST", "/api/v1/admin/config-templates"),
+    ("DELETE", "/api/v1/admin/config-templates/{template_id}"),
+    ("PUT", "/api/v1/admin/config-templates/{template_id}"),
+    ("POST", "/api/v1/admin/routers/onboard"),
+    ("POST", "/api/v1/admin/routers/temp-interfaces"),
+    ("POST", "/api/v1/admin/routers/test-connection"),
+    ("DELETE", "/api/v1/admin/routers/{router_id}"),
+    ("POST", "/api/v1/admin/routers/{router_id}/apply-template"),
+    ("POST", "/api/v1/admin/routers/{router_id}/credentials"),
+    ("PUT", "/api/v1/admin/routers/{router_id}/credentials"),
+    ("POST", "/api/v1/admin/routers/{router_id}/disconnect-user"),
+    ("POST", "/api/v1/admin/routers/{router_id}/provision"),
+    ("POST", "/api/v1/admin/routers/{router_id}/reboot"),
+    ("POST", "/api/v1/admin/routers/{router_id}/setup/hotspot/apply"),
+    ("POST", "/api/v1/admin/routers/{router_id}/setup/nat/apply"),
+    ("POST", "/api/v1/admin/routers/{router_id}/setup/network/apply"),
+    ("POST", "/api/v1/admin/routers/{router_id}/setup/radius/apply"),
+    ("DELETE", "/api/v1/admin/routers/{router_id}/wireguard"),
+    ("POST", "/api/v1/admin/routers/{router_id}/wireguard/setup"),
 }
 
-# Change nothing worth a row: token renewal, previews, and a check that only
-# reports whether a typed code matches.
+# Change nothing worth a row: token renewal, previews, a check that only
+# reports whether a typed code matches, and a live router health poll.
 EXEMPT = {
     ("POST", "/api/v1/auth/refresh"),
     ("POST", "/api/v1/platform/auth/refresh"),
@@ -71,6 +96,9 @@ EXEMPT = {
     ("POST", "/api/v1/sms-template/voucher/preview"),
     ("POST", "/api/v1/platform/notification-templates/{event}/{channel}/preview"),
     ("POST", "/api/v1/platform/setup/character-code/check"),
+    # Reads the router and stores the same metrics row the 5-minute collector
+    # job does; changes no configuration.
+    ("POST", "/api/v1/admin/routers/{router_id}/health/check"),
 }
 
 # P4 backlog, one comment per batch.
@@ -86,42 +114,16 @@ PENDING = {
     ("POST", "/api/v1/auth/reset/security-question"),
     ("POST", "/api/v1/auth/reset/set-password"),
     ("POST", "/api/v1/auth/reset/verify-otp"),
-    # Catalogue and configuration (towns/sites, branding, resellers, templates)
+    # Catalogue and configuration (branding, resellers, templates)
     ("PUT", "/api/v1/admin/branding"),
     ("POST", "/api/v1/admin/branding/logo"),
     ("POST", "/api/v1/admin/commission-rules"),
     ("DELETE", "/api/v1/admin/commission-rules/{rule_id}"),
     ("PUT", "/api/v1/admin/commission-rules/{rule_id}"),
-    ("POST", "/api/v1/admin/config-templates"),
-    ("DELETE", "/api/v1/admin/config-templates/{template_id}"),
-    ("PUT", "/api/v1/admin/config-templates/{template_id}"),
     ("POST", "/api/v1/admin/resellers"),
     ("PUT", "/api/v1/admin/resellers/{reseller_id}"),
     ("PUT", "/api/v1/admin/resellers/{reseller_id}/topup"),
-    ("PUT", "/api/v1/sites/routers/{router_id}"),
-    ("POST", "/api/v1/sites/{site_id}/routers"),
     ("PUT", "/api/v1/sms-template/voucher"),
-    ("POST", "/api/v1/towns"),
-    ("PUT", "/api/v1/towns/{town_id}"),
-    ("POST", "/api/v1/towns/{town_id}/sites"),
-    # Routers
-    ("POST", "/api/v1/admin/routers/onboard"),
-    ("POST", "/api/v1/admin/routers/temp-interfaces"),
-    ("POST", "/api/v1/admin/routers/test-connection"),
-    ("DELETE", "/api/v1/admin/routers/{router_id}"),
-    ("POST", "/api/v1/admin/routers/{router_id}/apply-template"),
-    ("POST", "/api/v1/admin/routers/{router_id}/credentials"),
-    ("PUT", "/api/v1/admin/routers/{router_id}/credentials"),
-    ("POST", "/api/v1/admin/routers/{router_id}/disconnect-user"),
-    ("POST", "/api/v1/admin/routers/{router_id}/health/check"),
-    ("POST", "/api/v1/admin/routers/{router_id}/provision"),
-    ("POST", "/api/v1/admin/routers/{router_id}/reboot"),
-    ("POST", "/api/v1/admin/routers/{router_id}/setup/hotspot/apply"),
-    ("POST", "/api/v1/admin/routers/{router_id}/setup/nat/apply"),
-    ("POST", "/api/v1/admin/routers/{router_id}/setup/network/apply"),
-    ("POST", "/api/v1/admin/routers/{router_id}/setup/radius/apply"),
-    ("DELETE", "/api/v1/admin/routers/{router_id}/wireguard"),
-    ("POST", "/api/v1/admin/routers/{router_id}/wireguard/setup"),
     # Money and credentials
     ("POST", "/api/v1/billing/invoices/{invoice_id}/pay"),
     ("DELETE", "/api/v1/payment-credentials/{provider}"),

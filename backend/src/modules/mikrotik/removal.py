@@ -46,6 +46,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import CoAEvent, Router, Session, Voucher
+from src.modules import audit
+from src.modules.audit.fields import ROUTER_REMOVAL
 from src.modules.mikrotik.api_service import MikroTikAPIService, MikroTikOperationError, RouterCredentialsMissingError
 from src.modules.mikrotik.types import RouterRemovalSummary
 from src.modules.wireguard.service import WireGuardError, WireGuardService
@@ -75,8 +77,14 @@ async def remove_router(
     # working fleet list and makes a second removal attempt 409 instead of
     # re-running — and it must not be held hostage by anything that happens
     # afterward (see module docstring for why that matters in practice).
+    before = ROUTER_REMOVAL.snapshot(router_row)
     router_row.is_active = False
     router_row.removed_at = datetime.now(timezone.utc)
+    # The removal itself, with this commit. What happened on the router and the
+    # tunnel afterwards is a second row the route writes once it's known.
+    audit.record(db, "router.remove", target_type="router", target_id=router_row.id,
+                 summary=f"Removed router {router_row.name}",
+                 changes=ROUTER_REMOVAL.diff(before, ROUTER_REMOVAL.snapshot(router_row)))
     await db.commit()
 
     router_reachable = True

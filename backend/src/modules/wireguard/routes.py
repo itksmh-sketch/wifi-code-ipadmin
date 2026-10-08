@@ -18,6 +18,10 @@ from src.db.base import get_db
 from src.db.models import PlatformOwner, Router
 from src.middleware.auth import TenantContext, get_admin_tenant_context, get_platform_owner_context, require_active_operator
 from src.middleware.permissions import CONFIG, READ, require_perm
+from src.modules import audit
+from src.modules.audit.fields import ROUTER_WIREGUARD
+from src.modules.audit.redact import scrub
+from src.modules.audit.router_secrets import router_secret_values
 from src.modules.platform.settings_service import get_setting
 from src.modules.wireguard.keys import generate_wireguard_keypair
 from src.modules.wireguard.service import WireGuardError, WireGuardService
@@ -47,7 +51,7 @@ async def _load_router(db: AsyncSession, router_id: uuid.UUID, tenant: TenantCon
     return router_row
 
 
-@router.post("/routers/{router_id}/wireguard/setup", dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/routers/{router_id}/wireguard/setup", dependencies=[Depends(audit.audited), Depends(require_perm(CONFIG))])
 async def setup_wireguard(
     router_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -60,17 +64,24 @@ async def setup_wireguard(
 
     # Idempotent: reuse the existing keypair + IP if already set up, so we never
     # orphan a peer on the server by regenerating keys.
-    if router_row.wg_peer_public_key and router_row.wg_peer_private_key_encrypted and router_row.wg_tunnel_ip:
+    reused = bool(router_row.wg_peer_public_key and router_row.wg_peer_private_key_encrypted and router_row.wg_tunnel_ip)
+    if reused:
         private_key = decrypt_secret(router_row.wg_peer_private_key_encrypted)
         public_key = router_row.wg_peer_public_key
         tunnel_ip = str(router_row.wg_tunnel_ip)
     else:
+        before = ROUTER_WIREGUARD.snapshot(router_row)
         private_key, public_key = generate_wireguard_keypair()
         tunnel_ip = await wg.allocate_tunnel_ip(db, str(router_row.id))
         router_row.wg_peer_private_key_encrypted = encrypt_secret(private_key)
         router_row.wg_peer_public_key = public_key
         router_row.wg_tunnel_ip = tunnel_ip
         router_row.wg_enabled = True
+        # The new tunnel record, with its commit. Adding the peer on the VPN
+        # server comes after; only a failure there gets a row of its own.
+        audit.record(db, "router.wireguard_setup", target_type="router", target_id=router_row.id,
+                     summary=f"Set up a VPN tunnel for router {router_row.name} ({tunnel_ip})",
+                     changes=ROUTER_WIREGUARD.diff(before, ROUTER_WIREGUARD.snapshot(router_row)))
         await db.commit()
         await db.refresh(router_row)
 
@@ -79,7 +90,20 @@ async def setup_wireguard(
         await wg.add_peer(public_key, tunnel_ip)
     except WireGuardError as exc:
         logger.error("wg_setup_add_peer_failed", router_id=str(router_id), error=str(exc))
+        await audit.record_detached(
+            "router.wireguard_peer", target_type="router", target_id=router_row.id,
+            summary=f"VPN server could not add the peer for router {router_row.name}",
+            detail={"tunnel_ip": tunnel_ip, "reused_tunnel": reused, "outcome": "failed",
+                    "error": scrub(exc, [private_key, public_key, *await router_secret_values(db, router_row)])},
+        )
         raise HTTPException(status_code=502, detail=f"Tunnel record saved, but the VPN server could not add the peer: {exc}")
+    if reused:
+        # Nothing changed in our database; the peer was re-asserted on the server.
+        await audit.record_detached(
+            "router.wireguard_peer", target_type="router", target_id=router_row.id,
+            summary=f"Re-added the VPN peer for router {router_row.name} ({tunnel_ip})",
+            detail={"tunnel_ip": tunnel_ip, "reused_tunnel": True, "outcome": "ok"},
+        )
 
     endpoint = await get_setting(db, "wg_server_endpoint")
     commands = wg.build_mikrotik_commands(private_key, tunnel_ip, endpoint=endpoint)
@@ -142,7 +166,7 @@ async def wireguard_status(
         }
 
 
-@router.delete("/routers/{router_id}/wireguard", status_code=200, dependencies=[Depends(require_perm(CONFIG))])
+@router.delete("/routers/{router_id}/wireguard", status_code=200, dependencies=[Depends(audit.audited), Depends(require_perm(CONFIG))])
 async def remove_wireguard(
     router_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -150,13 +174,17 @@ async def remove_wireguard(
 ):
     router_row = await _load_router(db, router_id, tenant)
     public_key = router_row.wg_peer_public_key
+    before = ROUTER_WIREGUARD.snapshot(router_row)
+    secrets = await router_secret_values(db, router_row)  # before the keys are cleared
 
     # Remove the peer from the interface first (best-effort — don't block the
     # DB cleanup if the sidecar is down; the peer can be reaped later).
+    peer_error = None
     if public_key:
         try:
             await wg.remove_peer(public_key)
         except WireGuardError as exc:
+            peer_error = scrub(exc, secrets)
             logger.warning("wg_remove_peer_failed", router_id=str(router_id), error=str(exc))
 
     await wg.deallocate_tunnel_ip(db, str(router_row.id))
@@ -166,6 +194,10 @@ async def remove_wireguard(
     router_row.wg_tunnel_ip = None
     router_row.wg_is_connected = False
     router_row.wg_last_handshake_at = None
+    audit.record(db, "router.wireguard_remove", target_type="router", target_id=router_row.id,
+                 summary=f"Removed the VPN tunnel of router {router_row.name}",
+                 changes=ROUTER_WIREGUARD.diff(before, ROUTER_WIREGUARD.snapshot(router_row)),
+                 detail={"peer_removed_on_server": bool(public_key) and peer_error is None, "peer_error": peer_error})
     await db.commit()
     logger.info("wg_tunnel_removed", router_id=str(router_id))
     return {"ok": True, "router_id": str(router_id)}

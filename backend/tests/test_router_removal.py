@@ -100,6 +100,11 @@ class FakeResult:
         return SimpleNamespace(first=lambda: (self._scalars_list or [None])[0], all=lambda: self._scalars_list)
 
 
+def coa_events(db):
+    """What remove_router added besides its audit row."""
+    return [obj for obj in db.added if type(obj).__name__ == "CoAEvent"]
+
+
 class FakeDb:
     """Dispatches by target table name (found in the compiled SQL) rather than
     call order, since how many queries remove_router issues depends on how
@@ -142,6 +147,23 @@ async def test_already_removed_router_raises_and_touches_nothing():
     with pytest.raises(removal.RouterAlreadyRemovedError):
         await removal.remove_router(db, router_row, router_row.isp_operator_id, api_service=api, wg_service=wg)
     assert api.calls == [] and wg.calls == [] and db.commits == 0
+
+
+# ── remove_router: the audit row ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_removal_audit_row_joins_the_first_commit():
+    router_row = _router()
+    db = FakeDb()
+    commits_at_add = []
+    real_add = db.add
+    db.add = lambda obj: (commits_at_add.append(db.commits), real_add(obj))
+    await removal.remove_router(db, router_row, router_row.isp_operator_id,
+                                api_service=FakeApiService(active_users=[]), wg_service=FakeWgService())
+    [row] = [obj for obj in db.added if type(obj).__name__ == "AuditLog"]
+    assert row.action == "router.remove" and row.target_id == str(router_row.id)
+    assert row.changes["is_active"] == {"before": True, "after": False}
+    assert commits_at_add[db.added.index(row)] == 0, "added before the first (is_active) commit"
 
 
 # ── remove_router: the common case ────────────────────────────────────────
@@ -206,8 +228,8 @@ async def test_active_user_is_disconnected_with_matching_voucher_and_session():
 
     assert summary.sessions_disconnected == 1 and summary.sessions_failed == 0
     assert api.disconnected == ["*3"]
-    assert len(db.added) == 1
-    event = db.added[0]
+    assert len(coa_events(db)) == 1
+    event = coa_events(db)[0]
     assert event.session_id == session_row.id
     assert event.voucher_id == str(voucher.id)
     assert event.router_id == router_row.id
@@ -231,7 +253,7 @@ async def test_active_user_with_no_matching_voucher_still_gets_disconnected():
 
     assert summary.sessions_disconnected == 1
     assert api.disconnected == ["*7"]  # the RouterOS-level kick still happened
-    assert db.added == []              # ...but no CoAEvent — would violate voucher_id NOT NULL
+    assert coa_events(db) == []              # ...but no CoAEvent — would violate voucher_id NOT NULL
 
 
 @pytest.mark.asyncio
@@ -246,7 +268,7 @@ async def test_multiple_active_users_all_processed_independently():
 
     assert summary.sessions_disconnected == 2
     assert set(api.disconnected) == {"*1", "*2"}
-    assert {e.voucher_id for e in db.added} == {str(v1.id), str(v2.id)}
+    assert {e.voucher_id for e in coa_events(db)} == {str(v1.id), str(v2.id)}
 
 
 @pytest.mark.asyncio
@@ -261,7 +283,7 @@ async def test_disconnect_failure_is_counted_but_does_not_block_removal():
 
     assert summary.sessions_disconnected == 1 and summary.sessions_failed == 1
     assert api.disconnected == ["*2"]  # only the one that succeeded
-    assert len(db.added) == 1          # no CoAEvent for the failed disconnect
+    assert len(coa_events(db)) == 1          # no CoAEvent for the failed disconnect
     # A disconnect failure must not stop the tunnel teardown or the removal itself.
     assert summary.wireguard_removed is True
     assert router_row.is_active is False

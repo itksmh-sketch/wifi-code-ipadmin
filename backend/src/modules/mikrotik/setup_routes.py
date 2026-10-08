@@ -20,6 +20,9 @@ from src.db.models import Router, RouterProvisionLog, RouterSetupStatus
 from src.middleware.auth import TenantContext, get_admin_tenant_context, require_active_operator
 from src.middleware.permissions import CONFIG, READ, SECRETS, require_perm
 from src.middleware.auth import require_recent_pin
+from src.modules import audit
+from src.modules.audit.redact import scrub
+from src.modules.audit.router_secrets import router_secret_values
 from src.modules.mikrotik.api_service import MikroTikOperationError, RouterCredentialsMissingError
 from src.modules.mikrotik import setup_service as svc
 from src.modules.mikrotik import setup_status as store
@@ -93,6 +96,21 @@ async def _log_apply(
     await db.commit()
 
 
+async def _audit_apply(db, router_id, section: str, config: dict, *, error: str | None = None) -> None:
+    """The router already changed (or refused): this row commits on its own and
+    never fails the request. ``config`` is the stored config, which never holds
+    the RADIUS secret; redaction would blank it anyway. An error from the
+    router may echo what it was sent, so it is scrubbed of every secret."""
+    if error is not None:
+        router_row = await db.get(Router, router_id)
+        error = scrub(error, await router_secret_values(db, router_row) if router_row else ())
+    await audit.record_detached(
+        f"router.setup_{section}", target_type="router", target_id=router_id,
+        summary=f"Applied {section} setup" + (" (failed)" if error else ""),
+        detail={"section": section, "outcome": "failed" if error else "ok", "config": config, "error": error},
+    )
+
+
 async def _run_apply(db, router_id, tenant, section, action, operation_coro, *, config_to_store, terminal_commands):
     """Shared apply flow: offline guard → run → log → persist status → respond."""
     try:
@@ -100,10 +118,12 @@ async def _run_apply(db, router_id, tenant, section, action, operation_coro, *, 
     except RouterCredentialsMissingError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except MikroTikOperationError as exc:
+        await _audit_apply(db, router_id, section, config_to_store, error=str(exc))
         await _log_apply(db, router_id, tenant, action, "failed", exc.commands, str(exc))
         await store.record_apply(db, router_id, section, "error", {"error": str(exc)})
         raise HTTPException(status_code=422, detail=str(exc))
 
+    await _audit_apply(db, router_id, section, config_to_store)
     await _log_apply(db, router_id, tenant, action, "success", commands)
     row = await store.record_apply(db, router_id, section, "configured", config_to_store)
     applied_at = getattr(row, f"{section}_applied_at")
@@ -156,7 +176,7 @@ async def detect_network(router_id: uuid.UUID, db: AsyncSession = Depends(get_db
     return {"status": status, "detected": detected}
 
 
-@router.post("/routers/{router_id}/setup/network/apply", response_model=ApplyResultResponse, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/routers/{router_id}/setup/network/apply", response_model=ApplyResultResponse, dependencies=[Depends(audit.audited), Depends(require_perm(CONFIG))])
 async def apply_network(router_id: uuid.UUID, body: NetworkApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
@@ -205,7 +225,7 @@ async def detect_hotspot(router_id: uuid.UUID, db: AsyncSession = Depends(get_db
     return {"status": status, "detected": detected}
 
 
-@router.post("/routers/{router_id}/setup/hotspot/apply", response_model=ApplyResultResponse, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/routers/{router_id}/setup/hotspot/apply", response_model=ApplyResultResponse, dependencies=[Depends(audit.audited), Depends(require_perm(CONFIG))])
 async def apply_hotspot(router_id: uuid.UUID, body: HotspotApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
@@ -251,7 +271,7 @@ async def detect_radius(router_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     return {"status": status, "detected": detected, "radius_host": radius_host, "other_addresses": other}
 
 
-@router.post("/routers/{router_id}/setup/radius/apply", response_model=ApplyResultResponse, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/routers/{router_id}/setup/radius/apply", response_model=ApplyResultResponse, dependencies=[Depends(audit.audited), Depends(require_perm(CONFIG))])
 async def apply_radius(router_id: uuid.UUID, body: RadiusApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
@@ -308,7 +328,7 @@ async def detect_nat(router_id: uuid.UUID, db: AsyncSession = Depends(get_db), t
     return {"status": status, "detected": detected, "duplicate_masquerade": detected.get("masquerade_count", 0) > 1}
 
 
-@router.post("/routers/{router_id}/setup/nat/apply", response_model=ApplyResultResponse, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/routers/{router_id}/setup/nat/apply", response_model=ApplyResultResponse, dependencies=[Depends(audit.audited), Depends(require_perm(CONFIG))])
 async def apply_nat(router_id: uuid.UUID, body: NatApplyRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = await _load_router(db, router_id, tenant)
     if not _is_online(router_row):
@@ -326,6 +346,7 @@ async def apply_nat(router_id: uuid.UUID, body: NatApplyRequest, db: AsyncSessio
         try:
             await setup.remove_duplicate_nat(str(router_id))
         except MikroTikOperationError as exc:
+            await _audit_apply(db, router_id, "nat", {"remove_duplicates": True}, error=str(exc))
             raise HTTPException(status_code=422, detail=str(exc))
 
     data = {

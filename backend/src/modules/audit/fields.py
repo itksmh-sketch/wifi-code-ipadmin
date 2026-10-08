@@ -9,15 +9,16 @@ is decided once rather than at every call site:
   * ``shown``: the tracked columns whose before/after values are written.
     Every other tracked column that changed is recorded as "changed".
 
-redact.diff still applies on top: a secret-looking name is never shown even if
-listed (tests/test_audit_fields.py also refuses to let one be listed).
+A secret-looking column (nas_secret_plain, api_password_encrypted, …) may be
+tracked, so a row can say it changed, but is never shown: _fields leaves it
+out of ``shown`` and redaction writes "[redacted]" in place of its value.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
 
-from src.modules.audit.redact import diff, snapshot
+from src.modules.audit.redact import diff, is_secret_name, snapshot
 
 
 @dataclass(frozen=True)
@@ -34,7 +35,8 @@ class ModelFields:
 
 
 def _fields(model: str, tracked: tuple[str, ...], hidden: tuple[str, ...] = ()) -> ModelFields:
-    return ModelFields(model, tracked, frozenset(tracked) - frozenset(hidden))
+    shown = {name for name in tracked if name not in hidden and not is_secret_name(name)}
+    return ModelFields(model, tracked, frozenset(shown))
 
 
 PLAN = _fields("Plan", (
@@ -45,4 +47,26 @@ PLAN = _fields("Plan", (
 # Never code, username or password: a voucher is bearer credit.
 VOUCHER = _fields("Voucher", ("status", "printed_at"))
 
-ALL = (PLAN, VOUCHER)
+TOWN = _fields("Town", ("name", "region"))
+
+SITE = _fields("Site", ("name", "address", "town_id"))
+
+# nas_secret_plain, not nas_secret: the encrypted column differs on every
+# write (Fernet), the plain one only when the secret really changed. Either
+# way the row says "[redacted]", never the value.
+ROUTER = _fields("Router", ("name", "site_id", "ip_address", "nas_identifier", "nas_secret_plain", "is_active"))
+
+ROUTER_REMOVAL = _fields("Router", ("is_active", "removed_at"))
+
+# The peer keys are secret-named, so they show as "[redacted]" when they change.
+ROUTER_WIREGUARD = _fields("Router", ("wg_enabled", "wg_tunnel_ip", "wg_peer_public_key", "wg_peer_private_key_encrypted"))
+
+# The password is re-sent (and re-encrypted) on every save, so it always shows
+# as "[redacted]" there: it was set again, whatever its value.
+ROUTER_CREDENTIAL = _fields("RouterCredential", ("api_username", "api_port", "use_ssl", "api_password_encrypted"))
+
+# template_data is RouterOS configuration an operator wrote; it can hold
+# anything, so a row says only that it changed.
+CONFIG_TEMPLATE = _fields("ConfigTemplate", ("name", "description", "is_default", "template_data"), hidden=("template_data",))
+
+ALL = (PLAN, VOUCHER, TOWN, SITE, ROUTER, ROUTER_REMOVAL, ROUTER_WIREGUARD, ROUTER_CREDENTIAL, CONFIG_TEMPLATE)

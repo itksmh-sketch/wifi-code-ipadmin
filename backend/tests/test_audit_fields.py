@@ -19,9 +19,18 @@ def test_tracked_fields_are_real_columns(entry):
 
 
 @pytest.mark.parametrize("entry", fields.ALL, ids=lambda e: e.model)
-def test_nothing_secret_is_tracked_or_shown(entry):
+def test_nothing_secret_is_shown(entry):
     assert entry.shown <= set(entry.tracked)
-    assert not [name for name in entry.tracked if is_secret_name(name)]
+    assert not [name for name in entry.shown if is_secret_name(name)]
+
+
+def test_a_changed_secret_column_reads_as_redacted_in_the_row():
+    from src.modules.audit.service import build
+
+    changes = fields.ROUTER.diff({"name": "R", "nas_secret_plain": "old-secret"}, {"name": "R", "nas_secret_plain": "new-secret"})
+    row = build("x", changes=changes)
+    assert row.changes == {"nas_secret_plain": REDACTED}
+    assert "secret" not in str(row.changes).replace("nas_secret_plain", "")
 
 
 def test_voucher_credentials_are_never_tracked():

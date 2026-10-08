@@ -122,3 +122,20 @@ def diff(
         else:
             changes[name] = CHANGED
     return changes or None
+
+
+def scrub(text: Any, secrets: Iterable[str | None] = ()) -> str | None:
+    """An error message fit for a row: every secret value used in the call is
+    replaced, then the text is capped.
+
+    Name-based redaction can't see inside free text, and a router or provider
+    may echo back what it was sent (a RADIUS secret in a rejected command).
+    Scrubbing comes before the cap, so a secret cut at the limit can't leave a
+    prefix behind; longest first, so one secret inside another goes whole.
+    """
+    if text is None:
+        return None
+    text = str(text)
+    for secret in sorted({s for s in secrets if s}, key=len, reverse=True):
+        text = text.replace(secret, REDACTED)
+    return jsonable(text)

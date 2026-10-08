@@ -246,7 +246,15 @@ def disconnect_app(monkeypatch):
         yield db
 
     async def fake_ensure(*args):
+        # The failure row scrubs the router's secrets from the error text.
+        return SimpleNamespace(id=uuid.uuid4(), name="R1", nas_secret=None, nas_secret_plain=None,
+                               wg_peer_public_key=None, wg_peer_private_key_encrypted=None)
+
+    # The disconnect's audit row commits on its own session; keep it off the database here.
+    async def no_audit(*args, **kwargs):
         return None
+
+    monkeypatch.setattr(routes.audit, "record_detached", no_audit)
 
     app.dependency_overrides[get_db] = fake_db
     monkeypatch.setattr(routes, "_ensure_router_in_tenant", fake_ensure)

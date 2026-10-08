@@ -15,7 +15,7 @@ from sqlalchemy import inspect as sa_inspect
 from src.db import models
 from src.modules.audit import Actor, RequestInfo
 from src.modules.audit.context import request_info_from, _valid_ip
-from src.modules.audit.redact import CHANGED, REDACTED, diff, is_secret_name, jsonable, redact_detail, snapshot
+from src.modules.audit.redact import CHANGED, REDACTED, STRING_MAX, diff, is_secret_name, jsonable, redact_detail, scrub, snapshot
 from src.modules.audit.service import build
 
 
@@ -171,3 +171,31 @@ def test_request_info_from_headers():
     Req.headers = {"x-request-id": "bad id; drop table"}
     info = request_info_from(Req())
     assert info.request_id != "bad id; drop table" and len(info.request_id) == 32 and info.user_agent is None
+
+
+# ── scrub: secret values inside free text (router / provider errors) ────────
+
+def test_scrub_replaces_every_secret_value_used_in_the_call():
+    text = "radius add secret=Nas-Secret-9f3k2 failed; login api/Api-Passw0rd-x7q; Nas-Secret-9f3k2 again"
+    out = scrub(text, ["Nas-Secret-9f3k2", "Api-Passw0rd-x7q", None, ""])
+    assert "Nas-Secret-9f3k2" not in out and "Api-Passw0rd-x7q" not in out
+    assert out == f"radius add secret={REDACTED} failed; login api/{REDACTED}; {REDACTED} again"
+
+
+def test_scrub_before_the_cap_so_no_prefix_of_a_secret_survives():
+    secret = "Nas-Secret-9f3k2"
+    text = "x" * (STRING_MAX - 5) + secret + "y" * 50  # the secret straddles the cap
+    out = scrub(text, [secret])
+    assert len(out) <= STRING_MAX + 1 and out.endswith("…")
+    assert "Nas-S" not in out and secret[:5] not in out
+
+
+def test_scrub_takes_the_longest_secret_first():
+    out = scrub("key=abcdef123456", ["abc", "abcdef123456"])
+    assert out == f"key={REDACTED}"
+
+
+def test_scrub_without_secrets_still_caps_and_passes_none():
+    assert scrub(None, ["s"]) is None
+    assert scrub(ValueError("boom"), []) == "boom"
+    assert len(scrub("z" * 2000)) == STRING_MAX + 1

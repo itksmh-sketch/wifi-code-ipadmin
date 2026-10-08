@@ -56,7 +56,8 @@ class ConfigTemplateService:
             is_default=payload.is_default,
         )
         db.add(template)
-        await db.commit()
+        # Flush, not commit: the route adds its audit row to this transaction.
+        await db.flush()
         await db.refresh(template)
         return template
 
@@ -78,7 +79,7 @@ class ConfigTemplateService:
                     .values(is_default=False)
                 )
             template.is_default = payload.is_default
-        await db.commit()
+        await db.flush()
         await db.refresh(template)
         return template
 

@@ -37,8 +37,12 @@ from src.modules.mikrotik.types import (
     RouterRemovalSummary,
     TempInterfacesRequest,
 )
+from src.modules import audit
+from src.modules.audit.fields import CONFIG_TEMPLATE, ROUTER, ROUTER_CREDENTIAL
+from src.modules.audit.redact import mask_code, scrub
+from src.modules.audit.router_secrets import router_secret_values
 from src.modules.wireguard.service import WireGuardService
-from src.utils.encryption import encrypt_secret
+from src.utils.encryption import decrypt_secret, encrypt_secret
 from src.utils.freeradius_reload import reload_freeradius_clients
 
 router = APIRouter(prefix="/admin", tags=["mikrotik-admin"])
@@ -48,8 +52,17 @@ wg_service = WireGuardService()
 provisioner = MikroTikProvisioner()
 template_service = ConfigTemplateService()
 
+_AUDITED = Depends(audit.audited)
 
-@router.post("/routers/test-connection", response_model=ConnectionTestResult, dependencies=[Depends(require_perm(CONFIG))])
+
+def _probe_detail(body, *, outcome: str, error: str | None = None) -> dict:
+    """What a row says about a connection probe: where to, never the password
+    (not even echoed back inside the router's error)."""
+    return {"host": body.host, "port": body.port, "api_username": body.username, "use_ssl": body.use_ssl,
+            "outcome": outcome, "error": scrub(error, [body.password])}
+
+
+@router.post("/routers/test-connection", response_model=ConnectionTestResult, dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def test_router_connection(body: ConnectionTestRequest, _=Depends(get_current_user)):
     result = await service.test_connection_async(
         host=body.host,
@@ -60,11 +73,19 @@ async def test_router_connection(body: ConnectionTestRequest, _=Depends(get_curr
     )
     if result.success:
         _remember_verified_connection(body.host, body.port, body.username)
+    # Router-only: nothing in our database changed, so the row commits on its own.
+    await audit.record_detached(
+        "router.test_connection", target_type="router_host", target_id=body.host,
+        summary=f"Tested a router connection to {body.host}:{body.port}",
+        detail=_probe_detail(body, outcome="ok" if result.success else "failed",
+                             error=None if result.success else result.error),
+    )
     return result
 
 
-@router.post("/routers/temp-interfaces", dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/routers/temp-interfaces", dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def temp_interfaces(body: TempInterfacesRequest, _=Depends(get_current_user)):
+    summary = f"Listed interfaces on {body.host}:{body.port}"
     try:
         items = await service.list_interfaces_temp(
             host=body.host,
@@ -73,9 +94,13 @@ async def temp_interfaces(body: TempInterfacesRequest, _=Depends(get_current_use
             password=body.password,
             use_ssl=body.use_ssl,
         )
-        return [item.model_dump() for item in items]
     except MikroTikOperationError as exc:
+        await audit.record_detached("router.list_interfaces", target_type="router_host", target_id=body.host,
+                                    summary=summary, detail=_probe_detail(body, outcome="failed", error=str(exc)))
         raise HTTPException(status_code=422, detail=str(exc))
+    await audit.record_detached("router.list_interfaces", target_type="router_host", target_id=body.host,
+                                summary=summary, detail=_probe_detail(body, outcome="ok"))
+    return [item.model_dump() for item in items]
 
 
 @router.get("/sites", dependencies=[Depends(require_perm(READ))])
@@ -100,7 +125,7 @@ async def admin_sites(db: AsyncSession = Depends(get_db), tenant: TenantContext 
     ]
 
 
-@router.post("/routers/onboard", dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/routers/onboard", dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     # API credentials are now optional — an operator can register a router before
     # it is reachable (e.g. behind NAT) and set up a WireGuard tunnel afterwards.
@@ -130,6 +155,9 @@ async def onboard_router(payload: dict, db: AsyncSession = Depends(get_db), tena
         is_active=bool(payload.get("is_active", True)),
     )
     db.add(router_row)
+    await db.flush()
+    audit.record(db, "router.create", target_type="router", target_id=router_row.id, summary=f"Added router {router_row.name}",
+                 changes=ROUTER.diff(None, ROUTER.snapshot(router_row)))
     await db.commit()
     asyncio.get_running_loop().run_in_executor(None, reload_freeradius_clients)
     await db.refresh(router_row)
@@ -239,7 +267,7 @@ async def admin_router_detail(router_id: uuid.UUID, db: AsyncSession = Depends(g
     }
 
 
-@router.delete("/routers/{router_id}", response_model=RouterRemovalSummary, dependencies=[Depends(require_perm(CONFIG))])
+@router.delete("/routers/{router_id}", response_model=RouterRemovalSummary, dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def remove_router_endpoint(
     router_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -251,13 +279,23 @@ async def remove_router_endpoint(
     with a FK violation for any router with real history, and silently
     destroy it for the rare one that has none)."""
     router_row = await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
+    secrets = await router_secret_values(db, router_row)
     try:
-        return await remove_router(db, router_row, tenant.isp_operator_id, api_service=service, wg_service=wg_service)
+        summary = await remove_router(db, router_row, tenant.isp_operator_id, api_service=service, wg_service=wg_service)
     except RouterAlreadyRemovedError:
         raise HTTPException(status_code=409, detail="Router has already been removed")
+    await audit.record_detached(
+        "router.remove_result", target_type="router", target_id=router_id,
+        summary=f"Removal of router {router_row.name}: {summary.sessions_disconnected} disconnected, "
+                f"{summary.sessions_failed} failed, tunnel {'removed' if summary.wireguard_removed else 'NOT removed'}",
+        detail={"router_reachable": summary.router_reachable, "sessions_disconnected": summary.sessions_disconnected,
+                "sessions_failed": summary.sessions_failed, "wireguard_removed": summary.wireguard_removed,
+                "wireguard_message": scrub(summary.wireguard_message, secrets)},
+    )
+    return summary
 
 
-@router.post("/routers/{router_id}/credentials", response_model=RouterCredentialsResponse, status_code=201, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/routers/{router_id}/credentials", response_model=RouterCredentialsResponse, status_code=201, dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def create_router_credentials(router_id: uuid.UUID, body: RouterCredentialsRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     router_row = (
         await db.execute(select(Router).where(Router.id == router_id, Router.isp_operator_id == tenant.isp_operator_id))
@@ -276,12 +314,13 @@ async def create_router_credentials(router_id: uuid.UUID, body: RouterCredential
         connection_status="unknown",
     )
     db.add(credentials)
+    _record_credentials(db, router_row, None, credentials)
     await db.commit()
     await db.refresh(credentials)
     return _serialize_credentials(credentials)
 
 
-@router.put("/routers/{router_id}/credentials", response_model=RouterCredentialsResponse, dependencies=[Depends(require_perm(CONFIG))])
+@router.put("/routers/{router_id}/credentials", response_model=RouterCredentialsResponse, dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def update_router_credentials(router_id: uuid.UUID, body: RouterCredentialsRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     # Upsert: a router onboarded via the VPN flow has no RouterCredential row yet,
     # so the edit modal must be able to *create* the credentials here, not only
@@ -296,19 +335,24 @@ async def update_router_credentials(router_id: uuid.UUID, body: RouterCredential
     credentials = (
         await db.execute(select(RouterCredential).where(RouterCredential.router_id == router_id))
     ).scalar_one_or_none()
+    before = ROUTER_CREDENTIAL.snapshot(credentials)
     if credentials is None:
         credentials = RouterCredential(router_id=router_id, connection_status="unknown")
         db.add(credentials)
     credentials.api_username = body.api_username
-    credentials.api_password_encrypted = encrypt_secret(body.api_password)
+    # Fernet output differs on every call, so re-encrypting an unchanged
+    # password would read as a change in the row: keep the stored ciphertext.
+    if _stored_password(credentials) != body.api_password:
+        credentials.api_password_encrypted = encrypt_secret(body.api_password)
     credentials.api_port = body.api_port
     credentials.use_ssl = body.use_ssl
+    _record_credentials(db, router_row, before, credentials)
     await db.commit()
     await db.refresh(credentials)
     return _serialize_credentials(credentials)
 
 
-@router.post("/routers/{router_id}/provision", response_model=ProvisionStartResponse, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/routers/{router_id}/provision", response_model=ProvisionStartResponse, dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def provision_router(router_id: uuid.UUID, body: ProvisionRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
     router_row = (
         await db.execute(select(Router).where(Router.id == router_id, Router.isp_operator_id == tenant.isp_operator_id))
@@ -328,6 +372,13 @@ async def provision_router(router_id: uuid.UUID, body: ProvisionRequest, db: Asy
         commands_executed=[],
     )
     db.add(log_row)
+    await db.flush()
+    # With the provision log, before anything reaches the router; how it went
+    # is in that log (detail.log_id).
+    audit.record(db, "router.provision", target_type="router", target_id=router_id,
+                 summary=f"Started provisioning router {router_row.name}",
+                 detail={"log_id": log_row.id, "dns_name": body.dns_name, "hotspot_interface": body.hotspot_interface,
+                         "template_id": body.template_id})
     await db.commit()
     await db.refresh(log_row)
     provisioner.launch_provision(
@@ -386,21 +437,26 @@ async def router_active_sessions(router_id: uuid.UUID, db: AsyncSession = Depend
         raise HTTPException(status_code=422, detail=str(exc))
 
 
-@router.post("/routers/{router_id}/disconnect-user", dependencies=[Depends(require_perm(VOUCHERS_OPERATE))])
+@router.post("/routers/{router_id}/disconnect-user", dependencies=[_AUDITED, Depends(require_perm(VOUCHERS_OPERATE))])
 async def disconnect_router_user(
     router_id: uuid.UUID,
     body: DisconnectUserRequest,
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(get_admin_tenant_context),
 ):
-    await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
+    router_row = await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
     voucher_id = body.voucher_id
     session_row = None
+    voucher = None
     if voucher_id is None and body.username:
         voucher = (
             await db.execute(select(Voucher).where(Voucher.username == body.username, Voucher.isp_operator_id == tenant.isp_operator_id))
         ).scalar_one_or_none()
         voucher_id = str(voucher.id) if voucher else None
+    elif voucher_id is not None:
+        voucher = (
+            await db.execute(select(Voucher).where(Voucher.id == voucher_id, Voucher.isp_operator_id == tenant.isp_operator_id))
+        ).scalar_one_or_none()
     if voucher_id is None:
         raise HTTPException(status_code=422, detail="voucher_id or username matching a voucher is required for audit logging")
     if body.username:
@@ -440,6 +496,16 @@ async def disconnect_router_user(
         )
     )
     await db.commit()
+    # The disconnect already happened on the router: the row commits on its
+    # own and never fails the request. The voucher by masked suffix only.
+    suffix = mask_code(voucher.code) if voucher else None
+    await audit.record_detached(
+        "router.disconnect_user", target_type="voucher", target_id=voucher_id,
+        summary=f"Disconnected voucher {suffix or '(unknown)'} on router {router_row.name}",
+        detail={"router_id": router_id, "code_suffix": suffix, "had_session_row": session_row is not None,
+                "outcome": "failed" if error else "ok",
+                "error": scrub(error, await router_secret_values(db, router_row)) if error else None},
+    )
     if error:
         raise error
     return result.model_dump()
@@ -537,11 +603,11 @@ async def router_provision_logs(router_id: uuid.UUID, db: AsyncSession = Depends
     ]
 
 
-@router.post("/routers/{router_id}/reboot", response_model=ProvisionStartResponse, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/routers/{router_id}/reboot", response_model=ProvisionStartResponse, dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def reboot_router(router_id: uuid.UUID, body: ConfirmActionRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     if body.confirm is not True:
         raise HTTPException(status_code=422, detail="confirm=true is required")
-    await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
+    router_row = await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
     await provisioner.ensure_router_credentials(str(router_id))
     log_row = RouterProvisionLog(
         router_id=router_id,
@@ -552,6 +618,9 @@ async def reboot_router(router_id: uuid.UUID, body: ConfirmActionRequest, db: As
         commands_executed=[],
     )
     db.add(log_row)
+    await db.flush()
+    audit.record(db, "router.reboot", target_type="router", target_id=router_id,
+                 summary=f"Rebooted router {router_row.name}", detail={"log_id": log_row.id})
     await db.commit()
     await db.refresh(log_row)
 
@@ -569,9 +638,9 @@ async def reboot_router(router_id: uuid.UUID, body: ConfirmActionRequest, db: As
     return ProvisionStartResponse(log_id=str(log_row.id))
 
 
-@router.post("/routers/{router_id}/apply-template", response_model=ProvisionStartResponse, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/routers/{router_id}/apply-template", response_model=ProvisionStartResponse, dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def apply_template(router_id: uuid.UUID, body: ApplyTemplateRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(require_active_operator)):
-    await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
+    router_row = await _ensure_router_in_tenant(db, router_id, tenant.isp_operator_id)
     await provisioner.ensure_router_credentials(str(router_id))
     template = (
         await db.execute(
@@ -592,6 +661,10 @@ async def apply_template(router_id: uuid.UUID, body: ApplyTemplateRequest, db: A
         commands_executed=[],
     )
     db.add(log_row)
+    await db.flush()
+    audit.record(db, "router.apply_template", target_type="router", target_id=router_id,
+                 summary=f"Applied template {template.name} to router {router_row.name}",
+                 detail={"log_id": log_row.id, "template_id": template.id, "template_name": template.name, "dns_name": body.dns_name})
     await db.commit()
     await db.refresh(log_row)
     provisioner.launch_apply_template(router_id=str(router_id), log_id=str(log_row.id), template_id=body.template_id, dns_name=body.dns_name)
@@ -604,16 +677,21 @@ async def list_config_templates(db: AsyncSession = Depends(get_db), tenant: Tena
     return [_serialize_template(row) for row in rows]
 
 
-@router.post("/config-templates", response_model=ConfigTemplateResponse, status_code=201, dependencies=[Depends(require_perm(CONFIG))])
+@router.post("/config-templates", response_model=ConfigTemplateResponse, status_code=201, dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def create_config_template(body: ConfigTemplateRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     try:
         template = await template_service.create_template(db, body, tenant.isp_operator_id)
-        return _serialize_template(template)
     except TemplateValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    audit.record(db, "config_template.create", target_type="config_template", target_id=template.id,
+                 summary=f"Added config template {template.name}",
+                 changes=CONFIG_TEMPLATE.diff(None, CONFIG_TEMPLATE.snapshot(template)))
+    await db.commit()
+    await db.refresh(template)
+    return _serialize_template(template)
 
 
-@router.put("/config-templates/{template_id}", response_model=ConfigTemplateResponse, dependencies=[Depends(require_perm(CONFIG))])
+@router.put("/config-templates/{template_id}", response_model=ConfigTemplateResponse, dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def update_config_template(template_id: uuid.UUID, body: ConfigTemplateUpdateRequest, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     template = (
         await db.execute(
@@ -625,14 +703,21 @@ async def update_config_template(template_id: uuid.UUID, body: ConfigTemplateUpd
     ).scalar_one_or_none()
     if template is None:
         raise HTTPException(status_code=404, detail="Config template not found")
+    before = CONFIG_TEMPLATE.snapshot(template)
     try:
         template = await template_service.update_template(db, template, body, tenant.isp_operator_id)
-        return _serialize_template(template)
     except TemplateValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    changes = CONFIG_TEMPLATE.diff(before, CONFIG_TEMPLATE.snapshot(template))
+    if changes:
+        audit.record(db, "config_template.update", target_type="config_template", target_id=template.id,
+                     summary=f"Edited config template {template.name}", changes=changes)
+    await db.commit()
+    await db.refresh(template)
+    return _serialize_template(template)
 
 
-@router.delete("/config-templates/{template_id}", status_code=204, dependencies=[Depends(require_perm(CONFIG))])
+@router.delete("/config-templates/{template_id}", status_code=204, dependencies=[_AUDITED, Depends(require_perm(CONFIG))])
 async def delete_config_template(template_id: uuid.UUID, db: AsyncSession = Depends(get_db), tenant: TenantContext = Depends(get_admin_tenant_context)):
     template = (
         await db.execute(
@@ -644,8 +729,27 @@ async def delete_config_template(template_id: uuid.UUID, db: AsyncSession = Depe
     ).scalar_one_or_none()
     if template is None:
         raise HTTPException(status_code=404, detail="Config template not found")
+    audit.record(db, "config_template.delete", target_type="config_template", target_id=template.id,
+                 summary=f"Deleted config template {template.name}",
+                 changes=CONFIG_TEMPLATE.diff(CONFIG_TEMPLATE.snapshot(template), None))
     await db.delete(template)
     await db.commit()
+
+
+def _stored_password(credentials: RouterCredential) -> str | None:
+    if not credentials.api_password_encrypted:
+        return None
+    try:
+        return decrypt_secret(credentials.api_password_encrypted)
+    except Exception:  # undecryptable: treat as different, so it is replaced
+        return None
+
+
+def _record_credentials(db: AsyncSession, router_row: Router, before: dict | None, credentials: RouterCredential) -> None:
+    changes = ROUTER_CREDENTIAL.diff(before, ROUTER_CREDENTIAL.snapshot(credentials))
+    if changes:  # a re-save with the same values is not a change
+        audit.record(db, "router.credentials_set", target_type="router", target_id=router_row.id,
+                     summary=f"Set API credentials for router {router_row.name}", changes=changes)
 
 
 def _serialize_credentials(credentials: RouterCredential) -> RouterCredentialsResponse:
