@@ -270,7 +270,10 @@
                     }
 
                     statusEl.textContent = "Choose your location to see available plans";
-                    fetch("/portal/sites", { headers: { "Accept": "application/json" } })
+                    // Only this hotspot's operator's sites: the server resolves it from rt/gateway.
+                    var sitesUrl = "/portal/sites?" + new URLSearchParams(Object.assign({},
+                        rt ? { rt: rt } : {}, gateway ? { gateway: gateway } : {})).toString();
+                    fetch(sitesUrl, { headers: { "Accept": "application/json" } })
                         .then(function(response) {
                             if (!response.ok) throw new Error("sites_http_" + response.status);
                             return response.json();

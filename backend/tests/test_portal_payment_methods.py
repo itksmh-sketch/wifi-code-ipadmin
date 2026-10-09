@@ -86,6 +86,13 @@ def portal(monkeypatch):
     monkeypatch.setattr(portal_routes, "enforce_rate_limit", no_limit)
     monkeypatch.setattr(portal_routes, "_resolve_operator", resolve)
 
+    # The site sent is the hotspot operator's own (load_owned 404s otherwise);
+    # FakeDb answers only the plan lookup, so stand in for that check.
+    async def own_site(db, model, row_id, operator_id, **kwargs):
+        return types.SimpleNamespace(id=row_id)
+
+    monkeypatch.setattr(portal_routes, "load_owned", own_site)
+
     async def fake_db():
         yield db
 

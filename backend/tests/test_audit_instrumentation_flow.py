@@ -1460,3 +1460,104 @@ async def test_topup_refuses_zero_and_negative_amounts(env, tenant):
         wallet = (await db.execute(select(ResellerWallet).where(ResellerWallet.reseller_id == uuid.UUID(rid)))).scalar_one()
     assert float(wallet.balance_ghs) == 0.0
     assert await rows(tenant["operator"], "reseller.topup", rid) == []
+
+
+# ── Tenant isolation on public routes: portal and payment webhooks ──────────
+
+PORTAL = "http://testserver/portal"
+
+
+async def _router_token(env, t) -> tuple[str, dict]:
+    """A router of t's with a signed portal token, as the captive portal gets it."""
+    from src.utils.portal_token import create_portal_router_token
+
+    made = await make_site(env, t)
+    rid = await onboard(env, t, made["site"]["id"])
+    return create_portal_router_token(rid), made
+
+
+async def test_portal_sites_lists_only_the_hotspot_operators_sites(env, tenant, other):
+    rt, made = await _router_token(env, tenant)
+    res = await env["client"].get(f"{PORTAL}/sites", params={"rt": rt})
+    assert res.status_code == 200, res.text
+    ids = {s["id"] for s in res.json()}
+    assert made["site"]["id"] in ids and other["site"] not in ids
+    # Nothing to say whose hotspot this is: no list at all.
+    assert (await env["client"].get(f"{PORTAL}/sites")).status_code == 400
+
+
+async def test_portal_sites_branding_preview_lists_the_previewing_operators_sites(env, tenant, other):
+    """The Branding page's live preview carries a preview token, not a router
+    token, plus the page's default gateway; it gets that operator's own sites."""
+    from src.utils.portal_token import create_portal_preview_token
+
+    made = await make_site(env, tenant)
+    preview = create_portal_preview_token(str(tenant["operator"].id))
+    res = await env["client"].get(f"{PORTAL}/sites", params={"rt": preview, "gateway": "10.5.50.1"})
+    assert res.status_code == 200, res.text
+    ids = {s["id"] for s in res.json()}
+    assert made["site"]["id"] in ids and other["site"] not in ids
+    # A preview token only names whose sites to list; it is not a hotspot.
+    plan = await new_plan(env, tenant, price_ghs=float(1 + uuid.uuid4().int % 900))
+    pay = await env["client"].post(f"{PORTAL}/initiate-payment", json={
+        "plan_id": plan["id"], "rt": preview, "gateway": "10.5.50.1",
+        "phone": "0244123456", "payment_method": "mtn_momo"})
+    assert pay.status_code == 404, pay.text
+
+
+async def test_portal_payment_cannot_use_another_operators_site(env, tenant, other, monkeypatch):
+    from src.db.models import PaymentTransaction
+
+    rt, _ = await _router_token(env, tenant)
+    plan = await new_plan(env, tenant, price_ghs=float(1 + uuid.uuid4().int % 900))  # not tied to a site
+    body = {"plan_id": plan["id"], "rt": rt, "phone": "0244123456", "payment_method": "mtn_momo"}
+    res = await env["client"].post(f"{PORTAL}/initiate-payment", json={**body, "site_id": other["site"]})
+    missing = await env["client"].post(f"{PORTAL}/initiate-payment", json={**body, "site_id": str(uuid.uuid4())})
+    await _same_404(res, missing, "Site")
+    async with async_session_factory() as db:
+        assert (await db.execute(select(PaymentTransaction).where(
+            PaymentTransaction.isp_operator_id == tenant["operator"].id))).scalars().all() == []
+
+
+async def test_webhook_signed_by_one_operator_cannot_settle_anothers_payment(env, tenant, other, providers_offered, monkeypatch):
+    """Operator A holds its own Paystack key, so it can sign anything. A webhook
+    to A's slug naming B's payment must change nothing of B's."""
+    import hashlib
+    import hmac
+    from types import SimpleNamespace
+
+    from src.db.models import PaymentTransaction
+    from src.modules.webhooks import processor
+    from src.modules.webhooks import routes as webhook_routes
+
+    assert (await put_creds(env, tenant, "payment", "paystack", PAYSTACK)).status_code == 200
+    theirs = await make_payment(env, {"h": other["h"], "operator": other["operator"]}, status="pending")
+    mine = await make_payment(env, tenant, status="pending")
+    jobs = []
+
+    async def pool():
+        async def enqueue_job(name, *args):
+            jobs.append(args)
+        return SimpleNamespace(enqueue_job=enqueue_job)
+
+    monkeypatch.setattr(webhook_routes, "get_redis_pool", pool)
+    async with async_session_factory() as db:
+        refs = {pid: (await db.get(PaymentTransaction, uuid.UUID(pid))).internal_reference for pid in (theirs, mine)}
+
+    async def deliver(reference, event):
+        raw = json.dumps({"event": event, "data": {"reference": reference, "status": "failed"}}).encode()
+        sig = hmac.new(PAYSTACK["webhook_secret"].encode(), raw, hashlib.sha512).hexdigest()
+        res = await env["client"].post(f"/webhooks/paystack/{tenant['operator'].slug}", content=raw,
+                                       headers={"x-paystack-signature": sig, "content-type": "application/json"})
+        assert res.status_code == 200, res.text
+        await processor.process_webhook_event(None, *jobs[-1])
+
+    await deliver(refs[theirs], "charge.failed")
+    await deliver(refs[mine], "charge.failed")
+    assert jobs[0][-1] == str(tenant["operator"].id), "the verifying operator rides with the job"
+    async with async_session_factory() as db:
+        b_tx = await db.get(PaymentTransaction, uuid.UUID(theirs))
+        a_tx = await db.get(PaymentTransaction, uuid.UUID(mine))
+    assert (b_tx.status, b_tx.webhook_payload) == ("pending", None), "B's payment untouched"
+    assert b_tx.provider_reference.startswith("PSK-")
+    assert a_tx.status == "failed", "A's own payment still settles"

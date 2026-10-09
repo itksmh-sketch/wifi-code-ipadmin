@@ -78,6 +78,9 @@ async def _process_webhook(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
     redis = await get_redis_pool()
+    # The signature proves only that THIS operator's key signed it. The
+    # operator rides with the job, so the payment it names must be this
+    # operator's own: another operator's reference is ignored like an unknown one.
     await redis.enqueue_job(
         "process_webhook_event",
         provider_key,
@@ -85,6 +88,7 @@ async def _process_webhook(
         parsed.status.value,
         parsed.provider_reference,
         raw_body.decode("utf-8"),
+        str(operator.id),
     )
     return {"ok": True}
 

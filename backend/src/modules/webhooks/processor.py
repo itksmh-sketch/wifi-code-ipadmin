@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -19,15 +20,24 @@ async def process_webhook_event(
     status: str,
     provider_reference: str | None,
     raw_payload: str,
+    isp_operator_id: str | None = None,
 ) -> None:
+    """``isp_operator_id`` is the operator whose key verified the webhook. The
+    payment must be that operator's: each operator holds its own signing key,
+    so without this one operator could sign a webhook naming another's payment.
+    None only for a job queued before the operator was passed (logged)."""
     service = get_payment_service()
     async with async_session_factory() as db:
-        tx_result = await db.execute(
-            select(PaymentTransaction).where(PaymentTransaction.internal_reference == internal_reference)
-        )
-        tx = tx_result.scalar_one_or_none()
+        stmt = select(PaymentTransaction).where(PaymentTransaction.internal_reference == internal_reference)
+        if isp_operator_id is not None:
+            stmt = stmt.where(PaymentTransaction.isp_operator_id == uuid.UUID(str(isp_operator_id)))
+        else:
+            logger.warning("Webhook job without operator (queued before the scoping change) reference=%s", internal_reference)
+        tx = (await db.execute(stmt)).scalar_one_or_none()
         if not tx:
-            logger.warning("Webhook payment not found provider=%s reference=%s", provider, internal_reference)
+            # The same for an unknown reference and another operator's payment.
+            logger.warning("Webhook payment not found provider=%s reference=%s operator=%s",
+                           provider, internal_reference, isp_operator_id)
             return
 
         tx.webhook_payload = json.loads(raw_payload)

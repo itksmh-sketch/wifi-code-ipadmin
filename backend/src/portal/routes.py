@@ -17,6 +17,7 @@ from src.db.base import get_db
 from src.db.models import ISPOperator, PaymentTransaction, Plan, Router, Site, Voucher
 from src.middleware.csp_pages import portal_csp_headers
 from src.middleware.rate_limit import enforce_rate_limit
+from src.middleware.tenant_refs import load_owned
 from types import SimpleNamespace
 
 from src.modules.branding.preview_store import get_preview_draft
@@ -279,13 +280,31 @@ async def portal_plans(
 @router.get("/portal/sites")
 async def portal_sites(
     request: Request,
+    gateway: str | None = Query(None),
+    rt: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
+    """The hotspot operator's own sites, for the location picker. It used to
+    list every operator's sites (names, towns, street addresses) to anyone.
+    The Branding page's live preview carries a preview token rather than a
+    router token, so that lists the previewing operator's own sites."""
     client_ip = request.client.host if request.client else "unknown"
     await enforce_rate_limit(client_ip, "portal:sites", limit=10, window_seconds=60)
     from src.db.models import Site, Town
 
-    result = await db.execute(select(Site, Town).join(Town, Town.id == Site.town_id).order_by(Town.name, Site.name))
+    resolved = await _resolve_operator_from_token(db, rt)
+    preview_operator_id = None if resolved else decode_portal_preview_token(rt)
+    if resolved:
+        operator_id = resolved[0]
+    elif preview_operator_id:
+        operator_id = preview_operator_id
+    else:
+        operator_id, _ = await _resolve_operator_from_gateway(db, gateway)
+    result = await db.execute(
+        select(Site, Town).join(Town, Town.id == Site.town_id)
+        .where(Site.isp_operator_id == uuid.UUID(str(operator_id)))
+        .order_by(Town.name, Site.name)
+    )
     rows = result.all()
     return [
         {
@@ -340,6 +359,9 @@ async def portal_initiate_payment(
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
 
+    if body.site_id is not None:
+        # The hotspot operator's own site, or the same 404 as a missing one.
+        await load_owned(db, Site, body.site_id, uuid.UUID(str(operator_id)), label="Site")
     resolved_site_id = body.site_id or plan.site_id or gateway_site_id
     if resolved_site_id is None:
         raise HTTPException(status_code=400, detail="Site is required to purchase this plan")
