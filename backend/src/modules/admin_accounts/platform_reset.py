@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import AdminOtpCode, AdminPasswordResetEvent, AdminUser
 from src.modules.admin_accounts import lockout, notifications
+from src.modules import audit
 from src.modules.admin_accounts.provisioning import generate_temp_password
 from src.utils.auth import hash_password
 from src.utils.phone import mask_phone, normalize_ghana_phone
@@ -111,6 +112,14 @@ async def reset_admin_password(
         sms_sent=False,
     )
     db.add(event)
+    # By the platform owner (bound by the route's auth), in the operator's
+    # trail. Never the temporary password; the phone only as changed.
+    audit.record(
+        db, "admin_user.password_reset", isp_operator_id=admin.isp_operator_id, target_type="admin_user",
+        target_id=admin.id, summary=f"Reset the password for {admin.email}",
+        changes={"password": "changed", **({"phone": "changed"} if phone_changed else {})},
+        detail={"mode": mode, "phone_changed": phone_changed},
+    )
     await db.commit()
 
     # Only after the commit: never text credentials the database doesn't hold.

@@ -33,6 +33,8 @@ from src.db.base import async_session_factory, get_db
 from src.db.models import PlatformOwner, PlatformOwnerSecurityEvent
 from src.middleware.auth import get_platform_owner_context
 from src.middleware.rate_limit import enforce_rate_limit
+from src.modules import audit
+from src.modules.platform import owner_audit
 from src.modules.admin_accounts import otp as otp_service
 from src.modules.admin_accounts.notifications import (
     OTP_TTL_MINUTES,
@@ -101,7 +103,7 @@ async def _alert(event_id: uuid.UUID, send) -> None:
         logger.error("platform_owner_alert_failed event_id=%s error=%s", event_id, error)
 
 
-@router.post("/phone")
+@router.post("/phone", dependencies=[Depends(audit.audited)])
 async def request_phone_change(
     body: PhoneChangeRequest,
     request: Request,
@@ -113,6 +115,7 @@ async def request_phone_change(
     await enforce_rate_limit(_client_ip(request), "platform:phone-change", limit=10, window_seconds=600)
     await enforce_rate_limit(f"owner:{owner.id}", "platform:phone-change", limit=3, window_seconds=600)
     if not verify_password(body.current_password, owner.password_hash):
+        await owner_audit.wrong_password(owner, "platform_owner.phone_change_failed", "Phone change")
         raise _bad_request(WRONG_PASSWORD)
     try:
         phone = normalize_ghana_phone(body.phone)
@@ -124,6 +127,11 @@ async def request_phone_change(
     row, code = await otp_service.issue_code(db, platform_owner_id=owner.id, purpose="phone_change", phone=phone)
     await db.commit()
     result = await send_otp_sms(phone, code, purpose="phone_change")
+    await owner_audit.own_row_detached(
+        owner, "platform_owner.phone_change_code_sent",
+        f"Sent a code to {mask_phone(phone)} to change their phone" + ("" if result.success else " (SMS failed)"),
+        detail={"phone": mask_phone(phone), "outcome": "sent" if result.success else "sms_failed"},
+    )
     if not result.success:
         row.consumed_at = datetime.now(timezone.utc)  # never leave a live code nobody received
         await db.commit()
@@ -136,7 +144,7 @@ async def request_phone_change(
     return {"status": "sent", "phone": mask_phone(phone), "expires_in_seconds": OTP_TTL_MINUTES * 60}
 
 
-@router.post("/phone/verify")
+@router.post("/phone/verify", dependencies=[Depends(audit.audited)])
 async def verify_phone_change(
     body: PhoneChangeVerifyRequest,
     request: Request,
@@ -150,6 +158,8 @@ async def verify_phone_change(
     await enforce_rate_limit(f"owner:{owner.id}", "platform:phone-change-verify", limit=10, window_seconds=600)
     result = await otp_service.verify_code(db, platform_owner_id=owner.id, purpose="phone_change", code=body.code)
     if not result.ok:
+        await owner_audit.own_row_detached(owner, "platform_owner.phone_change_code_failed",
+                                           "Entered a wrong or expired phone-change code", detail={"reason": result.reason})
         raise _bad_request(otp_service.failure_message(result))
 
     old_phone = owner.phone if owner.phone_verified else None
@@ -161,6 +171,9 @@ async def verify_phone_change(
                 "new_phone": mask_phone(owner.phone), "client_ip": _client_ip(request)},
     )
     db.add(event)
+    owner_audit.own_row(db, owner, "platform_owner.phone_changed", f"Changed their phone to {mask_phone(owner.phone)}",
+                        changes={"phone": "changed"},
+                        detail={"old_phone": mask_phone(old_phone) if old_phone else None, "new_phone": mask_phone(owner.phone)})
     await db.commit()
     logger.warning("platform_owner_phone_changed owner_id=%s new=%s", owner.id, mask_phone(owner.phone))
     if old_phone and old_phone != owner.phone:
@@ -169,7 +182,7 @@ async def verify_phone_change(
     return {"status": "changed", "phone": mask_phone(owner.phone)}
 
 
-@router.post("/security-question")
+@router.post("/security-question", dependencies=[Depends(audit.audited)])
 async def change_security_question(
     body: SecurityQuestionChangeRequest,
     request: Request,
@@ -179,6 +192,7 @@ async def change_security_question(
 ):
     await enforce_rate_limit(f"owner:{owner.id}", "platform:question-change", limit=5, window_seconds=900)
     if not verify_password(body.current_password, owner.password_hash):
+        await owner_audit.wrong_password(owner, "platform_owner.security_question_change_failed", "Security question change")
         raise _bad_request(WRONG_PASSWORD)
     if body.security_question not in SECURITY_QUESTIONS:
         raise _bad_request("Choose one of the listed security questions.")
@@ -194,6 +208,8 @@ async def change_security_question(
         detail={"question": body.security_question, "client_ip": _client_ip(request)},
     )
     db.add(event)
+    owner_audit.own_row(db, owner, "platform_owner.security_question_changed", "Changed their security question",
+                        changes={"security_answer": "changed"}, detail={"question": body.security_question})
     await db.commit()
     logger.warning("platform_owner_security_question_changed owner_id=%s", owner.id)
     if owner.phone_verified and owner.phone:

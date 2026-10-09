@@ -1561,3 +1561,452 @@ async def test_webhook_signed_by_one_operator_cannot_settle_anothers_payment(env
     assert (b_tx.status, b_tx.webhook_payload) == ("pending", None), "B's payment untouched"
     assert b_tx.provider_reference.startswith("PSK-")
     assert a_tx.status == "failed", "A's own payment still settles"
+
+
+# ── Batch 5: platform owner ──────────────────────────────────────────────────
+
+OWNER_PHONE = "233244000999"
+OWNER_PHONE_FORMS = ("233244000999", "0244000999", "244000999")
+
+
+async def make_owner(*, setup_pending=False, with_code=False, phone=OWNER_PHONE):
+    from src.db.models import PlatformOwner
+    from src.modules.platform import character_code
+
+    owner_id = uuid.uuid4()
+    code = character_code.generate_code() if with_code else None
+    async with async_session_factory() as db:
+        owner = PlatformOwner(
+            id=owner_id, email=f"owner-{uuid.uuid4().hex[:8]}@throwaway.test", password_hash=hash_password(PASSWORD),
+            name="Owner", is_active=True, must_complete_security_setup=setup_pending,
+            phone=phone, phone_verified=bool(phone),
+            challenge_hashes=character_code.build_storage(owner_id, code) if code else None,
+        )
+        db.add(owner)
+        await db.commit()
+    return owner, code
+
+
+def owner_headers(owner) -> dict:
+    from src.modules.auth.tokens import platform_owner_token_data
+    from src.utils.auth import create_platform_owner_access_token
+
+    return {"Authorization": f"Bearer {create_platform_owner_access_token(platform_owner_token_data(owner))}"}
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def platform(env):
+    owner, _ = await make_owner()
+    return {"owner": owner, "h": owner_headers(owner)}
+
+
+async def owner_rows(owner, action=None):
+    async with async_session_factory() as db:
+        q = select(AuditLog).where(AuditLog.target_id == str(owner.id))
+        if action:
+            q = q.where(AuditLog.action == action)
+        return (await db.execute(q.order_by(AuditLog.created_at))).scalars().all()
+
+
+async def rows_of(action, target_id):
+    async with async_session_factory() as db:
+        return (await db.execute(select(AuditLog).where(AuditLog.action == action, AuditLog.target_id == str(target_id))
+                                 .order_by(AuditLog.created_at))).scalars().all()
+
+
+def assert_owner_actor(row, owner, operator_id=None):
+    assert (row.actor_type, row.actor_id, row.actor_label) == ("platform_owner", owner.id, owner.email)
+    assert row.isp_operator_id == operator_id
+    assert str(row.ip) == "127.0.0.1" and row.request_id and row.user_agent
+
+
+def assert_system_actor(row):
+    assert (row.actor_type, row.actor_id, row.actor_label, row.isp_operator_id) == ("system", None, None, None)
+
+
+@pytest.fixture
+def owner_sms(monkeypatch):
+    """Every SMS the platform routes would send, captured instead."""
+    from types import SimpleNamespace
+
+    from src.modules.admin_accounts import platform_reset
+    from src.modules.applications import service as app_service
+    from src.modules.notifications import dispatcher
+    from src.modules.platform import owner_account_routes, owner_security_routes
+    from src.modules.platform import routes as platform_routes
+
+    sent = {"codes": [], "temp_passwords": []}
+
+    async def otp(phone, code, purpose=None, **kw):
+        sent["codes"].append(code)
+        return SimpleNamespace(success=True, error=None)
+
+    async def temp(admin, temp_password, *a, **kw):
+        sent["temp_passwords"].append(temp_password)
+        return SimpleNamespace(success=True, error=None)
+
+    async def quiet(*a, **kw):
+        return SimpleNamespace(success=True, error=None)
+
+    for module in (owner_account_routes, owner_security_routes):
+        monkeypatch.setattr(module, "send_otp_sms", otp)
+    monkeypatch.setattr(owner_account_routes, "send_platform_owner_phone_changed_sms", quiet)
+    monkeypatch.setattr(owner_account_routes, "send_platform_owner_question_changed_sms", quiet)
+    monkeypatch.setattr(platform_routes, "send_temp_password_sms", temp)
+    monkeypatch.setattr(app_service, "send_temp_password_sms", temp)
+    monkeypatch.setattr(platform_reset.notifications, "send_temp_password_sms", temp)
+    monkeypatch.setattr(dispatcher, "notify_application_approved", quiet)
+    monkeypatch.setattr(dispatcher, "notify_application_rejected", quiet)
+    return sent
+
+
+async def test_owner_sign_in_rows_password_only(env):
+    c = env["client"]
+    owner, _ = await make_owner(setup_pending=True)
+    assert (await c.post("/platform/auth/login", json={"email": owner.email, "password": "Wrong-Pass-1"})).status_code == 401
+    assert (await c.post("/platform/auth/login", json={"email": "nobody@throwaway.test", "password": "x"})).status_code == 401
+    ok = await c.post("/platform/auth/login", json={"email": owner.email, "password": PASSWORD})
+    assert ok.status_code == 200, ok.text
+
+    [failed] = await owner_rows(owner, "platform_auth.login_failed")
+    assert_system_actor(failed)
+    assert failed.detail == {"reason": "wrong_password"}
+    [login] = await owner_rows(owner, "platform_auth.login")
+    assert_owner_actor(login, owner)
+    assert login.detail == {"step": "password", "setup_pending": True}
+    async with async_session_factory() as db:  # an unknown email writes nothing
+        assert not (await db.execute(select(AuditLog).where(AuditLog.summary.contains("nobody@throwaway.test")))).scalars().all()
+    for row in (failed, login):
+        assert_none_of(row, PASSWORD, "Wrong-Pass-1")
+
+    tokens = ok.json()
+    out = await c.post("/platform/auth/logout", json={"refresh_token": tokens["refresh_token"]})
+    assert out.status_code == 204
+    [logout] = await owner_rows(owner, "platform_auth.logout")
+    assert (logout.actor_type, logout.actor_id, logout.isp_operator_id) == ("platform_owner", owner.id, None)
+    assert logout.detail == {"via": "refresh"}
+    assert (await c.post("/platform/auth/logout", json={"refresh_token": tokens["refresh_token"]})).status_code == 204
+    assert len(await owner_rows(owner, "platform_auth.logout")) == 1  # a replayed sign-out ended nothing
+
+
+async def test_owner_sign_in_rows_with_the_character_challenge(env):
+    c = env["client"]
+    owner, code = await make_owner(with_code=True)
+
+    async def password_step():
+        res = await c.post("/platform/auth/login", json={"email": owner.email, "password": PASSWORD})
+        assert res.status_code == 200 and res.json()["challenge_required"], res.text
+        return res.json()
+
+    step = await password_step()
+    wrong = {str(p): ("A" if code[p - 1] != "A" else "B") for p in step["positions"]}
+    assert (await c.post("/platform/auth/challenge", json={"challenge_token": step["challenge_token"], "characters": wrong})).status_code == 401
+    step = await password_step()
+    right = {str(p): code[p - 1] for p in step["positions"]}
+    ok = await c.post("/platform/auth/challenge", json={"challenge_token": step["challenge_token"], "characters": right})
+    assert ok.status_code == 200, ok.text
+
+    issued = await owner_rows(owner, "platform_auth.challenge_issued")
+    assert len(issued) == 2
+    for row in issued:
+        assert_system_actor(row)
+    [failed] = await owner_rows(owner, "platform_auth.challenge_failed")
+    assert_system_actor(failed)
+    assert failed.detail == {"reason": "wrong_characters"}
+    [login] = await owner_rows(owner, "platform_auth.login")
+    assert_owner_actor(login, owner)
+    assert login.detail == {"step": "challenge"}
+    for row in (*issued, failed, login):
+        assert_none_of(row, PASSWORD, code, step["challenge_token"])
+
+
+async def test_owner_account_rows(env, owner_sms):
+    from src.modules.admin_accounts.security_questions import SECURITY_QUESTIONS
+
+    c = env["client"]
+    owner, _ = await make_owner()
+    h = owner_headers(owner)
+    assert (await c.patch("/platform/me", headers=h, json={"name": "Renamed Owner"})).status_code == 200
+    assert (await c.patch("/platform/me", headers=h, json={"name": "Renamed Owner"})).status_code == 200
+    assert (await c.post("/platform/me/phone", headers=h, json={"phone": "0244000998", "current_password": "Nope-1"})).status_code == 400
+    assert (await c.post("/platform/me/phone", headers=h, json={"phone": "0244000998", "current_password": PASSWORD})).status_code == 200
+    assert (await c.post("/platform/me/phone/verify", headers=h, json={"code": "000000"})).status_code == 400
+    assert (await c.post("/platform/me/phone/verify", headers=h, json={"code": owner_sms["codes"][-1]})).status_code == 200
+    question = next(iter(SECURITY_QUESTIONS))
+    res = await c.post("/platform/me/security-question", headers=h, json={
+        "security_question": question, "security_answer": "Kumasi Central", "current_password": PASSWORD})
+    assert res.status_code == 200, res.text
+    wrong = await c.post("/platform/me/password", headers=h, json={
+        "current_password": "Nope-1", "new_password": "Brand-New-Pass-42", "confirm_password": "Brand-New-Pass-42"})
+    assert wrong.status_code == 400
+    ok = await c.post("/platform/me/password", headers=h, json={
+        "current_password": PASSWORD, "new_password": "Brand-New-Pass-42", "confirm_password": "Brand-New-Pass-42"})
+    assert ok.status_code == 200, ok.text
+
+    [update_row] = await owner_rows(owner, "platform_owner.update")  # the repeat save wrote none
+    assert update_row.changes == {"name": {"before": "Owner", "after": "Renamed Owner"}}
+    [phone_failed] = await owner_rows(owner, "platform_owner.phone_change_failed")
+    assert phone_failed.detail == {"reason": "wrong_current_password"}
+    [sent] = await owner_rows(owner, "platform_owner.phone_change_code_sent")
+    assert sent.detail == {"phone": "+233 •••• ••• 998", "outcome": "sent"}
+    [code_failed] = await owner_rows(owner, "platform_owner.phone_change_code_failed")
+    [changed] = await owner_rows(owner, "platform_owner.phone_changed")
+    assert changed.detail == {"old_phone": "+233 •••• ••• 999", "new_phone": "+233 •••• ••• 998"}
+    [question_row] = await owner_rows(owner, "platform_owner.security_question_changed")
+    assert question_row.changes == {"security_answer": REDACTED} and question_row.detail == {"question": question}
+    [pw_failed] = await owner_rows(owner, "platform_owner.password_change_failed")
+    [pw] = await owner_rows(owner, "platform_owner.password_changed")
+    assert pw.changes == {"password": REDACTED}
+    for row in (update_row, phone_failed, sent, code_failed, changed, question_row, pw_failed, pw):
+        assert_owner_actor(row, owner)
+        assert_none_of(row, PASSWORD, "Nope-1", "Brand-New-Pass-42", "Kumasi Central", "kumasi central",
+                       *OWNER_PHONE_FORMS, "233244000998", "0244000998", *owner_sms["codes"])
+
+
+async def test_owner_setup_rows(env, owner_sms):
+    from src.modules.admin_accounts.security_questions import SECURITY_QUESTIONS
+
+    c = env["client"]
+    owner, _ = await make_owner(setup_pending=True, phone=None)
+    h = owner_headers(owner)
+    assert (await c.post("/platform/setup/phone", headers=h, json={"phone": "0244000997", "current_password": "Nope-1"})).status_code == 400
+    assert (await c.post("/platform/setup/phone", headers=h, json={"phone": "0244000997", "current_password": PASSWORD})).status_code == 200
+    assert (await c.post("/platform/setup/phone/verify", headers=h, json={"code": owner_sms["codes"][-1]})).status_code == 200
+    question = next(iter(SECURITY_QUESTIONS))
+    assert (await c.post("/platform/setup/security-question", headers=h, json={
+        "security_question": question, "security_answer": "Kumasi Central", "current_password": PASSWORD})).status_code == 200
+    made = await c.post("/platform/setup/character-code", headers=h, json={"current_password": PASSWORD})
+    assert made.status_code == 200, made.text
+    code = made.json()["character_code"]
+    positions = (await c.get("/platform/setup/character-code/check", headers=h)).json()["positions"]
+    assert (await c.post("/platform/setup/character-code/check", headers=h,
+                         json={"characters": {str(p): code[p - 1] for p in positions}})).status_code == 200
+    done = await c.post("/platform/setup/complete", headers=h, json={"current_password": PASSWORD})
+    assert done.status_code == 200, done.text
+
+    actions = [row.action for row in await owner_rows(owner)]
+    assert actions == ["platform_owner.setup_step_failed", "platform_owner.setup_code_sent",
+                       "platform_owner.setup_phone_verified", "platform_owner.setup_security_question",
+                       "platform_owner.setup_character_code", "platform_owner.setup_completed"]
+    for row in await owner_rows(owner):
+        assert_owner_actor(row, owner)
+        assert_none_of(row, PASSWORD, "Nope-1", code, "Kumasi Central", "kumasi central",
+                       "233244000997", "0244000997", *owner_sms["codes"])
+
+
+async def test_operator_management_rows(env, platform, owner_sms):
+    c, h, owner = env["client"], platform["h"], platform["owner"]
+    slug = f"p5-{uuid.uuid4().hex[:8]}"
+    res = await c.post("/platform/operators", headers=h, json={
+        "name": "P5 Net", "slug": slug, "contact_email": f"{slug}@throwaway.test", "contact_phone": "0207770001",
+        "initial_admin_email": f"adm-{slug}@throwaway.test", "initial_admin_phone": "0244000555", "trial_days": 14})
+    assert res.status_code == 201, res.text
+    op_id = uuid.UUID(res.json()["id"])
+    admin_id = res.json()["initial_admin"]["id"]
+    assert (await c.patch(f"/platform/operators/{op_id}", headers=h, json={"name": "P5 Net Ltd", "contact_phone": "0207770002"})).status_code == 200
+    assert (await c.patch(f"/platform/operators/{op_id}", headers=h, json={"name": "P5 Net Ltd"})).status_code == 200
+    assert (await c.put(f"/platform/operators/{op_id}/status", headers=h, json={"status": "suspended"})).status_code == 200
+    assert (await c.put(f"/platform/operators/{op_id}/billing", headers=h, json={"monthly_fee_ghs": "75.00", "extend_trial_days": 7})).status_code == 200
+    added = await c.post(f"/platform/operators/{op_id}/admins", headers=h, json={
+        "email": f"adm2-{slug}@throwaway.test", "phone": "0244000556", "role": "admin"})
+    assert added.status_code == 201, added.text
+    reset = await c.post(f"/platform/operators/{op_id}/admins/{admin_id}/reset-password", headers=h, json={})
+    assert reset.status_code == 200, reset.text
+
+    async with async_session_factory() as db:
+        op_rows = (await db.execute(select(AuditLog).where(AuditLog.isp_operator_id == op_id)
+                                    .order_by(AuditLog.created_at))).scalars().all()
+    # Rows from one transaction share a timestamp, so compare as a multiset.
+    assert sorted(r.action for r in op_rows) == sorted([
+        "operator.create", "admin_user.create", "operator.update", "operator.status_change",
+        "operator.billing_update", "admin_user.create", "admin_user.password_reset"])
+    one = {r.action: r for r in op_rows}
+    create, update_row, status_row, billing, reset_row = (one[a] for a in (
+        "operator.create", "operator.update", "operator.status_change", "operator.billing_update", "admin_user.password_reset"))
+    assert create.changes["name"] == {"before": None, "after": "P5 Net"} and create.changes["contact_phone"] == "changed"
+    assert update_row.changes == {"name": {"before": "P5 Net", "after": "P5 Net Ltd"}, "contact_phone": "changed"}
+    assert status_row.changes["status"] == {"before": "approved", "after": "suspended"}
+    assert set(billing.changes) == {"monthly_fee_ghs", "trial_ends_at"}
+    assert reset_row.changes == {"password": REDACTED} and reset_row.target_id == admin_id
+    for row in op_rows:
+        assert_owner_actor(row, owner, op_id)
+        assert_none_of(row, *owner_sms["temp_passwords"], "233207770001", "0207770001", "233207770002", "0207770002",
+                       "233244000555", "0244000555", "233244000556", "0244000556")
+
+
+async def test_operator_status_fails_closed(env, platform, tenant, monkeypatch):
+    break_audit(monkeypatch)
+    res = await env["client"].put(f"/platform/operators/{tenant['operator'].id}/status", headers=platform["h"],
+                                  json={"status": "suspended"})
+    assert res.status_code == 500
+    async with async_session_factory() as db:
+        assert (await db.get(ISPOperator, tenant["operator"].id)).status == "approved"
+
+
+async def test_application_rows(env, platform, owner_sms):
+    from src.db.models import OperatorApplication
+
+    c, h, owner = env["client"], platform["h"], platform["owner"]
+    ids = []
+    async with async_session_factory() as db:
+        for _ in range(2):
+            tag = uuid.uuid4().hex[:8]
+            app_row = OperatorApplication(isp_name=f"Apply {tag}", contact_name="Ama", email=f"apply-{tag}@throwaway.test",
+                                          phone="233244000444", region="Volta")
+            db.add(app_row)
+            await db.flush()
+            ids.append(app_row.id)
+        await db.commit()
+    approved = await c.put(f"/platform/applications/{ids[0]}/approve", headers=h)
+    assert approved.status_code == 200, approved.text
+    assert (await c.put(f"/platform/applications/{ids[1]}/reject", headers=h,
+                        json={"rejection_reason": "Outside our coverage"})).status_code == 200
+
+    op_id = uuid.UUID(approved.json()["operator_id"])
+    [approve] = await rows_of("application.approve", ids[0])
+    assert_owner_actor(approve, owner, op_id)
+    async with async_session_factory() as db:
+        made = (await db.execute(select(AuditLog.action).where(AuditLog.isp_operator_id == op_id)
+                                 .order_by(AuditLog.created_at))).scalars().all()
+    assert sorted(made) == ["admin_user.create", "application.approve", "operator.create"]
+    [reject] = await rows_of("application.reject", ids[1])
+    assert_owner_actor(reject, owner)
+    assert reject.detail == {"reason": "Outside our coverage"}
+    for row in (approve, reject):
+        assert_none_of(row, *owner_sms["temp_passwords"], "233244000444", "0244000444")
+
+
+async def test_billing_rows_land_in_the_operators_trail(env, platform, tenant):
+    from decimal import Decimal
+
+    from src.db.models import OperatorInvoice, SMSUsageRecord
+
+    c, h, owner, op = env["client"], platform["h"], platform["owner"], tenant["operator"]
+    pid = await make_payment(env, tenant)
+    now = datetime.now(timezone.utc)
+    async with async_session_factory() as db:
+        invoice = OperatorInvoice(isp_operator_id=op.id, invoice_number=f"INV-P5-{uuid.uuid4().hex[:6]}",
+                                  period_start=now - timedelta(days=30), period_end=now, amount_ghs=Decimal("50.00"),
+                                  status="issued", issued_at=now)
+        usage = SMSUsageRecord(isp_operator_id=op.id, segment_count=1, rate_ghs_per_segment=Decimal("0.05"),
+                               amount_ghs=Decimal("0.05"))
+        db.add_all([invoice, usage])
+        await db.commit()
+    for _ in range(2):  # the second, unchanged, writes nothing
+        assert (await c.patch(f"/platform/payment-transactions/{pid}/diagnostic", headers=h, json={"is_diagnostic": True})).status_code == 200
+        assert (await c.patch(f"/platform/sms-usage-records/{usage.id}/diagnostic", headers=h, json={"is_diagnostic": True})).status_code == 200
+    assert (await c.put(f"/platform/invoices/{invoice.id}/waive", headers=h)).status_code == 200
+
+    [tx_row] = await rows_of("payment.diagnostic_flag", pid)
+    [sms_row] = await rows_of("sms_usage.diagnostic_flag", usage.id)
+    [waive] = await rows_of("invoice.waive", invoice.id)
+    for row in (tx_row, sms_row):
+        assert row.changes == {"is_diagnostic": {"before": False, "after": True}}
+    assert waive.changes == {"status": {"before": "issued", "after": "waived"}}
+    for row in (tx_row, sms_row, waive):
+        assert_owner_actor(row, owner, op.id)
+        assert_none_of(row, PHONE)
+
+
+async def test_platform_wide_setting_rows(env, platform):
+    from src.db.models import ProviderCatalogEntry
+    from src.modules.notifications import template_catalog as catalog
+
+    c, h, owner = env["client"], platform["h"], platform["owner"]
+    support = f"support-{uuid.uuid4().hex[:6]}@throwaway.test"
+    for _ in range(2):  # each second save changes nothing and writes nothing
+        assert (await c.put("/platform/settings", headers=h, json={"platform_support_email": support})).status_code == 200
+        assert (await c.put("/platform/billing/default-fee", headers=h, json={"default_monthly_fee_ghs": "123.00"})).status_code == 200
+    async with async_session_factory() as db:
+        entry = (await db.execute(select(ProviderCatalogEntry).where(ProviderCatalogEntry.is_integrated == True)  # noqa: E712
+                                  .limit(1))).scalar_one()
+    flipped = not entry.is_available
+    for value in (flipped, flipped, entry.is_available):
+        assert (await c.put(f"/platform/providers/{entry.id}", headers=h, json={"is_available": value})).status_code == 200
+
+    event, channel = next(key for key in catalog.DEFAULTS if key[1] == catalog.SMS)
+    default = catalog.DEFAULTS[(event, channel)]
+    edited = default.body_text.rstrip(".!") + "!"
+    saved = await c.put(f"/platform/notification-templates/{event}/{channel}", headers=h, json={"body_text": edited})
+    assert saved.status_code == 200, saved.text
+    for _ in range(2):
+        assert (await c.post(f"/platform/notification-templates/{event}/{channel}/reset", headers=h)).status_code == 200
+
+    async with async_session_factory() as db:
+        mine = (await db.execute(select(AuditLog).where(AuditLog.actor_id == owner.id)
+                                 .order_by(AuditLog.created_at))).scalars().all()
+    by_action = {}
+    for row in mine:
+        by_action.setdefault(row.action, []).append(row)
+    [settings] = by_action["platform.settings_update"]
+    assert settings.changes["platform_support_email"]["after"] == support
+    [fee] = by_action["platform.default_fee_update"]
+    assert fee.changes["default_monthly_fee_ghs"]["after"] in ("123.00", 123.0, "123")
+    assert len(by_action["provider_catalog.update"]) == 2
+    [update_row] = by_action["notification_template.update"]
+    assert update_row.target_id == f"{event}/{channel}"
+    assert update_row.changes == {"body_text": {"before": default.body_text, "after": edited}}
+    [reset_row] = by_action["notification_template.reset"]  # resetting the default again wrote none
+    assert reset_row.changes == {"body_text": {"before": edited, "after": default.body_text}}
+    for row in mine:
+        assert_owner_actor(row, owner)
+
+
+async def test_platform_credential_rows_never_carry_a_key(env, platform, monkeypatch):
+    import httpx as httpx_module
+
+    from src.modules.sms.providers import arkesel
+
+    c, h, owner = env["client"], platform["h"], platform["owner"]
+    pk, sk, wh = (f"pk_test_{uuid.uuid4().hex}", f"sk_test_{uuid.uuid4().hex}", f"whsec-{uuid.uuid4().hex}")
+    gw_key, note_key = f"PlatGw-{uuid.uuid4().hex}", f"PlatNote-{uuid.uuid4().hex}"
+    for _ in range(2):  # an identical second save writes nothing
+        assert (await c.put("/platform/payment-credentials", headers=h, json={
+            "public_key": pk, "secret_key": sk, "webhook_secret": wh})).status_code == 200
+        assert (await c.put("/platform/sms-credentials", headers=h, json={"api_key": gw_key, "sender_id": "IPADMIN"})).status_code == 200
+        assert (await c.put("/platform/notification-sms-credentials", headers=h, json={
+            "api_key": note_key, "sender_id": "IPNOTE", "shares_gateway_account": False})).status_code == 200
+
+    class EchoingClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            raise RuntimeError(f"401 Invalid key {sk} (pk {pk})")
+
+        async def __aexit__(self, *a):
+            return False
+
+    class EchoingArkesel:
+        def __init__(self, *, api_key, sender_id, **kw):
+            self.api_key = api_key
+
+        async def verify_credentials(self):
+            raise RuntimeError(f"Arkesel 401: api key {self.api_key} is not valid")
+
+    monkeypatch.setattr(httpx_module, "AsyncClient", EchoingClient)
+    monkeypatch.setattr(arkesel, "ArkeselSMSProvider", EchoingArkesel)
+    for path in ("payment-credentials", "sms-credentials", "notification-sms-credentials"):
+        res = await c.post(f"/platform/{path}/test", headers=h)
+        assert res.status_code == 400
+        assert sk not in res.text and gw_key not in res.text and note_key not in res.text
+
+    async with async_session_factory() as db:
+        mine = (await db.execute(select(AuditLog).where(AuditLog.actor_id == owner.id,
+                                                        AuditLog.action.like("platform_%credentials.%"))
+                                 .order_by(AuditLog.created_at))).scalars().all()
+    assert [r.action for r in mine] == [
+        "platform_payment_credentials.set", "platform_sms_credentials.set", "platform_notification_sms_credentials.set",
+        "platform_payment_credentials.test", "platform_sms_credentials.test", "platform_notification_sms_credentials.test",
+    ]
+    pay_set, gw_set, note_set, *tests = mine
+    assert {k: pay_set.changes[k] for k in ("public_key", "secret_key", "webhook_secret")} == dict.fromkeys(
+        ("public_key", "secret_key", "webhook_secret"), REDACTED)
+    assert gw_set.changes["api_key"] == REDACTED
+    assert gw_set.changes["sender_id"]["after"] == "IPADMIN"
+    assert note_set.changes["shares_gateway_account"]["after"] is False
+    for row in tests:
+        assert row.detail["outcome"] == "failed" and REDACTED in row.detail["error"]
+    for row in mine:
+        assert_owner_actor(row, owner)
+        assert_none_of(row, pk, sk, wh, gw_key, note_key, sk[:12], gw_key[:12])

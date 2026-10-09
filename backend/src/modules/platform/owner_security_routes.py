@@ -38,6 +38,8 @@ from src.db.base import get_db
 from src.db.models import PlatformOwner, PlatformOwnerSecurityEvent
 from src.middleware.auth import get_authenticated_platform_owner
 from src.middleware.rate_limit import enforce_rate_limit
+from src.modules import audit
+from src.modules.platform import owner_audit
 from src.modules.admin_accounts import otp as otp_service
 from src.modules.admin_accounts.notifications import OTP_TTL_MINUTES, send_otp_sms
 from src.modules.platform import character_code
@@ -115,6 +117,13 @@ def _missing_steps(owner: PlatformOwner) -> list[str]:
     return missing
 
 
+async def _wrong_password(owner: PlatformOwner, step: str) -> HTTPException:
+    await owner_audit.own_row_detached(owner, "platform_owner.setup_step_failed",
+                                       f"Security setup step refused ({step}): wrong current password",
+                                       detail={"step": step, "reason": "wrong_current_password"})
+    return _bad_request(WRONG_PASSWORD)
+
+
 def _record_event(db: AsyncSession, owner: PlatformOwner, event_type: str, **detail) -> None:
     db.add(PlatformOwnerSecurityEvent(platform_owner_id=owner.id, event_type=event_type, detail=detail or None))
 
@@ -134,7 +143,7 @@ async def setup_status(owner: PlatformOwner = Depends(get_authenticated_platform
     }
 
 
-@router.post("/phone")
+@router.post("/phone", dependencies=[Depends(audit.audited)])
 async def setup_send_phone_code(
     body: SetupPhoneRequest,
     request: Request,
@@ -145,7 +154,7 @@ async def setup_send_phone_code(
     await enforce_rate_limit(_client_ip(request), "platform:setup-otp-send", limit=10, window_seconds=600)
     await enforce_rate_limit(f"owner:{owner.id}", "platform:setup-otp-send", limit=3, window_seconds=600)
     if not verify_password(body.current_password, owner.password_hash):
-        raise _bad_request(WRONG_PASSWORD)
+        raise await _wrong_password(owner, "phone")
     try:
         phone = normalize_ghana_phone(body.phone)
     except ValueError:
@@ -155,6 +164,11 @@ async def setup_send_phone_code(
     await db.commit()
 
     result = await send_otp_sms(phone, code, purpose="setup")
+    await owner_audit.own_row_detached(
+        owner, "platform_owner.setup_code_sent",
+        f"Sent a setup code to {mask_phone(phone)}" + ("" if result.success else " (SMS failed)"),
+        detail={"phone": mask_phone(phone), "outcome": "sent" if result.success else "sms_failed"},
+    )
     if not result.success:
         # Never leave a live code the owner never received.
         row.consumed_at = datetime.now(timezone.utc)
@@ -167,7 +181,7 @@ async def setup_send_phone_code(
     return {"status": "sent", "phone": mask_phone(phone), "expires_in_seconds": OTP_TTL_MINUTES * 60}
 
 
-@router.post("/phone/verify")
+@router.post("/phone/verify", dependencies=[Depends(audit.audited)])
 async def setup_verify_phone_code(
     body: SetupOtpVerifyRequest,
     request: Request,
@@ -180,6 +194,8 @@ async def setup_verify_phone_code(
 
     result = await otp_service.verify_code(db, platform_owner_id=owner.id, purpose="setup", code=body.code)
     if not result.ok:
+        await owner_audit.own_row_detached(owner, "platform_owner.setup_step_failed", "Entered a wrong or expired setup code",
+                                           detail={"step": "phone_verify", "reason": result.reason})
         raise _bad_request(otp_service.failure_message(result))
 
     previous = owner.phone if owner.phone_verified else None
@@ -190,12 +206,15 @@ async def setup_verify_phone_code(
         phone=mask_phone(owner.phone), replaced=mask_phone(previous) if previous and previous != owner.phone else None,
         client_ip=_client_ip(request),
     )
+    owner_audit.own_row(db, owner, "platform_owner.setup_phone_verified", f"Verified their phone {mask_phone(owner.phone)}",
+                        changes={"phone": "changed"} if previous != owner.phone else None,
+                        detail={"phone": mask_phone(owner.phone)})
     await db.commit()
     logger.info("platform_owner_phone_verified owner_id=%s phone=%s", owner.id, mask_phone(owner.phone))
     return {"status": "verified", "phone": mask_phone(owner.phone)}
 
 
-@router.post("/security-question")
+@router.post("/security-question", dependencies=[Depends(audit.audited)])
 async def setup_security_question(
     body: SetupSecurityQuestionRequest,
     request: Request,
@@ -205,7 +224,7 @@ async def setup_security_question(
     _require_setup_pending(owner)
     await enforce_rate_limit(f"owner:{owner.id}", "platform:setup-question", limit=5, window_seconds=900)
     if not verify_password(body.current_password, owner.password_hash):
-        raise _bad_request(WRONG_PASSWORD)
+        raise await _wrong_password(owner, "security_question")
     if body.security_question not in SECURITY_QUESTIONS:
         raise _bad_request("Choose one of the listed security questions.")
     answer = normalize_answer(body.security_answer)
@@ -218,12 +237,14 @@ async def setup_security_question(
     owner.security_answer_attempt_count = 0
     _record_event(db, owner, "security_question_set", question=body.security_question, replaced=replacing,
                   client_ip=_client_ip(request))
+    owner_audit.own_row(db, owner, "platform_owner.setup_security_question", "Set their security question",
+                        changes={"security_answer": "changed"}, detail={"question": body.security_question, "replaced": replacing})
     await db.commit()
     logger.info("platform_owner_security_question_set owner_id=%s replaced=%s", owner.id, replacing)
     return {"status": "saved", "security_question": owner.security_question}
 
 
-@router.post("/character-code")
+@router.post("/character-code", dependencies=[Depends(audit.audited)])
 async def setup_generate_character_code(
     body: SetupCharacterCodeRequest,
     request: Request,
@@ -243,7 +264,7 @@ async def setup_generate_character_code(
     _require_setup_pending(owner)
     await enforce_rate_limit(f"owner:{owner.id}", "platform:setup-code", limit=5, window_seconds=900)
     if not verify_password(body.current_password, owner.password_hash):
-        raise _bad_request(WRONG_PASSWORD)
+        raise await _wrong_password(owner, "character_code")
 
     code = character_code.generate_code()
     replacing = owner.challenge_hashes is not None
@@ -252,6 +273,10 @@ async def setup_generate_character_code(
     owner.challenge_pending_positions = None
     owner.challenge_pending_jti = None
     _record_event(db, owner, "challenge_generated", replaced=replacing, client_ip=_client_ip(request))
+    # Never the code: the row says only that one was made.
+    owner_audit.own_row(db, owner, "platform_owner.setup_character_code",
+                        "Generated a new character code" if replacing else "Generated their character code",
+                        detail={"replaced": replacing})
     await db.commit()
     logger.info("platform_owner_character_code_generated owner_id=%s replaced=%s", owner.id, replacing)
     # The body is the plaintext code: no browser or proxy may keep a copy.
@@ -318,7 +343,7 @@ async def setup_code_check(
     return {"status": "confirmed"}
 
 
-@router.post("/complete")
+@router.post("/complete", dependencies=[Depends(audit.audited)])
 async def setup_complete(
     body: SetupCompleteRequest,
     request: Request,
@@ -333,7 +358,7 @@ async def setup_complete(
     _require_setup_pending(owner)
     await enforce_rate_limit(f"owner:{owner.id}", "platform:setup-complete", limit=5, window_seconds=900)
     if not verify_password(body.current_password, owner.password_hash):
-        raise _bad_request(WRONG_PASSWORD)
+        raise await _wrong_password(owner, "complete")
     missing = _missing_steps(owner)
     if missing:
         raise HTTPException(
@@ -348,6 +373,8 @@ async def setup_complete(
     owner.challenge_locked_until = None
     owner.token_version = int(owner.token_version or 0) + 1
     _record_event(db, owner, "setup_completed", phone=mask_phone(owner.phone), client_ip=_client_ip(request))
+    owner_audit.own_row(db, owner, "platform_owner.setup_completed",
+                        "Completed security setup (signed out everywhere; sign-in now asks for the character code)")
     await db.commit()
     logger.warning("platform_owner_security_setup_completed owner_id=%s", owner.id)
     return {"status": "complete", "logout": True}

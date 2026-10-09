@@ -11,6 +11,7 @@ from src.db.base import get_db
 from src.db.models import OperatorApplication, PlatformOwner
 from src.middleware.auth import get_platform_owner_context
 from src.middleware.rate_limit import enforce_rate_limit
+from src.modules import audit
 from src.modules.applications import service
 from src.modules.applications.schemas import (
     ApplicationSubmit,
@@ -118,7 +119,7 @@ async def get_application(
     return app
 
 
-@platform_router.put("/applications/{application_id}/approve", status_code=200)
+@platform_router.put("/applications/{application_id}/approve", status_code=200, dependencies=[Depends(audit.audited)])
 async def approve_application(
     application_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -153,7 +154,7 @@ async def approve_application(
     }
 
 
-@platform_router.put("/applications/{application_id}/reject", status_code=200)
+@platform_router.put("/applications/{application_id}/reject", status_code=200, dependencies=[Depends(audit.audited)])
 async def reject_application(
     application_id: uuid.UUID,
     body: ApplicationReject,

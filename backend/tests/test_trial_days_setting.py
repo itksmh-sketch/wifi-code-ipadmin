@@ -128,7 +128,7 @@ async def test_approval_stamps_one_trial_length_everywhere(monkeypatch):
         return base
 
     async def provision(db, **kwargs):
-        return SimpleNamespace(phone=kwargs["phone"]), "TempPass1"
+        return SimpleNamespace(id=uuid.uuid4(), phone=kwargs["phone"], email=kwargs["email"], role=kwargs["role"]), "TempPass1"
 
     async def sms(admin, temp_password):
         return SMSSendResult(success=True)
@@ -144,7 +144,7 @@ async def test_approval_stamps_one_trial_length_everywhere(monkeypatch):
     monkeypatch.setattr(service.notify, "notify_application_approved", notify_approved)
 
     app = SimpleNamespace(
-        isp_name="AccraNet ISP", email="kwame@accranet.test", phone="+233244123456",
+        id=uuid.uuid4(), isp_name="AccraNet ISP", email="kwame@accranet.test", phone="+233244123456",
         contact_name="Kwame Mensah", status="pending",
     )
     before = datetime.now(timezone.utc)
@@ -171,6 +171,9 @@ def settings_api(monkeypatch):
         return dict(written)
 
     class _Db:
+        def add(self, row):  # the audit row a real save writes
+            pass
+
         async def commit(self):
             pass
 

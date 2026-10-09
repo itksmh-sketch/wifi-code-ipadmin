@@ -16,7 +16,7 @@ What fails:
   * a route that is marked audited but still listed as pending or exempt;
   * a list entry naming a route that no longer exists.
 
-P4 shrinks PENDING batch by batch until it is empty.
+P4 shrank PENDING batch by batch; it is empty now.
 
 Pure unit test: no server, no DB, no Redis.
 """
@@ -119,25 +119,7 @@ AUDITED = {
     ("PUT", "/api/v1/admin/resellers/{reseller_id}"),
     ("PUT", "/api/v1/admin/resellers/{reseller_id}/topup"),
     ("PUT", "/api/v1/sms-template/voucher"),
-}
-
-# Change nothing worth a row: token renewal, previews, a check that only
-# reports whether a typed code matches, and a live router health poll.
-EXEMPT = {
-    ("POST", "/api/v1/auth/refresh"),
-    ("POST", "/api/v1/platform/auth/refresh"),
-    ("POST", "/api/v1/admin/branding/preview-draft"),
-    ("POST", "/api/v1/sms-template/voucher/preview"),
-    ("POST", "/api/v1/platform/notification-templates/{event}/{channel}/preview"),
-    ("POST", "/api/v1/platform/setup/character-code/check"),
-    # Reads the router and stores the same metrics row the 5-minute collector
-    # job does; changes no configuration.
-    ("POST", "/api/v1/admin/routers/{router_id}/health/check"),
-}
-
-# P4 backlog, one comment per batch.
-PENDING = {
-    # Platform owner
+    # P4 batch 5: platform owner
     ("PUT", "/api/v1/platform/applications/{application_id}/approve"),
     ("PUT", "/api/v1/platform/applications/{application_id}/reject"),
     ("POST", "/api/v1/platform/auth/challenge"),
@@ -174,6 +156,23 @@ PENDING = {
     ("POST", "/api/v1/platform/sms-credentials/test"),
     ("PATCH", "/api/v1/platform/sms-usage-records/{record_id}/diagnostic"),
 }
+
+# Change nothing worth a row: token renewal, previews, a check that only
+# reports whether a typed code matches, and a live router health poll.
+EXEMPT = {
+    ("POST", "/api/v1/auth/refresh"),
+    ("POST", "/api/v1/platform/auth/refresh"),
+    ("POST", "/api/v1/admin/branding/preview-draft"),
+    ("POST", "/api/v1/sms-template/voucher/preview"),
+    ("POST", "/api/v1/platform/notification-templates/{event}/{channel}/preview"),
+    ("POST", "/api/v1/platform/setup/character-code/check"),
+    # Reads the router and stores the same metrics row the 5-minute collector
+    # job does; changes no configuration.
+    ("POST", "/api/v1/admin/routers/{router_id}/health/check"),
+}
+
+# P4 backlog: empty since batch 5. A new in-scope route is audited or exempt.
+PENDING: set[tuple[str, str]] = set()
 
 # Reads that reveal a secret or bulk personal data: audited too, though GETs
 # (P3 added their PIN gates, P4 batch 3 their rows). A new one goes in

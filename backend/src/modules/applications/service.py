@@ -17,6 +17,8 @@ from src.db.models import (
 )
 from src.modules.admin_accounts.notifications import send_temp_password_sms
 from src.modules.admin_accounts.provisioning import provision_operator_admin
+from src.modules import audit
+from src.modules.audit.fields import OPERATOR_CREATE
 from src.modules.sms.types import SMSSendResult
 from src.modules.billing.service import get_default_monthly_fee
 from src.modules.notifications import dispatcher as notify
@@ -207,6 +209,17 @@ async def approve_application(
     )
     db.add(event)
 
+    # The new operator's rows: the approval, the operator it made and its first
+    # admin. Never the temporary password; the applicant's phone only as changed.
+    audit.record(db, "application.approve", isp_operator_id=operator.id, target_type="operator_application",
+                 target_id=app.id, summary=f"Approved the application from {app.isp_name}",
+                 detail={"operator_id": str(operator.id), "slug": operator.slug, "trial_days": trial_days})
+    audit.record(db, "operator.create", isp_operator_id=operator.id, target_type="isp_operator", target_id=operator.id,
+                 summary=f"Created operator {operator.name} from an application",
+                 changes=OPERATOR_CREATE.diff(None, OPERATOR_CREATE.snapshot(operator)), detail={"via": "application"})
+    audit.record(db, "admin_user.create", isp_operator_id=operator.id, target_type="admin_user", target_id=admin.id,
+                 summary=f"Added {admin.role} {admin.email}", detail={"role": admin.role})
+
     await db.commit()
     await db.refresh(operator)
 
@@ -241,6 +254,10 @@ async def reject_application(
     app.reviewed_by_platform_owner_id = platform_owner_id
     app.reviewed_at = now
     app.rejection_reason = rejection_reason
+    # No operator exists, so a platform-wide row. The reason is the owner's own
+    # text; the applicant's contact details stay out.
+    audit.record(db, "application.reject", isp_operator_id=None, target_type="operator_application", target_id=app.id,
+                 summary=f"Rejected the application from {app.isp_name}", detail={"reason": rejection_reason})
 
     await db.commit()
     await db.refresh(app)

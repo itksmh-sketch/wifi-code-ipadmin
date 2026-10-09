@@ -49,6 +49,8 @@ from src.modules.mikrotik.setup_routes import _is_online as router_is_online
 from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.platform import character_code, owner_lockout
 from src.modules import audit
+from src.modules.audit import fields as audit_fields
+from src.modules.platform import owner_audit
 from src.modules.admin_accounts import access, platform_reset
 from src.modules.notifications import dispatcher as notify
 from src.modules.admin_accounts.notifications import send_temp_password_sms
@@ -104,6 +106,19 @@ INVALID_CREDENTIALS = "Invalid email or password"
 _DUMMY_HASH = hash_password("dummy-password-for-timing-equalisation")
 
 CHALLENGE_EXPIRED = "This sign-in step has expired or was already used. Sign in again."
+
+
+def _owner_rejected(
+    background_tasks: BackgroundTasks, owner: PlatformOwner, status_code: int, detail: str,
+    action: str, reason: str,
+) -> JSONResponse:
+    """A refused sign-in step for a real owner account, with the attempt
+    audited by the system after the response has gone (see owner_audit).
+    Returned, not raised: FastAPI drops background tasks when the handler
+    raises. Same status and body as the raise it replaces."""
+    owner_audit.anonymous_row(background_tasks, owner, action, f"Refused sign-in step for {owner.email}",
+                              detail={"reason": reason})
+    return JSONResponse(status_code=status_code, content={"detail": detail}, background=background_tasks)
 CHALLENGE_LOCKED = "Too many incorrect character-code entries. Try again in a few hours, or reset your code."
 
 
@@ -118,7 +133,7 @@ class LoginChallengeResponse(BaseModel):
     expires_in_seconds: int
 
 
-@router.post("/auth/login", response_model=TokenResponse | LoginChallengeResponse)
+@router.post("/auth/login", response_model=TokenResponse | LoginChallengeResponse, dependencies=[Depends(audit.audited)])
 async def platform_auth_login(
     body: LoginRequest,
     request: Request,
@@ -146,20 +161,15 @@ async def platform_auth_login(
         # Rejected before the counter moves, which also keeps the SMS to one
         # per lock (no increment, no second threshold crossing).
         verify_password(body.password, _DUMMY_HASH)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS)
+        return _owner_rejected(background_tasks, owner, status.HTTP_401_UNAUTHORIZED, INVALID_CREDENTIALS,
+                               "platform_auth.login_failed", "locked")
 
     if not verify_password(body.password, owner.password_hash):
         event_id = await owner_lockout.register_failure(db, owner, owner_lockout.LOGIN, client_ip=client_ip)
         if event_id is not None:
             background_tasks.add_task(owner_lockout.send_lockout_notification, owner.id, owner_lockout.LOGIN, event_id)
-            # Returned, not raised: FastAPI drops background tasks when the
-            # handler raises. Body is identical to the raise below.
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": INVALID_CREDENTIALS},
-                background=background_tasks,
-            )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS)
+        return _owner_rejected(background_tasks, owner, status.HTTP_401_UNAUTHORIZED, INVALID_CREDENTIALS,
+                               "platform_auth.login_failed", "wrong_password")
 
     # A correct password ends the run of failures, lapsed lock and all.
     owner_lockout.clear(owner, owner_lockout.LOGIN)
@@ -169,6 +179,8 @@ async def platform_auth_login(
         # existed. This is the path the existing owner takes until they
         # complete setup, so no one is locked out mid-transition.
         owner.last_login_at = datetime.now(timezone.utc)
+        owner_audit.own_row(db, owner, "platform_auth.login", "Signed in (security setup pending)",
+                            detail={"step": "password", "setup_pending": True})
         await db.commit()
         return platform_owner_token_response(owner)
 
@@ -178,14 +190,16 @@ async def platform_auth_login(
         # password-only; scripts/platform_owner_recover.py resets setup.
         await db.commit()
         logger.error("platform_owner_setup_complete_without_code owner_id=%s", owner.id)
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account's security setup is incomplete. Contact the server administrator.",
+        return _owner_rejected(
+            background_tasks, owner, status.HTTP_403_FORBIDDEN,
+            "Your account's security setup is incomplete. Contact the server administrator.",
+            "platform_auth.login_failed", "setup_incomplete",
         )
 
     if owner_lockout.is_locked(owner, owner_lockout.CHALLENGE):
         await db.commit()  # keep the cleared password counter
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CHALLENGE_LOCKED)
+        return _owner_rejected(background_tasks, owner, status.HTTP_403_FORBIDDEN, CHALLENGE_LOCKED,
+                               "platform_auth.login_failed", "challenge_locked")
 
     # The same positions until they are answered correctly: signing in again
     # must not deal a fresh set to shop through.
@@ -193,6 +207,10 @@ async def platform_auth_login(
         owner.challenge_pending_positions = character_code.choose_positions(owner.challenge_hashes)
     # A new jti on every password success voids any earlier challenge token.
     owner.challenge_pending_jti = uuid.uuid4()
+    # By the system: the password alone does not sign the owner in.
+    audit.record(db, "platform_auth.challenge_issued", actor=audit.Actor.system(), isp_operator_id=None,
+                 target_type=owner_audit.TARGET, target_id=owner.id,
+                 summary=f"Password accepted for {owner.email}; character-code challenge issued")
     await db.commit()
     return LoginChallengeResponse(
         challenge_token=create_login_challenge_token(
@@ -211,7 +229,7 @@ class ChallengeAnswerRequest(BaseModel):
     characters: dict[int, str] = Field(max_length=character_code.POSITIONS_PER_CHALLENGE)
 
 
-@router.post("/auth/challenge", response_model=TokenResponse)
+@router.post("/auth/challenge", response_model=TokenResponse, dependencies=[Depends(audit.audited)])
 async def platform_auth_challenge(
     body: ChallengeAnswerRequest,
     request: Request,
@@ -253,7 +271,8 @@ async def platform_auth_challenge(
     if owner_lockout.is_locked(owner, owner_lockout.CHALLENGE):
         owner.challenge_pending_jti = None
         await db.commit()
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CHALLENGE_LOCKED)
+        return _owner_rejected(background_tasks, owner, status.HTTP_403_FORBIDDEN, CHALLENGE_LOCKED,
+                               "platform_auth.challenge_failed", "locked")
 
     asked = set(owner.challenge_pending_positions)
     answers = {position - 1: value for position, value in body.characters.items()}
@@ -268,18 +287,19 @@ async def platform_auth_challenge(
         event_id = await owner_lockout.register_failure(db, owner, owner_lockout.CHALLENGE, client_ip=client_ip)
         if event_id is not None:
             background_tasks.add_task(owner_lockout.send_lockout_notification, owner.id, owner_lockout.CHALLENGE, event_id)
-            return JSONResponse(
-                status_code=status.HTTP_403_FORBIDDEN, content={"detail": CHALLENGE_LOCKED}, background=background_tasks
-            )
+            return _owner_rejected(background_tasks, owner, status.HTTP_403_FORBIDDEN, CHALLENGE_LOCKED,
+                                   "platform_auth.challenge_failed", "wrong_characters_now_locked")
         remaining = owner_lockout.CHALLENGE_MAX_ATTEMPTS - int(owner.challenge_attempt_count or 0)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Those characters don't match your code. Sign in again to retry ({remaining} attempts left).",
+        return _owner_rejected(
+            background_tasks, owner, status.HTTP_401_UNAUTHORIZED,
+            f"Those characters don't match your code. Sign in again to retry ({remaining} attempts left).",
+            "platform_auth.challenge_failed", "wrong_characters",
         )
 
     owner_lockout.clear(owner, owner_lockout.CHALLENGE)
     owner.challenge_pending_positions = None  # next sign-in gets new positions
     owner.last_login_at = datetime.now(timezone.utc)
+    owner_audit.own_row(db, owner, "platform_auth.login", "Signed in", detail={"step": "challenge"})
     await db.commit()
     return platform_owner_token_response(owner)
 
@@ -303,7 +323,7 @@ class PlatformLogoutRequest(BaseModel):
     refresh_token: Optional[str] = None
 
 
-@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(audit.audited)])
 async def platform_auth_logout(
     request: Request,
     body: Optional[PlatformLogoutRequest] = None,
@@ -344,19 +364,29 @@ async def platform_auth_logout(
             owner_id = uuid.UUID(str(payload.get("sub")))
         except ValueError:
             continue
-        result = await db.execute(
-            update(PlatformOwner)
-            .where(
-                PlatformOwner.id == owner_id,
-                PlatformOwner.is_active == True,
-                PlatformOwner.token_version == version,
+        signed_out = (
+            await db.execute(
+                update(PlatformOwner)
+                .where(
+                    PlatformOwner.id == owner_id,
+                    PlatformOwner.is_active == True,
+                    PlatformOwner.token_version == version,
+                )
+                .values(token_version=PlatformOwner.token_version + 1)
+                .returning(PlatformOwner.email)
             )
-            .values(token_version=PlatformOwner.token_version + 1)
+        ).one_or_none()
+        if signed_out is None:
+            await db.rollback()
+            continue
+        audit.record(
+            db, "platform_auth.logout",
+            actor=audit.Actor(audit.PLATFORM_OWNER, owner_id, signed_out.email), isp_operator_id=None,
+            target_type=owner_audit.TARGET, target_id=owner_id, detail={"via": kind},
         )
         await db.commit()
-        if result.rowcount:
-            logger.info("platform_owner_logout owner_id=%s via=%s", owner_id, kind)
-            break
+        logger.info("platform_owner_logout owner_id=%s via=%s", owner_id, kind)
+        break
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -476,7 +506,7 @@ def _validated_password(admin_or_owner, body: PasswordChange, verify) -> str:
     return body.new_password
 
 
-@router.patch("/me")
+@router.patch("/me", dependencies=[Depends(audit.audited)])
 async def update_platform_me(
     payload: dict = Body(...),
     db: AsyncSession = Depends(get_db),
@@ -485,14 +515,18 @@ async def update_platform_me(
     """Edit your own display name. Email is the login identifier and is immutable."""
     _reject_unknown_fields(payload, {"name"})
     body = _parse_update(PlatformOwnerProfileUpdate, payload)
+    before = audit_fields.PLATFORM_OWNER_PROFILE.snapshot(owner)
     owner.name = body.name
+    changes = audit_fields.PLATFORM_OWNER_PROFILE.diff(before, audit_fields.PLATFORM_OWNER_PROFILE.snapshot(owner))
+    if changes:
+        owner_audit.own_row(db, owner, "platform_owner.update", "Edited their profile", changes=changes)
     await db.commit()
     await db.refresh(owner)
     logger.info("platform_owner_profile_updated owner_id=%s", owner.id)
     return {"id": str(owner.id), "email": owner.email, "name": owner.name}
 
 
-@router.post("/me/password", response_model=TokenResponse)
+@router.post("/me/password", response_model=TokenResponse, dependencies=[Depends(audit.audited)])
 async def change_platform_me_password(
     body: PasswordChange,
     request: Request,
@@ -505,19 +539,23 @@ async def change_platform_me_password(
     await enforce_rate_limit(client_ip, "platform:password-change", limit=10, window_seconds=900)
     await enforce_rate_limit(f"owner:{owner.id}", "platform:password-change", limit=5, window_seconds=900)
 
+    if not verify_password(body.current_password, owner.password_hash):
+        await owner_audit.wrong_password(owner, "platform_owner.password_change_failed", "Password change")
     new_password = _validated_password(owner, body, verify_password)
     owner.password_hash = hash_password(new_password)
     owner.token_version = int(owner.token_version or 0) + 1
     # Whoever can set the password is the owner: a login lock left running
     # would only hold them out of their own account.
     owner_lockout.clear(owner, owner_lockout.LOGIN)
+    owner_audit.own_row(db, owner, "platform_owner.password_changed", "Changed their password (other sessions signed out)",
+                        changes={"password": "changed"})
     await db.commit()
     await db.refresh(owner)
     logger.warning("platform_owner_password_changed owner_id=%s", owner.id)
     return platform_owner_token_response(owner)
 
 
-@router.patch("/operators/{operator_id}")
+@router.patch("/operators/{operator_id}", dependencies=[Depends(audit.audited)])
 async def update_operator_profile(
     operator_id: uuid.UUID,
     payload: dict = Body(...),
@@ -531,6 +569,7 @@ async def update_operator_profile(
     operator = await db.get(ISPOperator, operator_id)
     if not operator:
         raise HTTPException(status_code=404, detail="Operator not found")
+    before = audit_fields.OPERATOR_PROFILE.snapshot(operator)
 
     changed = []
     if "name" in payload:
@@ -564,6 +603,10 @@ async def update_operator_profile(
             operator.contact_phone = None  # explicit clear
         changed.append("contact_phone")
 
+    changes = audit_fields.OPERATOR_PROFILE.diff(before, audit_fields.OPERATOR_PROFILE.snapshot(operator))
+    if changes:
+        audit.record(db, "operator.update", isp_operator_id=operator.id, target_type="isp_operator",
+                     target_id=operator.id, summary=f"Edited operator {operator.name}", changes=changes)
     await db.commit()
     await db.refresh(operator)
     logger.info(
@@ -582,7 +625,7 @@ async def list_operators(
     return [await _operator_row(db, operator) for operator in result.scalars().all()]
 
 
-@router.post("/operators", status_code=status.HTTP_201_CREATED)
+@router.post("/operators", status_code=status.HTTP_201_CREATED, dependencies=[Depends(audit.audited)])
 async def create_operator(
     body: PlatformOperatorCreate,
     db: AsyncSession = Depends(get_db),
@@ -638,6 +681,13 @@ async def create_operator(
         phone=body.initial_admin_phone,
         role="superadmin",
     )
+    # Never the temporary password; phones only as changed.
+    audit.record(db, "operator.create", isp_operator_id=operator.id, target_type="isp_operator", target_id=operator.id,
+                 summary=f"Created operator {operator.name}",
+                 changes=audit_fields.OPERATOR_CREATE.diff(None, audit_fields.OPERATOR_CREATE.snapshot(operator)),
+                 detail={"via": "platform", "trial_days": body.trial_days})
+    audit.record(db, "admin_user.create", isp_operator_id=operator.id, target_type="admin_user", target_id=admin.id,
+                 summary=f"Added {admin.role} {admin.email}", detail={"role": admin.role})
     await db.commit()
     await db.refresh(operator)
     # Only after the commit: never text credentials for an account that rolled back.
@@ -677,7 +727,7 @@ async def get_operator(
     return row
 
 
-@router.put("/operators/{operator_id}/status")
+@router.put("/operators/{operator_id}/status", dependencies=[Depends(audit.audited)])
 async def update_operator_status(
     operator_id: uuid.UUID,
     body: PlatformOperatorStatusUpdate,
@@ -691,6 +741,7 @@ async def update_operator_status(
         raise HTTPException(status_code=404, detail="Operator not found")
 
     previous_status = operator.status
+    before = audit_fields.OPERATOR_STATUS.snapshot(operator)
     operator.status = body.status
     operator.updated_at = datetime.now(timezone.utc)
     if body.status == "approved" and not operator.approved_at:
@@ -724,6 +775,10 @@ async def update_operator_status(
             event_metadata={"reason": "manual", "reactivated_by_platform_owner_id": str(owner.id)},
         ))
 
+    changes = audit_fields.OPERATOR_STATUS.diff(before, audit_fields.OPERATOR_STATUS.snapshot(operator))
+    if changes:
+        audit.record(db, "operator.status_change", isp_operator_id=operator.id, target_type="isp_operator",
+                     target_id=operator.id, summary=f"Set {operator.name} to {operator.status}", changes=changes)
     await db.commit()
     await db.refresh(operator)
     return await _operator_row(db, operator)
@@ -761,7 +816,7 @@ def _admin_row(admin: AdminUser) -> dict:
     }
 
 
-@router.post("/operators/{operator_id}/admins/{admin_id}/reset-password")
+@router.post("/operators/{operator_id}/admins/{admin_id}/reset-password", dependencies=[Depends(audit.audited)])
 async def reset_operator_admin_password(
     operator_id: uuid.UUID,
     admin_id: uuid.UUID,
@@ -827,7 +882,7 @@ async def reset_operator_admin_password(
     }
 
 
-@router.post("/operators/{operator_id}/admins", status_code=status.HTTP_201_CREATED)
+@router.post("/operators/{operator_id}/admins", status_code=status.HTTP_201_CREATED, dependencies=[Depends(audit.audited)])
 async def create_operator_admin(
     operator_id: uuid.UUID,
     body: PlatformAdminCreate,
@@ -841,6 +896,8 @@ async def create_operator_admin(
     admin, temp_password = await provision_operator_admin(
         db, operator_id=operator_id, email=body.email, phone=body.phone, role=body.role.value
     )
+    audit.record(db, "admin_user.create", isp_operator_id=operator_id, target_type="admin_user", target_id=admin.id,
+                 summary=f"Added {admin.role} {admin.email}", detail={"role": admin.role})
     await db.commit()
     await db.refresh(admin)
     # Only after the commit: never text credentials for an account that rolled back.
@@ -1305,7 +1362,7 @@ async def get_billing_default_fee(
     return {"default_monthly_fee_ghs": float(await get_default_monthly_fee(db))}
 
 
-@router.put("/billing/default-fee")
+@router.put("/billing/default-fee", dependencies=[Depends(audit.audited)])
 async def set_billing_default_fee(
     body: DefaultMonthlyFeeUpdate,
     db: AsyncSession = Depends(get_db),
@@ -1315,7 +1372,13 @@ async def set_billing_default_fee(
     the stored value is always one an operator's CHECK constraint accepts."""
     from src.modules.platform.settings_service import set_setting
 
+    before = await get_default_monthly_fee(db)
     await set_setting(db, DEFAULT_MONTHLY_FEE_KEY, f"{body.default_monthly_fee_ghs:.2f}")
+    after = await get_default_monthly_fee(db)
+    if after != before:
+        audit.record(db, "platform.default_fee_update", isp_operator_id=None, target_type="platform_setting",
+                     target_id=DEFAULT_MONTHLY_FEE_KEY, summary=f"Set the default monthly fee to GHS {after}",
+                     changes={"default_monthly_fee_ghs": {"before": before, "after": after}})
     await db.commit()
     return {"default_monthly_fee_ghs": float(await get_default_monthly_fee(db))}
 
@@ -1544,7 +1607,7 @@ async def list_payment_transactions(
     }
 
 
-@router.patch("/payment-transactions/{transaction_id}/diagnostic")
+@router.patch("/payment-transactions/{transaction_id}/diagnostic", dependencies=[Depends(audit.audited)])
 async def set_transaction_diagnostic(
     transaction_id: uuid.UUID,
     body: TransactionDiagnosticUpdate,
@@ -1566,6 +1629,11 @@ async def set_transaction_diagnostic(
             detail=f"Only terminal transactions ({', '.join(sorted(_TERMINAL_TRANSACTION_STATUSES))}) can be marked diagnostic.",
         )
 
+    # The operator's row: a diagnostic payment drops out of their reports.
+    if bool(tx.is_diagnostic) != body.is_diagnostic:
+        audit.record(db, "payment.diagnostic_flag", isp_operator_id=tx.isp_operator_id, target_type="payment_transaction",
+                     target_id=tx.id, summary=("Marked" if body.is_diagnostic else "Unmarked") + " a payment as a platform test",
+                     changes={"is_diagnostic": {"before": bool(tx.is_diagnostic), "after": body.is_diagnostic}})
     tx.is_diagnostic = body.is_diagnostic
     await db.commit()
     return {"id": str(tx.id), "is_diagnostic": bool(tx.is_diagnostic)}
@@ -1630,7 +1698,7 @@ async def list_sms_usage_records(
     }
 
 
-@router.patch("/sms-usage-records/{record_id}/diagnostic")
+@router.patch("/sms-usage-records/{record_id}/diagnostic", dependencies=[Depends(audit.audited)])
 async def set_sms_usage_diagnostic(
     record_id: uuid.UUID,
     body: TransactionDiagnosticUpdate,
@@ -1656,12 +1724,17 @@ async def set_sms_usage_diagnostic(
             detail="This usage record has already been billed on an invoice and can no longer be flagged.",
         )
 
+    # The operator's row: a diagnostic send is left off their invoice.
+    if bool(rec.is_diagnostic) != body.is_diagnostic:
+        audit.record(db, "sms_usage.diagnostic_flag", isp_operator_id=rec.isp_operator_id, target_type="sms_usage_record",
+                     target_id=rec.id, summary=("Marked" if body.is_diagnostic else "Unmarked") + " an SMS send as a platform test",
+                     changes={"is_diagnostic": {"before": bool(rec.is_diagnostic), "after": body.is_diagnostic}})
     rec.is_diagnostic = body.is_diagnostic
     await db.commit()
     return {"id": str(rec.id), "is_diagnostic": bool(rec.is_diagnostic)}
 
 
-@router.put("/operators/{operator_id}/billing")
+@router.put("/operators/{operator_id}/billing", dependencies=[Depends(audit.audited)])
 async def update_operator_billing(
     operator_id: uuid.UUID,
     body: PlatformOperatorBillingUpdate,
@@ -1674,6 +1747,7 @@ async def update_operator_billing(
         raise HTTPException(404, "Operator not found")
     if body.monthly_fee_ghs is None and body.extend_trial_days is None:
         raise HTTPException(400, "Provide monthly_fee_ghs and/or extend_trial_days")
+    before = audit_fields.OPERATOR_BILLING.snapshot(operator)
 
     if body.monthly_fee_ghs is not None:
         operator.monthly_fee_ghs = body.monthly_fee_ghs
@@ -1683,6 +1757,11 @@ async def update_operator_billing(
             raise HTTPException(400, f"{operator.name} is not on a trial, so there is nothing to extend")
         operator.trial_ends_at = operator.trial_ends_at + timedelta(days=body.extend_trial_days)
 
+    changes = audit_fields.OPERATOR_BILLING.diff(before, audit_fields.OPERATOR_BILLING.snapshot(operator))
+    if changes:
+        audit.record(db, "operator.billing_update", isp_operator_id=operator.id, target_type="isp_operator",
+                     target_id=operator.id, summary=f"Changed billing for {operator.name}", changes=changes,
+                     detail={"extend_trial_days": body.extend_trial_days} if body.extend_trial_days is not None else None)
     await db.commit()
     await db.refresh(operator)
     return {
@@ -1693,7 +1772,7 @@ async def update_operator_billing(
     }
 
 
-@router.put("/invoices/{invoice_id}/waive")
+@router.put("/invoices/{invoice_id}/waive", dependencies=[Depends(audit.audited)])
 async def waive_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -1704,6 +1783,10 @@ async def waive_invoice(
         raise HTTPException(404, "Invoice not found")
     if invoice.status == "paid":
         raise HTTPException(400, "Cannot waive a paid invoice")
+    audit.record(db, "invoice.waive", isp_operator_id=invoice.isp_operator_id, target_type="operator_invoice",
+                 target_id=invoice.id, summary=f"Waived invoice {invoice.invoice_number}",
+                 changes={"status": {"before": invoice.status, "after": "waived"}},
+                 detail={"invoice_number": invoice.invoice_number})
     invoice.status = "waived"
     event = OperatorBillingEvent(
         isp_operator_id=invoice.isp_operator_id,
@@ -1733,7 +1816,7 @@ async def get_platform_settings(
     return await get_all_settings(db)
 
 
-@router.put("/settings")
+@router.put("/settings", dependencies=[Depends(audit.audited)])
 async def update_platform_settings(
     updates: dict[str, str],
     db: AsyncSession = Depends(get_db),
@@ -1785,8 +1868,16 @@ async def update_platform_settings(
                 detail=f"Platform name is required and must be at most {PLATFORM_NAME_MAX_LENGTH} characters.",
             )
         cleaned["platform_name"] = name
+    # None of these keys is a secret (an endpoint, URLs, the support address,
+    # the trial length and the platform name), so a row shows the values.
+    before = await get_all_settings(db)
     for key, value in cleaned.items():
         await set_setting(db, key, value)
+    after = await get_all_settings(db)
+    changes = audit.diff({k: before.get(k) for k in cleaned}, {k: after.get(k) for k in cleaned}, shown=cleaned)
+    if changes:
+        audit.record(db, "platform.settings_update", isp_operator_id=None, target_type="platform_setting",
+                     summary="Edited platform settings", changes=changes)
     await db.commit()
     return await get_all_settings(db)
 
@@ -1921,7 +2012,7 @@ async def list_provider_catalog(
     return grouped
 
 
-@router.put("/providers/{entry_id}", response_model=ProviderCatalogEntryResponse)
+@router.put("/providers/{entry_id}", response_model=ProviderCatalogEntryResponse, dependencies=[Depends(audit.audited)])
 async def update_provider_catalog_entry(
     entry_id: uuid.UUID,
     body: ProviderCatalogUpdate,
@@ -1939,6 +2030,7 @@ async def update_provider_catalog_entry(
     ).scalar_one_or_none()
     if entry is None:
         raise HTTPException(status_code=404, detail="Provider not found")
+    before = audit_fields.PROVIDER_CATALOG.snapshot(entry)
 
     if body.is_available is not None:
         if body.is_available and not entry.is_integrated:
@@ -1961,6 +2053,10 @@ async def update_provider_catalog_entry(
             )
         entry.platform_rate_per_segment = body.platform_rate_per_segment
 
+    changes = audit_fields.PROVIDER_CATALOG.diff(before, audit_fields.PROVIDER_CATALOG.snapshot(entry))
+    if changes:
+        audit.record(db, "provider_catalog.update", isp_operator_id=None, target_type="provider_catalog_entry",
+                     target_id=entry.id, summary=f"Updated {entry.display_name}", changes=changes)
     entry.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(entry)
@@ -1986,6 +2082,44 @@ def _validate_paystack_keys(public_key: str, secret_key: str) -> None:
     if not (secret_key.startswith("sk_test_") or secret_key.startswith("sk_live_")):
         raise HTTPException(status_code=400, detail="Paystack secret key must start with sk_test_ or sk_live_")
 
+
+
+# --- Audit rows for the platform's own credentials ---
+# Same rules as an operator's (credentials/router.py): which fields changed,
+# secret ones only as "[redacted]", the sender id and active state shown,
+# never a key, secret or webhook-secret value. A save that changes nothing
+# writes no row. A test row carries the outcome and the already-scrubbed error.
+
+
+def _platform_credential_set_row(
+    db: AsyncSession, kind: str, label: str, provider: str, *,
+    before: dict | None, after: dict, secret_fields: tuple[str, ...],
+    was_active: bool | None, is_active: bool, created: bool, shown_flags: tuple[str, ...] = (),
+) -> None:
+    from src.modules.audit.fields import credential_diff
+
+    changes = credential_diff(before, after, secret_fields=secret_fields) or {}
+    for flag in shown_flags:  # plain booleans in the blob
+        if flag in changes:
+            changes[flag] = {"before": (before or {}).get(flag), "after": after.get(flag)}
+    if was_active != is_active or created:
+        changes["is_active"] = {"before": None if created else was_active, "after": is_active}
+    if not changes:
+        return
+    audit.record(
+        db, f"{kind}.set", isp_operator_id=None, target_type=kind, target_id=provider,
+        summary=f"{'Added' if created else 'Updated'} the platform {label} credentials" + (" (active)" if is_active else ""),
+        changes=changes, detail={"provider": provider, "created": created, "is_active": is_active},
+    )
+
+
+def _platform_credential_test_row(db: AsyncSession, kind: str, label: str, provider: str, error: str | None, **detail) -> None:
+    outcome = "failed" if error is not None else "ok"
+    audit.record(
+        db, f"{kind}.test", isp_operator_id=None, target_type=kind, target_id=provider,
+        summary=f"Tested the platform {label} credentials: {outcome}",
+        detail={"provider": provider, "outcome": outcome, **({"error": error} if error is not None else {}), **detail},
+    )
 
 
 async def _credential_response(db: AsyncSession) -> PlatformPaymentCredentialResponse:
@@ -2032,7 +2166,7 @@ async def get_platform_payment_credentials(
     return await _credential_response(db)
 
 
-@router.put("/payment-credentials", response_model=PlatformPaymentCredentialResponse)
+@router.put("/payment-credentials", response_model=PlatformPaymentCredentialResponse, dependencies=[Depends(audit.audited)])
 async def update_platform_payment_credentials(
     body: PlatformPaymentCredentialUpdate,
     db: AsyncSession = Depends(get_db),
@@ -2048,9 +2182,25 @@ async def update_platform_payment_credentials(
     _validate_paystack_keys(body.public_key, body.secret_key)
 
     row = await creds_service.get_credential(db, body.provider.value)
+    created = row is None
+    before, was_active = None, None
     if row is None:
         row = PlatformPaymentCredential(provider=body.provider.value)
         db.add(row)
+    else:
+        was_active = bool(row.is_active)
+        try:
+            keys = creds_service.keys_from_credential(row)
+            before = {"public_key": keys.public_key, "secret_key": keys.secret_key, "webhook_secret": keys.webhook_secret}
+        except Exception:
+            before = None
+    _platform_credential_set_row(
+        db, "platform_payment_credentials", "payment", body.provider.value,
+        before=before,
+        after={"public_key": body.public_key, "secret_key": body.secret_key, "webhook_secret": body.webhook_secret or ""},
+        secret_fields=("public_key", "secret_key", "webhook_secret"),
+        was_active=was_active, is_active=body.is_active, created=created,
+    )
 
     row.public_key_encrypted = encrypt_secret(body.public_key)
     row.secret_key_encrypted = encrypt_secret(body.secret_key)
@@ -2065,7 +2215,7 @@ async def update_platform_payment_credentials(
     return await _credential_response(db)
 
 
-@router.post("/payment-credentials/test", response_model=PlatformPaymentCredentialResponse)
+@router.post("/payment-credentials/test", response_model=PlatformPaymentCredentialResponse, dependencies=[Depends(audit.audited)])
 async def test_platform_payment_credentials(
     db: AsyncSession = Depends(get_db),
     owner: PlatformOwner = Depends(get_platform_owner_context),
@@ -2105,13 +2255,15 @@ async def test_platform_payment_credentials(
         error = await stored_text.platform_error(db, exc, keys.secret_key, keys.public_key, keys.webhook_secret)
         if row is not None:
             row.last_validation_error = error
-            await db.commit()
+        _platform_credential_test_row(db, "platform_payment_credentials", "payment", "paystack", error, source=keys.source)
+        await db.commit()
         raise HTTPException(status_code=400, detail=error) from exc
 
     if row is not None:
         row.last_validated_at = datetime.now(timezone.utc)
         row.last_validation_error = None
-        await db.commit()
+    _platform_credential_test_row(db, "platform_payment_credentials", "payment", "paystack", None, source=keys.source)
+    await db.commit()
     return await _credential_response(db)
 
 
@@ -2162,7 +2314,7 @@ async def get_platform_sms_credentials(
     return await _sms_credential_response(db)
 
 
-@router.put("/sms-credentials", response_model=PlatformSMSCredentialResponse)
+@router.put("/sms-credentials", response_model=PlatformSMSCredentialResponse, dependencies=[Depends(audit.audited)])
 async def update_platform_sms_credentials(
     body: PlatformSMSCredentialUpdate,
     db: AsyncSession = Depends(get_db),
@@ -2170,20 +2322,26 @@ async def update_platform_sms_credentials(
 ):
     """Store the platform's Arkesel keys, encrypted at rest as a single Fernet
     blob — the same shape an operator's own sms credentials use."""
-    from src.modules.credentials.service import dump_credentials
+    from src.modules.credentials.service import dump_credentials, try_load_credentials
     from src.modules.platform import platform_sms_credentials_service as creds_service
 
     if not body.api_key.strip() or not body.sender_id.strip():
         raise HTTPException(status_code=400, detail="api_key and sender_id are both required")
 
     row = await creds_service.get_credential(db)
+    created = row is None
+    was_active = None if created else bool(row.is_active)
+    before = try_load_credentials(row)
     if row is None:
         row = PlatformSMSCredential(provider=creds_service.ARKESEL)
         db.add(row)
 
-    row.credentials_encrypted = dump_credentials(
-        {"api_key": body.api_key.strip(), "sender_id": body.sender_id.strip()}
+    values = {"api_key": body.api_key.strip(), "sender_id": body.sender_id.strip()}
+    _platform_credential_set_row(
+        db, "platform_sms_credentials", "SMS gateway", row.provider, before=before, after=values,
+        secret_fields=("api_key",), was_active=was_active, is_active=body.is_active, created=created,
     )
+    row.credentials_encrypted = dump_credentials(values)
     row.is_active = body.is_active
     # The keys changed, so any previous validation result no longer describes them.
     row.last_validated_at = None
@@ -2194,7 +2352,7 @@ async def update_platform_sms_credentials(
     return await _sms_credential_response(db)
 
 
-@router.post("/sms-credentials/test", response_model=PlatformSMSCredentialResponse)
+@router.post("/sms-credentials/test", response_model=PlatformSMSCredentialResponse, dependencies=[Depends(audit.audited)])
 async def test_platform_sms_credentials(
     db: AsyncSession = Depends(get_db),
     owner: PlatformOwner = Depends(get_platform_owner_context),
@@ -2219,11 +2377,13 @@ async def test_platform_sms_credentials(
         error = await stored_text.platform_error(db, exc, *values.values())
         row.last_validation_error = error
         row.last_validated_at = None
+        _platform_credential_test_row(db, "platform_sms_credentials", "SMS gateway", row.provider, error)
         await db.commit()
         raise HTTPException(status_code=400, detail=error) from exc
 
     row.last_validated_at = datetime.now(timezone.utc)
     row.last_validation_error = None
+    _platform_credential_test_row(db, "platform_sms_credentials", "SMS gateway", row.provider, None)
     await db.commit()
     return await _sms_credential_response(
         db, test_detail=detail if isinstance(detail, str) and detail.strip() else None
@@ -2276,31 +2436,38 @@ async def get_platform_notification_sms_credentials(
     return await _notification_sms_response(db)
 
 
-@router.put("/notification-sms-credentials", response_model=PlatformNotificationSMSCredentialResponse)
+@router.put("/notification-sms-credentials", response_model=PlatformNotificationSMSCredentialResponse, dependencies=[Depends(audit.audited)])
 async def update_platform_notification_sms_credentials(
     body: PlatformNotificationSMSCredentialUpdate,
     db: AsyncSession = Depends(get_db),
     owner: PlatformOwner = Depends(get_platform_owner_context),
 ):
     """Store the notification account's keys, encrypted at rest."""
-    from src.modules.credentials.service import dump_credentials
+    from src.modules.credentials.service import dump_credentials, try_load_credentials
     from src.modules.platform import notification_sms_credentials_service as creds_service
 
     if not body.api_key.strip() or not body.sender_id.strip():
         raise HTTPException(status_code=400, detail="api_key and sender_id are both required")
 
     row = await creds_service.get_credential(db)
+    created = row is None
+    was_active = None if created else bool(row.is_active)
+    before = try_load_credentials(row)
     if row is None:
         row = PlatformNotificationSMSCredential(provider=creds_service.ARKESEL)
         db.add(row)
 
-    row.credentials_encrypted = dump_credentials(
-        {
-            "api_key": body.api_key.strip(),
-            "sender_id": body.sender_id.strip(),
-            "shares_gateway_account": body.shares_gateway_account,
-        }
+    values = {
+        "api_key": body.api_key.strip(),
+        "sender_id": body.sender_id.strip(),
+        "shares_gateway_account": body.shares_gateway_account,
+    }
+    _platform_credential_set_row(
+        db, "platform_notification_sms_credentials", "notification SMS", row.provider, before=before, after=values,
+        secret_fields=("api_key",), was_active=was_active, is_active=body.is_active, created=created,
+        shown_flags=("shares_gateway_account",),
     )
+    row.credentials_encrypted = dump_credentials(values)
     row.is_active = body.is_active
     row.last_validated_at = None
     row.last_validation_error = None
@@ -2310,7 +2477,7 @@ async def update_platform_notification_sms_credentials(
     return await _notification_sms_response(db)
 
 
-@router.post("/notification-sms-credentials/test", response_model=PlatformNotificationSMSCredentialResponse)
+@router.post("/notification-sms-credentials/test", response_model=PlatformNotificationSMSCredentialResponse, dependencies=[Depends(audit.audited)])
 async def test_platform_notification_sms_credentials(
     db: AsyncSession = Depends(get_db),
     owner: PlatformOwner = Depends(get_platform_owner_context),
@@ -2335,11 +2502,13 @@ async def test_platform_notification_sms_credentials(
         error = await stored_text.platform_error(db, exc, *values.values())
         row.last_validation_error = error
         row.last_validated_at = None
+        _platform_credential_test_row(db, "platform_notification_sms_credentials", "notification SMS", row.provider, error)
         await db.commit()
         raise HTTPException(status_code=400, detail=error) from exc
 
     row.last_validated_at = datetime.now(timezone.utc)
     row.last_validation_error = None
+    _platform_credential_test_row(db, "platform_notification_sms_credentials", "notification SMS", row.provider, None)
     await db.commit()
     return await _notification_sms_response(
         db, test_detail=detail if isinstance(detail, str) and detail.strip() else None

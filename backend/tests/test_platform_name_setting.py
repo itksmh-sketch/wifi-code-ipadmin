@@ -225,6 +225,9 @@ def settings_api(monkeypatch):
         return dict(written)
 
     class _Db:
+        def add(self, row):  # the audit row a real save writes
+            pass
+
         async def commit(self):
             pass
 

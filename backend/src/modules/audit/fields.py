@@ -85,8 +85,30 @@ RESELLER = _fields("Reseller", ("name", "email", "phone", "role", "town_id", "si
 
 COMMISSION_RULE = _fields("CommissionRule", ("reseller_id", "plan_id", "type", "value", "is_active"))
 
+# Platform side. An operator's contact phone is a real number: a row says
+# only that it changed.
+OPERATOR_PROFILE = _fields("ISPOperator", ("name", "contact_email", "contact_phone"), hidden=("contact_phone",))
+
+OPERATOR_CREATE = _fields("ISPOperator", (
+    "name", "slug", "contact_email", "contact_phone", "status", "billing_status", "monthly_fee_ghs", "trial_ends_at",
+), hidden=("contact_phone",))
+
+OPERATOR_STATUS = _fields("ISPOperator", ("status", "billing_status", "suspension_reason"))
+
+OPERATOR_BILLING = _fields("ISPOperator", ("monthly_fee_ghs", "trial_ends_at"))
+
+PROVIDER_CATALOG = _fields("ProviderCatalogEntry", ("is_available", "platform_rate_per_segment"))
+
+# The email body is HTML of any length: a row says only that it changed. The
+# subject and the plain text (the SMS) show their values.
+NOTIFICATION_TEMPLATE = _fields("PlatformNotificationTemplate", ("subject", "body_text", "body_html"),
+                                hidden=("body_html",))
+
+PLATFORM_OWNER_PROFILE = _fields("PlatformOwner", ("name",))
+
 ALL = (PLAN, VOUCHER, TOWN, SITE, ROUTER, ROUTER_REMOVAL, ROUTER_WIREGUARD, ROUTER_CREDENTIAL, CONFIG_TEMPLATE,
-       BRANDING, VOUCHER_SMS_TEMPLATE, RESELLER, COMMISSION_RULE)
+       BRANDING, VOUCHER_SMS_TEMPLATE, RESELLER, COMMISSION_RULE, OPERATOR_PROFILE, OPERATOR_CREATE,
+       OPERATOR_STATUS, OPERATOR_BILLING, PROVIDER_CATALOG, NOTIFICATION_TEMPLATE, PLATFORM_OWNER_PROFILE)
 
 
 # Payment and SMS provider credentials are one encrypted blob of catalog

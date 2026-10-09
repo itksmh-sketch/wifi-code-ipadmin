@@ -25,6 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import get_db
 from src.db.models import PlatformNotificationTemplate, PlatformOwner
 from src.middleware.auth import get_platform_owner_context
+from src.modules import audit
+from src.modules.audit.fields import NOTIFICATION_TEMPLATE
 from src.modules.notifications import template_catalog as catalog
 from src.modules.notifications import template_store
 from src.modules.platform.settings_service import get_platform_name
@@ -199,7 +201,17 @@ async def preview_template(
     }
 
 
-@router.put("/{event}/{channel}")
+def _template_row(db: AsyncSession, action: str, verb: str, event: str, channel: str, before: dict, row) -> None:
+    """A platform-wide row naming the template. A save that leaves the text as
+    it was (an untouched template saved, or a default reset to itself) writes
+    none."""
+    changes = NOTIFICATION_TEMPLATE.diff(before, NOTIFICATION_TEMPLATE.snapshot(row))
+    if changes:
+        audit.record(db, action, isp_operator_id=None, target_type="notification_template",
+                     target_id=f"{event}/{channel}", summary=f"{verb} the {event} {channel} template", changes=changes)
+
+
+@router.put("/{event}/{channel}", dependencies=[Depends(audit.audited)])
 async def update_template(
     event: str,
     channel: str,
@@ -222,6 +234,7 @@ async def update_template(
         raise HTTPException(status_code=400, detail=error)
 
     row = await _row(db, event, channel)
+    before = NOTIFICATION_TEMPLATE.snapshot(row or catalog.DEFAULTS[(event, channel)])
     if row is None:
         row = PlatformNotificationTemplate(event_type=event, channel=channel)
         db.add(row)
@@ -229,13 +242,14 @@ async def update_template(
     row.body_text = payload.body_text
     row.body_html = body_html
     row.updated_by_platform_owner_id = owner.id
+    _template_row(db, "notification_template.update", "Edited", event, channel, before, row)
     await db.commit()
     await db.refresh(row)
     logger.info("notification_template_updated event=%s channel=%s owner=%s", event, channel, owner.id)
     return await get_template(event, channel, db=db, _=owner)
 
 
-@router.post("/{event}/{channel}/reset")
+@router.post("/{event}/{channel}/reset", dependencies=[Depends(audit.audited)])
 async def reset_template(
     event: str,
     channel: str,
@@ -246,6 +260,7 @@ async def reset_template(
     _known(event, channel)
     default = catalog.DEFAULTS[(event, channel)]
     row = await _row(db, event, channel)
+    before = NOTIFICATION_TEMPLATE.snapshot(row or default)
     if row is None:
         row = PlatformNotificationTemplate(event_type=event, channel=channel)
         db.add(row)
@@ -253,6 +268,7 @@ async def reset_template(
     row.body_text = default.body_text
     row.body_html = default.body_html
     row.updated_by_platform_owner_id = owner.id
+    _template_row(db, "notification_template.reset", "Reset to the default", event, channel, before, row)
     await db.commit()
     logger.info("notification_template_reset event=%s channel=%s owner=%s", event, channel, owner.id)
     return await get_template(event, channel, db=db, _=owner)
