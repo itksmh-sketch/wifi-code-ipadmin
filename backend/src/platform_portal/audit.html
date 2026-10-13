@@ -8,7 +8,7 @@
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
   <link rel="stylesheet" href="/platform/statics/app.css?v=10">
-  <link rel="stylesheet" href="/platform/statics/audit.css?v=1">
+  <link rel="stylesheet" href="/platform/statics/audit.css?v=2">
 </head>
 <body>
 <div class="container">
@@ -62,7 +62,7 @@
       <p class="text-muted audit-hint">Dates are UTC and include both ends. Choosing "System" as the actor shows system rows whatever the checkbox says.</p>
     </div>
 
-    <div class="card">
+    <div class="card" id="results">
       <div class="table-wrap">
         <table class="table audit-table">
           <thead>
@@ -77,10 +77,22 @@
           <tbody id="rows"></tbody>
         </table>
       </div>
-      <div class="pager">
-        <span id="pager-summary"></span>
-        <button class="btn" id="more-btn" type="button" hidden>Load older rows</button>
-      </div>
+      <nav class="pager audit-pager" aria-label="Audit log pages">
+        <label class="audit-page-size">Rows per page
+          <select id="page-size">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+        </label>
+        <span class="audit-range" id="pager-summary"></span>
+        <span class="audit-page-buttons">
+          <button class="btn" id="newest-btn" type="button" disabled>Newest</button>
+          <button class="btn" id="newer-btn" type="button" disabled>← Newer</button>
+          <button class="btn" id="older-btn" type="button" disabled>Older →</button>
+        </span>
+      </nav>
     </div>
   </div>
 
@@ -88,6 +100,6 @@
 </div>
 
 <script src="/platform/statics/setup-guard.js?v=10"></script>
-<script src="/platform/statics/audit.js?v=1"></script>
+<script src="/platform/statics/audit.js?v=2"></script>
 </body>
 </html>

@@ -298,6 +298,36 @@ async def test_cursor_pagination_is_stable_with_ties_and_new_rows(env):
     assert stamps == sorted(stamps, reverse=True)
 
 
+async def test_first_page_carries_the_total_its_filters_match(env, world, monkeypatch):
+    c, ha, ho, a, b = env["client"], world["ha"], world["ho"], world["a"], world["b"]
+
+    async def first(path, headers, params):
+        res = await c.get(path, headers=headers, params={"limit": 2, **params})
+        assert res.status_code == 200, res.text
+        return res.json()
+
+    # The count obeys the same scope and filters as the rows: A's total never includes B's.
+    body = await first("/admin/audit", ha, {})
+    assert body["total"] == len(await db_ids(a.id)) and body["total_capped"] is False
+    assert (await first("/admin/audit", ha, {"include_system": "true"}))["total"] == len(await db_ids(a.id, system=True))
+    assert (await first("/admin/audit", ha, {"user": str(world["sb"].id), "include_system": "true"}))["total"] == 0
+    assert (await first("/admin/audit", ha, {"operator": str(b.id)}))["total"] == len(await db_ids(a.id))
+    assert (await first("/platform/audit", ho, {"operator": str(b.id)}))["total"] == len(await db_ids(b.id))
+
+    # Later pages leave it out; the client keeps the first page's.
+    later = await c.get("/admin/audit", headers=ha, params={"limit": 2, "cursor": body["next_cursor"]})
+    assert later.status_code == 200 and later.json()["total"] is None and later.json()["total_capped"] is False
+
+    # Counted up to the cap and no further.
+    from src.modules.audit import query
+
+    monkeypatch.setattr(query, "COUNT_CAP", 3)
+    capped = await first("/admin/audit", ha, {"include_system": "true"})
+    assert capped["total"] == 3 and capped["total_capped"] is True
+    exact = await first("/admin/audit", ha, {"user": "platform"})
+    assert exact["total"] == 1 and exact["total_capped"] is False
+
+
 # ── JSON null ────────────────────────────────────────────────────────────
 
 

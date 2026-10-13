@@ -7,7 +7,8 @@ import PageHeader from '../components/PageHeader';
 // the toggle adds what the system did on its own. Platform actions show as
 // "Platform": the server never sends the owner's email, IP or typed reason.
 
-const PAGE_SIZE = 50;
+const PAGE_SIZES = [25, 50, 100, 200];
+const FIRST_PAGE = { index: 0, cursors: [null] };
 const ACTOR_NAMES = { operator_user: 'User', platform_owner: 'Platform', system: 'System' };
 const PREFIXES = [
     'account', 'admin_user', 'auth', 'branding', 'commission_rule', 'config_template', 'invoice', 'operator',
@@ -92,25 +93,63 @@ function Row({ row }) {
     );
 }
 
+// Keyset paging: the server hands back a cursor for the next (older) page
+// only, so the cursors of the pages already visited are kept here, which is
+// what lets "Newer" go back. cursors[i] fetches page i; cursors[0] is null.
+// The total arrives with the first page alone and is capped server-side.
+function Pager({ page, rows, total, pageSize, loading, onPageSize, onGo }) {
+    const hasOlder = page.cursors.length > page.index + 1;
+    const start = page.index * pageSize + 1;
+    const pages = total && !total.capped ? Math.max(1, Math.ceil(total.count / pageSize)) : null;
+    return (
+        <nav className="audit-pager" aria-label="Audit log pages">
+            <label className="audit-page-size">Rows per page
+                <select value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))}>
+                    {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+            </label>
+            <span className="audit-range">
+                {rows.length > 0 && (
+                    <>
+                        {start}–{start + rows.length - 1}
+                        {total && ` of ${total.count.toLocaleString()}${total.capped ? '+' : ''}`}
+                        {' · '}Page {page.index + 1}{pages && ` of ${pages}`}
+                    </>
+                )}
+                {loading && <span> Loading…</span>}
+            </span>
+            <span className="audit-page-buttons">
+                <button type="button" className="btn btn-sm" disabled={loading || page.index === 0} onClick={() => onGo(0)}>Newest</button>
+                <button type="button" className="btn btn-sm" disabled={loading || page.index === 0} onClick={() => onGo(page.index - 1)}>← Newer</button>
+                <button type="button" className="btn btn-sm" disabled={loading || !hasOlder} onClick={() => onGo(page.index + 1)}>Older →</button>
+            </span>
+        </nav>
+    );
+}
+
 export default function AuditLog() {
     const [filters, setFilters] = useState(EMPTY_FILTERS);
     const [users, setUsers] = useState([]);
     const [rows, setRows] = useState([]);
-    const [cursor, setCursor] = useState(null);
+    const [page, setPage] = useState(FIRST_PAGE);
+    const [pageSize, setPageSize] = useState(50);
+    const [total, setTotal] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     // Only the newest request may update the table (see Vouchers.jsx).
     const latest = useRef(0);
+    const top = useRef(null);
 
     useEffect(() => {
         apiCall('/admin/users').then((list) => setUsers(Array.isArray(list) ? list : [])).catch(() => setUsers([]));
     }, []);
 
-    const load = async (current, after) => {
+    const load = async (current, size, index, cursors) => {
         const mine = ++latest.current;
+        const after = cursors[index];
         setLoading(true);
         setError('');
-        const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+        const params = new URLSearchParams({ limit: String(size) });
         if (current.user) params.set('user', current.user);
         if (current.action.trim()) params.set('action', current.action.trim());
         if (current.from) params.set('date_from', current.from);
@@ -119,9 +158,12 @@ export default function AuditLog() {
         if (after) params.set('cursor', after);
         try {
             const data = await apiCall(`/admin/audit?${params}`);
-            if (mine !== latest.current) return;
-            setRows((prev) => (after ? [...prev, ...(data?.rows || [])] : data?.rows || []));
-            setCursor(data?.next_cursor || null);
+            if (mine !== latest.current) return false;
+            setRows(data?.rows || []);
+            if (index === 0) setTotal({ count: data?.total ?? 0, capped: Boolean(data?.total_capped) });
+            const next = data?.next_cursor || null;
+            setPage({ index, cursors: [...cursors.slice(0, index + 1), ...(next ? [next] : [])] });
+            return true;
         } catch (err) {
             if (mine !== latest.current) return;
             setError(err instanceof Error ? err.message : 'Could not load the audit log.');
@@ -130,11 +172,17 @@ export default function AuditLog() {
         }
     };
 
-    // A short pause after typing in the action box; every other filter reloads at once.
+    // A short pause after typing in the action box; every other filter reloads
+    // at once. A filter or page-size change starts again from the newest page.
     useEffect(() => {
-        const timer = setTimeout(() => load(filters, null), 300);
+        const timer = setTimeout(() => load(filters, pageSize, 0, FIRST_PAGE.cursors), 300);
         return () => clearTimeout(timer);
-    }, [filters]);
+    }, [filters, pageSize]);
+
+    const go = async (index) => {
+        const cursors = index === 0 ? FIRST_PAGE.cursors : page.cursors;
+        if (await load(filters, pageSize, index, cursors)) top.current?.scrollIntoView({ block: 'start' });
+    };
 
     const set = (key) => (e) => {
         const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
@@ -186,7 +234,7 @@ export default function AuditLog() {
 
             {error && <div className="audit-error" role="alert">{error}</div>}
 
-            <div className="card">
+            <div className="card" ref={top}>
                 <div className="table-wrap">
                     <table>
                         <thead><tr><th>When</th><th>Who</th><th>Action</th><th>What happened</th></tr></thead>
@@ -198,13 +246,8 @@ export default function AuditLog() {
                         </tbody>
                     </table>
                 </div>
-                <div className="audit-pager">
-                    <span>{rows.length ? `Showing ${rows.length}${cursor ? ' (more available)' : ''}` : ''}</span>
-                    {loading && <span>Loading…</span>}
-                    {cursor && !loading && (
-                        <button type="button" className="btn btn-sm" onClick={() => load(filters, cursor)}>Load older rows</button>
-                    )}
-                </div>
+                <Pager page={page} rows={rows} total={total} pageSize={pageSize} loading={loading}
+                    onPageSize={setPageSize} onGo={go} />
             </div>
         </div>
     );

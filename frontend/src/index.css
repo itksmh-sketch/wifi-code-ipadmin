@@ -463,4 +463,9 @@ th {
 .audit-before { text-decoration: line-through; color: var(--platform-muted, #6b7280); }
 .audit-arrow { color: var(--platform-muted, #6b7280); padding: 0 4px; }
 .audit-empty { color: #9ca3af; }
-.audit-pager { display: flex; gap: 12px; align-items: center; justify-content: flex-end; margin-top: 12px; font-size: 13px; color: var(--platform-muted, #6b7280); }
+.audit-pager { display: flex; gap: 12px 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-top: 12px; font-size: 13px; color: var(--platform-muted, #6b7280); }
+.audit-page-size { display: flex; align-items: center; gap: 8px; }
+.audit-page-size select { padding: 5px 8px; font-size: 13px; border: 1px solid #d1d5db; border-radius: 6px; }
+.audit-range { flex: 1; text-align: right; }
+.audit-page-buttons { display: flex; gap: 8px; }
+.audit-pager .btn:disabled { opacity: .5; cursor: not-allowed; }

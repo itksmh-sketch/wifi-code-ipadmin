@@ -23,3 +23,10 @@
 .audit-before{text-decoration:line-through;color:var(--muted)}
 .audit-arrow{color:var(--muted);padding:0 4px}
 .audit-subhead{margin:8px 0 0;font-size:var(--fs-xs);font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.audit-pager{justify-content:space-between;flex-wrap:wrap;gap:var(--sp-3) var(--sp-4)}
+.audit-page-size{display:flex;align-items:center;gap:8px}
+.audit-page-size select{padding:5px 8px;font-size:13px}
+.audit-range{flex:1;text-align:right}
+.audit-page-buttons{display:flex;gap:8px}
+.audit-page-buttons .btn{padding:6px 12px}
+.audit-page-buttons .btn:disabled{opacity:.5;cursor:not-allowed}

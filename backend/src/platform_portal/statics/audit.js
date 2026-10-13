@@ -9,7 +9,6 @@
   var token = localStorage.getItem('platform_access_token');
   if (!token) { window.location.replace('/platform/login'); return; }
 
-  var PAGE_SIZE = 50;
   var ACTOR_NAMES = { operator_user: 'Operator user', platform_owner: 'Platform owner', system: 'System' };
   var PREFIXES = [
     'admin_user', 'application', 'audit', 'auth', 'account', 'branding', 'commission_rule', 'config_template',
@@ -20,9 +19,15 @@
   ];
 
   var $ = function (id) { return document.getElementById(id); };
-  var cursor = null;
-  var shown = 0;
-  var generation = 0;  // drops a slow response that a newer filter change overtook
+  // Keyset paging: the server returns a cursor for the next (older) page
+  // only, so the cursors of pages already visited are kept, which is what
+  // lets "Newer" go back. cursors[i] fetches page i; cursors[0] is null. The
+  // total comes with the first page alone and is capped by the server.
+  var cursors = [null];
+  var index = 0;
+  var total = null;
+  var shown = 0;       // rows on the current page
+  var generation = 0;  // drops a slow response that a newer request overtook
 
   function el(tag, cls, text) {
     var node = document.createElement(tag);
@@ -122,7 +127,9 @@
     return tr;
   }
 
-  function query() {
+  function pageSize() { return Number($('page-size').value) || 50; }
+
+  function query(after) {
     var params = new URLSearchParams();
     var operator = $('f-operator').value;
     var actor = $('f-actor').value;
@@ -133,17 +140,32 @@
     if ($('f-from').value) params.set('date_from', $('f-from').value);
     if ($('f-to').value) params.set('date_to', $('f-to').value);
     if ($('f-system').checked) params.set('include_system', 'true');
-    params.set('limit', String(PAGE_SIZE));
-    if (cursor) params.set('cursor', cursor);
+    params.set('limit', String(pageSize()));
+    if (after) params.set('cursor', after);
     return params.toString();
   }
 
-  function load(reset) {
-    if (reset) { cursor = null; shown = 0; }
+  function renderPager(busy) {
+    var start = index * pageSize() + 1;
+    var pages = total && !total.capped ? Math.max(1, Math.ceil(total.count / pageSize())) : null;
+    $('pager-summary').textContent = shown
+      ? start + '–' + (start + shown - 1)
+        + (total ? ' of ' + total.count.toLocaleString() + (total.capped ? '+' : '') : '')
+        + ' · Page ' + (index + 1) + (pages ? ' of ' + pages : '')
+      : '';
+    $('newest-btn').disabled = busy || index === 0;
+    $('newer-btn').disabled = busy || index === 0;
+    $('older-btn').disabled = busy || cursors.length <= index + 1;
+  }
+
+  // Page `target`, from the newest (0) or one already reached. A filter or
+  // page-size change always starts again from the newest page.
+  function load(target, scroll) {
     var mine = ++generation;
+    var list = target === 0 ? [null] : cursors;
     hideError();
-    $('more-btn').disabled = true;
-    return api('/api/v1/platform/audit?' + query())
+    renderPager(true);
+    return api('/api/v1/platform/audit?' + query(list[target]))
       .then(function (res) {
         return res.json().catch(function () { return {}; }).then(function (body) {
           if (!res.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Could not load the audit log.');
@@ -152,10 +174,11 @@
       })
       .then(function (body) {
         if (mine !== generation) return;
+        var rows = body.rows || [];
         var tbody = $('rows');
-        if (reset) tbody.replaceChildren();
-        (body.rows || []).forEach(function (row) { tbody.appendChild(rowEl(row)); });
-        shown += (body.rows || []).length;
+        tbody.replaceChildren();
+        rows.forEach(function (row) { tbody.appendChild(rowEl(row)); });
+        shown = rows.length;
         if (!shown) {
           var empty = el('tr');
           var td = el('td', 'empty text-muted', 'No audit rows match these filters.');
@@ -163,18 +186,20 @@
           empty.appendChild(td);
           tbody.appendChild(empty);
         }
-        cursor = body.next_cursor || null;
-        $('more-btn').hidden = !cursor;
-        $('more-btn').disabled = false;
-        $('pager-summary').textContent = shown ? 'Showing ' + shown + (cursor ? ' (more available)' : ' (all)') : '';
+        if (target === 0) total = { count: body.total || 0, capped: !!body.total_capped };
+        index = target;
+        cursors = list.slice(0, target + 1);
+        if (body.next_cursor) cursors.push(body.next_cursor);
+        renderPager(false);
         $('loading').hidden = true;
         $('main').hidden = false;
+        if (scroll) $('results').scrollIntoView({ block: 'start' });
       })
       .catch(function (err) {
         if (mine !== generation) return;
         $('loading').hidden = true;
         $('main').hidden = false;
-        $('more-btn').disabled = false;
+        renderPager(false);
         showError(err.message);
       });
   }
@@ -196,21 +221,23 @@
   var list = $('action-prefixes');
   PREFIXES.forEach(function (p) { var o = el('option'); o.value = p; list.appendChild(o); });
 
-  ['f-operator', 'f-actor', 'f-from', 'f-to', 'f-system'].forEach(function (id) {
-    $(id).addEventListener('change', function () { load(true); });
+  ['f-operator', 'f-actor', 'f-from', 'f-to', 'f-system', 'page-size'].forEach(function (id) {
+    $(id).addEventListener('change', function () { load(0); });
   });
   var typing = null;
   $('f-action').addEventListener('input', function () {
     clearTimeout(typing);
-    typing = setTimeout(function () { load(true); }, 350);
+    typing = setTimeout(function () { load(0); }, 350);
   });
-  $('filters').addEventListener('submit', function (e) { e.preventDefault(); load(true); });
+  $('filters').addEventListener('submit', function (e) { e.preventDefault(); load(0); });
   $('f-clear').addEventListener('click', function () {
     $('filters').reset();
-    load(true);
+    load(0);
   });
-  $('more-btn').addEventListener('click', function () { load(false); });
+  $('newest-btn').addEventListener('click', function () { load(0, true); });
+  $('newer-btn').addEventListener('click', function () { load(index - 1, true); });
+  $('older-btn').addEventListener('click', function () { load(index + 1, true); });
 
   loadOperators();
-  load(true);
+  load(0);
 })();
