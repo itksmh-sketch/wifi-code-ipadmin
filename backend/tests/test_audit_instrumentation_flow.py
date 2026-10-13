@@ -2012,6 +2012,28 @@ async def test_platform_credential_rows_never_carry_a_key(env, platform, monkeyp
         assert_none_of(row, pk, sk, wh, gw_key, note_key, sk[:12], gw_key[:12])
 
 
+
+async def test_webhook_job_without_an_operator_is_dropped(env, tenant, caplog):
+    """Nothing is settled by reference alone: a job with no operator id (only a
+    leftover from before 2026-10-09 could be one) is logged and dropped."""
+    import logging
+
+    from src.db.models import PaymentTransaction
+    from src.modules.webhooks import processor
+
+    pid = await make_payment(env, tenant, status="pending")
+    async with async_session_factory() as db:
+        reference = (await db.get(PaymentTransaction, uuid.UUID(pid))).internal_reference
+    raw = json.dumps({"event": "charge.success", "data": {"reference": reference, "status": "success"}})
+    with caplog.at_level(logging.ERROR, logger=processor.logger.name):
+        await processor.process_webhook_event(None, "paystack", reference, "success", None, raw)
+        await processor.process_webhook_event(None, "paystack", reference, "success", None, raw, "")
+    async with async_session_factory() as db:
+        tx = await db.get(PaymentTransaction, uuid.UUID(pid))
+        assert (tx.status, tx.voucher_id, tx.webhook_payload) == ("pending", None, None)
+    dropped = [r for r in caplog.records if "Webhook job dropped: no operator id" in r.getMessage()]
+    assert len(dropped) == 2 and reference in dropped[0].getMessage()
+
 # ── Batch 6: system jobs ─────────────────────────────────────────────────────
 
 
