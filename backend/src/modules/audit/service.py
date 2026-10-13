@@ -6,6 +6,11 @@ without its row, and no row for a change that never happened. A failed insert
 fails the request. That is the intended trade: an unaudited change to
 credentials or users is worse than a retry.
 
+``record_system_fail_open`` is the one exception, for customer-facing paths
+(voucher expiry, RADIUS accounting, payment completion): a customer's
+purchase or session must never wait on the audit trail, so there the row is
+written in a savepoint and a failure is logged at ERROR instead of raised.
+
 ``record_detached`` is for the cases with no transaction to join: a request
 that ends in an error response (a failed login), or an action whose effect is
 outside the database (a router reboot). It commits in its own session and logs
@@ -71,6 +76,35 @@ def record(db: AsyncSession, action: str, **kwargs: Any) -> AuditLog:
     row = build(action, **kwargs)
     db.add(row)
     return row
+
+
+def record_system(db: AsyncSession, action: str, **kwargs: Any) -> AuditLog:
+    """A row for a decision the system made on its own (a job, a webhook, RADIUS
+    accounting): actor "system" and no request details, whatever context the
+    caller happens to run in. ``isp_operator_id`` must be given. The caller
+    commits."""
+    return record(db, action, actor=Actor.system(), request_info=RequestInfo(), **kwargs)
+
+
+async def record_system_fail_open(db: AsyncSession, action: str, **kwargs: Any) -> bool:
+    """``record_system`` for a customer-facing path, failing OPEN: the row is
+    inserted in its own savepoint, and if that fails the savepoint alone rolls
+    back, an ERROR is logged with the action and target, and the caller's own
+    work carries on to its commit. The caller's pending changes are flushed
+    first, outside the savepoint, so their errors still surface as before and
+    are never mistaken for, or swallowed with, the audit row's. Returns whether
+    the row was written."""
+    await db.flush()
+    try:
+        row = build(action, actor=Actor.system(), request_info=RequestInfo(), **kwargs)
+        async with db.begin_nested():
+            db.add(row)
+            await db.flush()
+        return True
+    except Exception as exc:  # the customer's outcome must not depend on the trail
+        logger.error("audit_write_failed_open action=%s target_id=%s error=%s",
+                     action, kwargs.get("target_id"), exc)
+        return False
 
 
 async def record_detached(action: str, **kwargs: Any) -> None:

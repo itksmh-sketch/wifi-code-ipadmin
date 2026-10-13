@@ -9,7 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import ISPOperator, PaymentTransaction, Plan, Voucher
 from src.jobs.voucher_sms import enqueue_voucher_sms
+from src.modules import audit
 from src.modules.audit import stored_text
+from src.modules.audit.redact import mask_code
 from src.modules.payments.providers.base import PaymentProvider
 from src.modules.payments.providers.registry import build_payment_provider
 from src.modules.payments.provider_resolver import resolve_active_payment_provider
@@ -76,6 +78,30 @@ class PaymentService:
             trigger_source,
         )
 
+    @staticmethod
+    async def _record_status_change(
+        db: AsyncSession, tx: PaymentTransaction, old_status: str, trigger_source: str, voucher: Voucher | None = None,
+    ) -> None:
+        """The audit row for a payment whose status moved: by the system for a
+        webhook, poll or the reconciliation job, or by whoever is signed in when
+        a person caused it. In the operator's trail. Never the buyer's phone;
+        a voucher only as its masked suffix. Fails open: a payment completes,
+        voucher and all, whether or not the audit write succeeds. Caller
+        commits."""
+        if old_status == tx.status:
+            return
+        detail = {"internal_reference": tx.internal_reference, "amount_ghs": tx.amount_ghs, "trigger": trigger_source}
+        if tx.failure_reason:
+            detail["failure_reason"] = tx.failure_reason
+        if voucher is not None:
+            detail["code_suffix"] = mask_code(voucher.code)
+        await audit.record_system_fail_open(
+            db, "payment.status_change", isp_operator_id=tx.isp_operator_id, target_type="payment", target_id=tx.id,
+            summary=f"Payment {tx.internal_reference} {old_status} -> {tx.status}"
+                    + (f", voucher {mask_code(voucher.code)} issued" if voucher is not None else ""),
+            changes={"status": {"before": old_status, "after": tx.status}}, detail=detail,
+        )
+
     async def _resolve_failed_initiation(
         self, db: AsyncSession, *, tx: PaymentTransaction, reason: str
     ) -> None:
@@ -95,6 +121,7 @@ class PaymentService:
         tx.provider_state = "initiation_failed"
         tx.completed_at = datetime.now(timezone.utc)
         self._log_status_change(tx, old_status, tx.status, "initiate")
+        await self._record_status_change(db, tx, old_status, "initiate")
         await db.commit()
         await db.refresh(tx)
 
@@ -293,6 +320,7 @@ class PaymentService:
             tx.completed_at = datetime.now(timezone.utc)
             tx.next_action = PaymentNextAction.NONE.value
             self._log_status_change(tx, old_status, tx.status, trigger_source)
+            await self._record_status_change(db, tx, old_status, trigger_source)
             await db.commit()
             await db.refresh(tx)
         return tx
@@ -323,6 +351,7 @@ class PaymentService:
             tx.completed_at = datetime.now(timezone.utc)
             tx.next_action = PaymentNextAction.NONE.value
         self._log_status_change(tx, old_status, tx.status, trigger_source)
+        await self._record_status_change(db, tx, old_status, trigger_source)
         await db.commit()
         await db.refresh(tx)
         return tx
@@ -393,6 +422,7 @@ class PaymentService:
             tx.provider_state = "success"
             tx.display_message = "Payment successful."
             self._log_status_change(tx, old_status, tx.status, trigger_source)
+            await self._record_status_change(db, tx, old_status, trigger_source, voucher=voucher)
 
             send_sms = bool(tx.phone_number)
         finally:

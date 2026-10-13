@@ -2010,3 +2010,359 @@ async def test_platform_credential_rows_never_carry_a_key(env, platform, monkeyp
     for row in mine:
         assert_owner_actor(row, owner)
         assert_none_of(row, pk, sk, wh, gw_key, note_key, sk[:12], gw_key[:12])
+
+
+# ── Batch 6: system jobs ─────────────────────────────────────────────────────
+
+
+def assert_system_row(row, operator_id):
+    assert (row.actor_type, row.actor_id, row.actor_label) == ("system", None, None)
+    assert row.isp_operator_id == operator_id
+
+
+async def billed_operator(*, fee="50.00", **fields):
+    from decimal import Decimal
+
+    operator = await make_operator()
+    async with async_session_factory() as db:
+        op = await db.get(ISPOperator, operator.id)
+        op.monthly_fee_ghs = Decimal(fee)
+        for name, value in fields.items():
+            setattr(op, name, value)
+        await db.commit()
+    return operator
+
+
+@pytest.fixture
+def quiet_billing_notices(monkeypatch):
+    from src.modules.notifications import dispatcher
+
+    async def quiet(*a, **kw):
+        return None
+
+    for name in ("notify_grace_period", "notify_suspended", "notify_invoice_issued", "notify_trial_expired",
+                 "notify_trial_expiry_warning", "notify_payment_received", "notify_reactivated"):
+        if hasattr(dispatcher, name):
+            monkeypatch.setattr(dispatcher, name, quiet)
+
+
+async def overdue_invoice(operator, *, days_late):
+    from decimal import Decimal
+
+    from src.db.models import OperatorInvoice
+
+    now = datetime.now(timezone.utc)
+    async with async_session_factory() as db:
+        invoice = OperatorInvoice(isp_operator_id=operator.id, invoice_number=f"INV-B6-{uuid.uuid4().hex[:6]}",
+                                  period_start=now - timedelta(days=60), period_end=now - timedelta(days=30),
+                                  amount_ghs=Decimal("50.00"), status="issued", issued_at=now - timedelta(days=60),
+                                  due_at=now - timedelta(days=days_late))
+        db.add(invoice)
+        await db.commit()
+        return invoice
+
+
+async def test_billing_enforcement_rows(env, quiet_billing_notices):
+    from src.config import get_settings
+    from src.db.models import OperatorInvoice
+    from src.jobs.billing_enforcement import enforce_billing
+
+    operator = await billed_operator(billing_status="active")
+    invoice = await overdue_invoice(operator, days_late=get_settings().grace_period_days + 2)
+    await enforce_billing()
+
+    [overdue] = await rows_of("invoice.overdue", invoice.id)
+    assert overdue.changes == {"status": {"before": "issued", "after": "overdue"}}
+    [suspend] = await rows_of("operator.suspend", operator.id)
+    assert suspend.changes == {"status": {"before": "approved", "after": "suspended"},
+                               "billing_status": {"before": "active", "after": "past_due"},
+                               "suspension_reason": {"before": None, "after": "billing"}}
+    assert suspend.detail["invoice_number"] == invoice.invoice_number
+    for row in (overdue, suspend):
+        assert_system_row(row, operator.id)
+    await enforce_billing()  # already suspended and overdue: nothing new
+    assert len(await rows_of("operator.suspend", operator.id)) == 1
+    async with async_session_factory() as db:
+        assert (await db.get(OperatorInvoice, invoice.id)).status == "overdue"
+
+
+async def test_billing_enforcement_fails_closed(env, quiet_billing_notices, monkeypatch):
+    """An audit row the database refuses rolls the run back: no suspension
+    without its row. (The failure a real outage produces: at commit.)"""
+    from src.config import get_settings
+    from src.jobs.billing_enforcement import enforce_billing
+    from src.modules.audit import service as audit_service
+
+    operator = await billed_operator(billing_status="active")
+    await overdue_invoice(operator, days_late=get_settings().grace_period_days + 2)
+    real_build = audit_service.build
+
+    def refused(*a, **kw):
+        row = real_build(*a, **kw)
+        row.actor_type = "refused-by-check-constraint"
+        return row
+
+    monkeypatch.setattr(audit_service, "build", refused)
+    await enforce_billing()
+    async with async_session_factory() as db:
+        op = await db.get(ISPOperator, operator.id)
+        assert (op.status, op.billing_status) == ("approved", "active")
+
+
+async def test_payment_after_suspension_rows(env):
+    from src.db.models import OperatorInvoice
+    from src.modules.billing import service as billing_service
+
+    operator = await billed_operator(status="suspended", billing_status="past_due", suspension_reason="billing")
+    invoice = await overdue_invoice(operator, days_late=30)
+    async with async_session_factory() as db:
+        inv = await db.get(OperatorInvoice, invoice.id)
+        op = await db.get(ISPOperator, operator.id)
+        await billing_service.mark_invoice_paid(db, inv, "PSK-REF-1")
+        await billing_service.normalise_billing_status(db, op)
+        await billing_service.reactivate_operator(db, op)
+        await db.commit()
+
+    [paid] = await rows_of("invoice.paid", invoice.id)
+    assert paid.changes == {"status": {"before": "issued", "after": "paid"}}
+    [billing] = await rows_of("operator.billing_status_change", operator.id)
+    assert billing.changes == {"billing_status": {"before": "past_due", "after": "active"}}
+    [reactivate] = await rows_of("operator.reactivate", operator.id)
+    assert reactivate.changes == {"status": {"before": "suspended", "after": "approved"},
+                                  "suspension_reason": {"before": "billing", "after": None}}
+    for row in (paid, billing, reactivate):
+        assert_system_row(row, operator.id)
+
+
+async def test_trial_end_and_invoice_rows(env, quiet_billing_notices):
+    from src.jobs.invoice_generation import generate_monthly_invoices
+    from src.jobs.trial_expiry import handle_trial_expiry
+
+    ended = await billed_operator(billing_status="trial", trial_ends_at=datetime.now(timezone.utc) - timedelta(hours=1))
+    await handle_trial_expiry()
+    [trial] = await rows_of("operator.trial_end", ended.id)
+    assert trial.changes == {"billing_status": {"before": "trial", "after": "active"}}
+    assert trial.detail["invoiced"] is True
+    async with async_session_factory() as db:
+        [issued] = (await db.execute(select(AuditLog).where(AuditLog.action == "invoice.issue",
+                                                             AuditLog.isp_operator_id == ended.id))).scalars().all()
+    assert issued.detail["via"] == "trial_end" and issued.detail["amount_ghs"] in ("50.00", 50.0)
+
+    monthly = await billed_operator(billing_status="active")
+    await generate_monthly_invoices()
+    await generate_monthly_invoices()  # an invoice for the period exists: no second one, no second row
+    async with async_session_factory() as db:
+        [month] = (await db.execute(select(AuditLog).where(AuditLog.action == "invoice.issue",
+                                                            AuditLog.isp_operator_id == monthly.id))).scalars().all()
+    assert month.detail["via"] == "monthly"
+    for row in (trial, issued):
+        assert_system_row(row, ended.id)
+    assert_system_row(month, monthly.id)
+
+
+async def test_payment_status_rows_by_the_system(env, tenant, monkeypatch):
+    from src.db.models import PaymentTransaction
+    from src.jobs.payment_reconciliation import run_payment_reconciliation
+    from src.modules.payments import service as payment_service_module
+    from src.modules.payments.dependencies import get_payment_service
+
+    async def no_sms(payment_id):
+        return None
+
+    monkeypatch.setattr(payment_service_module, "enqueue_voucher_sms", no_sms)
+    paid, stale = await make_payment(env, tenant, status="pending"), await make_payment(env, tenant, status="pending")
+    async with async_session_factory() as db:
+        tx = await db.get(PaymentTransaction, uuid.UUID(stale))
+        tx.provider_reference = None
+        tx.initiated_at = datetime.now(timezone.utc) - timedelta(hours=3)
+        await db.commit()
+        reference = (await db.get(PaymentTransaction, uuid.UUID(paid))).internal_reference
+
+    async with async_session_factory() as db:
+        await get_payment_service().resolve_successful_payment(db, internal_reference=reference, trigger_source="webhook")
+    await run_payment_reconciliation()
+
+    [success] = await rows_of("payment.status_change", paid)
+    assert success.changes == {"status": {"before": "pending", "after": "success"}}
+    assert success.detail["trigger"] == "webhook" and success.detail["code_suffix"].startswith("…")
+    [timeout] = await rows_of("payment.status_change", stale)
+    assert timeout.changes == {"status": {"before": "pending", "after": "failed"}}
+    assert timeout.detail["trigger"] == "timeout" and timeout.detail["failure_reason"] == "timeout"
+    async with async_session_factory() as db:
+        voucher = (await db.execute(select(Voucher).join(PaymentTransaction, PaymentTransaction.voucher_id == Voucher.id)
+                                    .where(PaymentTransaction.id == uuid.UUID(paid)))).scalar_one()
+    for row in (success, timeout):
+        assert_system_row(row, tenant["operator"].id)
+        assert_none_of(row, *PHONE_FORMS, voucher.code, voucher.password, voucher.username)
+
+
+async def test_voucher_expiry_rows(env, tenant, monkeypatch):
+    from src.jobs import voucher_expiry
+
+    async def no_router_cleanup(db, voucher):
+        return {}
+
+    monkeypatch.setattr(voucher_expiry, "revoke_voucher_access", no_router_cleanup)
+    plan = await new_plan(env, tenant, price_ghs=float(1 + uuid.uuid4().int % 900))
+    made = (await env["client"].post("/vouchers/generate", headers=tenant["h"],
+                                     json={"plan_id": plan["id"], "quantity": 1})).json()[0]
+    async with async_session_factory() as db:
+        voucher = await db.get(Voucher, uuid.UUID(made["id"]))
+        voucher.status = "active"
+        voucher.activated_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        voucher.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        await db.commit()
+        code, username, password = voucher.code, voucher.username, voucher.password
+
+    await voucher_expiry.expire_vouchers()
+    [row] = await rows_of("voucher.expire", made["id"])
+    assert row.changes == {"status": {"before": "active", "after": "expired"}}
+    from src.modules.audit.redact import mask_code
+
+    assert row.detail["via"] == "expiry_job" and row.detail["code_suffix"] == mask_code(code)
+    assert_system_row(row, tenant["operator"].id)
+    assert_none_of(row, code, username, password)
+    await voucher_expiry.expire_vouchers()
+    assert len(await rows_of("voucher.expire", made["id"])) == 1
+
+
+# Customer-facing paths fail OPEN: expiry, accounting and payment completion
+# never depend on the audit write. Billing jobs stay fail-closed (above).
+
+
+def refuse_audit_inserts(monkeypatch):
+    """Every audit row is refused by the database (a CHECK violation at insert),
+    the way a broken audit table would refuse it."""
+    from src.modules.audit import service as audit_service
+
+    real_build = audit_service.build
+
+    def refused(*a, **kw):
+        row = real_build(*a, **kw)
+        row.actor_type = "refused-by-check-constraint"
+        return row
+
+    monkeypatch.setattr(audit_service, "build", refused)
+
+
+def assert_logged_failure(caplog, action, target_id):
+    lines = [r.getMessage() for r in caplog.records if r.name == "audit" and r.levelname == "ERROR"]
+    assert any(f"action={action} target_id={target_id}" in line for line in lines), lines
+
+
+async def active_voucher(env, t, plan, **fields):
+    made = (await env["client"].post("/vouchers/generate", headers=t["h"],
+                                     json={"plan_id": plan["id"], "quantity": 1})).json()[0]
+    async with async_session_factory() as db:
+        voucher = await db.get(Voucher, uuid.UUID(made["id"]))
+        voucher.status = "active"
+        voucher.activated_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        for name, value in fields.items():
+            setattr(voucher, name, value)
+        await db.commit()
+    return made["id"]
+
+
+async def test_voucher_expiry_fails_open(env, tenant, monkeypatch, caplog):
+    import logging
+
+    from src.jobs import voucher_expiry
+
+    async def no_router_cleanup(db, voucher):
+        return {}
+
+    monkeypatch.setattr(voucher_expiry, "revoke_voucher_access", no_router_cleanup)
+    plan = await new_plan(env, tenant, price_ghs=float(1 + uuid.uuid4().int % 900))
+    vid = await active_voucher(env, tenant, plan, expires_at=datetime.now(timezone.utc) - timedelta(minutes=1))
+    refuse_audit_inserts(monkeypatch)
+    with caplog.at_level(logging.ERROR, logger="audit"):
+        await voucher_expiry.expire_vouchers()
+
+    async with async_session_factory() as db:
+        assert (await db.get(Voucher, uuid.UUID(vid))).status == "expired"
+    assert await rows_of("voucher.expire", vid) == []
+    assert_logged_failure(caplog, "voucher.expire", vid)
+
+
+async def test_payment_completion_fails_open(env, tenant, monkeypatch, caplog):
+    import logging
+
+    from src.db.models import PaymentTransaction
+    from src.jobs.payment_reconciliation import run_payment_reconciliation
+    from src.modules.payments import service as payment_service_module
+    from src.modules.payments.dependencies import get_payment_service
+
+    async def no_sms(payment_id):
+        return None
+
+    monkeypatch.setattr(payment_service_module, "enqueue_voucher_sms", no_sms)
+    paid, stale = await make_payment(env, tenant, status="pending"), await make_payment(env, tenant, status="pending")
+    async with async_session_factory() as db:
+        tx = await db.get(PaymentTransaction, uuid.UUID(stale))
+        tx.provider_reference = None
+        tx.initiated_at = datetime.now(timezone.utc) - timedelta(hours=3)
+        await db.commit()
+        reference = (await db.get(PaymentTransaction, uuid.UUID(paid))).internal_reference
+
+    refuse_audit_inserts(monkeypatch)
+    with caplog.at_level(logging.ERROR, logger="audit"):
+        async with async_session_factory() as db:
+            await get_payment_service().resolve_successful_payment(db, internal_reference=reference, trigger_source="webhook")
+        await run_payment_reconciliation()
+
+    async with async_session_factory() as db:
+        done = await db.get(PaymentTransaction, uuid.UUID(paid))
+        assert done.status == "success" and done.voucher_id is not None
+        assert (await db.get(Voucher, done.voucher_id)).status == "unused"
+        assert (await db.get(PaymentTransaction, uuid.UUID(stale))).status == "failed"
+    assert await rows_of("payment.status_change", paid) == []
+    assert_logged_failure(caplog, "payment.status_change", paid)
+    assert_logged_failure(caplog, "payment.status_change", stale)
+
+
+async def test_radius_accounting_fails_open(env, tenant, fake_router_side, monkeypatch, caplog):
+    import logging
+    from types import SimpleNamespace
+
+    from src.db.models import Session
+    from src.radius import accounting
+
+    async def no_disconnect(*a, **kw):
+        return SimpleNamespace(status="sent", attempt_count=1)
+
+    monkeypatch.setattr(accounting, "create_pending_disconnect_event", no_disconnect)
+    monkeypatch.setattr(accounting, "send_disconnect_with_event", no_disconnect)
+    made = await make_site(env, tenant)
+    rid = uuid.UUID(await onboard(env, tenant, made["site"]["id"]))
+    plan = await new_plan(env, tenant, type="hybrid", data_limit_mb=1, price_ghs=float(1 + uuid.uuid4().int % 900))
+
+    async def exhaust_over_accounting(vid):
+        sid = f"acct-{uuid.uuid4().hex[:10]}"
+        async with async_session_factory() as db:
+            voucher = await db.get(Voucher, uuid.UUID(vid))
+            db.add(Session(isp_operator_id=tenant["operator"].id, voucher_id=voucher.id, router_id=rid,
+                           username=voucher.username, session_id=sid, nas_ip="10.100.0.250",
+                           started_at=datetime.now(timezone.utc), upload_bytes=0, download_bytes=0))
+            await db.commit()
+        async with async_session_factory() as db:
+            await accounting.handle_accounting_interim_update(db, {
+                "acct_session_id": sid, "nas_ip_address": "10.100.0.250",
+                "acct_input_octets": 2 * 1024 * 1024, "acct_output_octets": 0})
+        async with async_session_factory() as db:
+            session = (await db.execute(select(Session).where(Session.session_id == sid))).scalar_one()
+            assert session.upload_bytes == 2 * 1024 * 1024  # accounting recorded
+            assert (await db.get(Voucher, uuid.UUID(vid))).status == "exhausted"
+        return vid
+
+    # Both vouchers made first: generating one is an audited, fail-closed route.
+    written, refused = await active_voucher(env, tenant, plan), await active_voucher(env, tenant, plan)
+    await exhaust_over_accounting(written)
+    [row] = await rows_of("voucher.exhaust", written)
+    assert row.detail["via"] == "accounting"
+    assert_system_row(row, tenant["operator"].id)
+
+    refuse_audit_inserts(monkeypatch)
+    with caplog.at_level(logging.ERROR, logger="audit"):
+        await exhaust_over_accounting(refused)
+    assert await rows_of("voucher.exhaust", refused) == []
+    assert_logged_failure(caplog, "voucher.exhaust", refused)

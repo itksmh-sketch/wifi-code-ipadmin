@@ -15,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.db.base import async_session_factory
 from src.db.models import ISPOperator, OperatorBillingEvent, OperatorInvoice
-from src.modules.billing.service import PAYSTACK_MINIMUM_GHS, create_invoice
+from src.modules import audit
+from src.modules.audit.fields import OPERATOR_STATUS
+from src.modules.billing.service import PAYSTACK_MINIMUM_GHS, create_invoice, record_invoice_issued
 from src.modules.notifications import dispatcher as notify
 
 logger = structlog.get_logger(__name__)
@@ -79,7 +81,15 @@ async def handle_trial_expiry(ctx=None):
 
                     elif op.trial_ends_at <= now:
                         # Trial expired â€” transition to active and issue first invoice
+                        before = OPERATOR_STATUS.snapshot(op)
                         op.billing_status = "active"
+                        payable = op.monthly_fee_ghs >= PAYSTACK_MINIMUM_GHS
+                        audit.record_system(
+                            db, "operator.trial_end", isp_operator_id=op.id, target_type="isp_operator",
+                            target_id=op.id, summary=f"Trial ended for {op.name}",
+                            changes=OPERATOR_STATUS.diff(before, OPERATOR_STATUS.snapshot(op)),
+                            detail={"trial_ends_at": op.trial_ends_at, "invoiced": payable},
+                        )
 
                         event = OperatorBillingEvent(
                             isp_operator_id=op.id,
@@ -116,6 +126,7 @@ async def handle_trial_expiry(ctx=None):
                         period_end = today.replace(day=last_day)
 
                         invoice = await create_invoice(db, op, period_start, period_end)
+                        record_invoice_issued(db, invoice, via="trial_end")
 
                         try:
                             await notify.notify_trial_expired(

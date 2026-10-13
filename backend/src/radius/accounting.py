@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, or_, cast
 from sqlalchemy.dialects.postgresql import INET
 from src.db.models import Voucher, Session, Router, Plan
-from src.modules.vouchers.engine import transition_voucher_status
+from src.modules.vouchers.engine import end_voucher_automatically, transition_voucher_status
 from src.radius.coa_events import create_pending_disconnect_event, send_disconnect_with_event
 import structlog
 
@@ -128,7 +128,7 @@ async def handle_accounting_interim_update(db: AsyncSession, data: dict):
             plan = plan_result.scalar_one_or_none()
             if plan and plan.data_limit_mb and int(total_mb) >= plan.data_limit_mb:
                 try:
-                    await transition_voucher_status(db, voucher.id, "exhausted", session.isp_operator_id)
+                    await end_voucher_automatically(db, voucher.id, "exhausted", session.isp_operator_id, via="accounting")
                     logger.info("voucher_exhausted", module=__name__, voucher_id=str(voucher.id), code=voucher.code)
                     # Send disconnect to router
                     router_result = await db.execute(select(Router).where(Router.id == session.router_id, Router.isp_operator_id == session.isp_operator_id))

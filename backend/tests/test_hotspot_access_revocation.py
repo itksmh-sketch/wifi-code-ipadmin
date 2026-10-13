@@ -467,10 +467,17 @@ def test_job_on_reachable_router_pushes_policy_and_revokes_uncleaned_cookie(monk
 
     assert ("policy", str(router.id)) in svc.calls
     assert ("clear", str(router.id), ["GNPD"]) in svc.calls
-    # The live config push is recorded durably, not just logged.
-    (log_row,) = db.added
+    # The live config push is recorded durably, not just logged: on the
+    # router's provision log, and in the operator's audit trail by the system.
+    from src.db.models import AuditLog, RouterProvisionLog
+
+    (log_row,) = [row for row in db.added if isinstance(row, RouterProvisionLog)]
     assert (log_row.action, log_row.status, log_row.triggered_by) == ("update_hotspot", "success", rh.COOKIE_POLICY_TRIGGER)
     assert log_row.commands_executed == [{"change": "hsprof1 http-cookie-lifetime 3d -> 1m"}]
+    (audit_row,) = [row for row in db.added if isinstance(row, AuditLog)]
+    assert (audit_row.action, audit_row.actor_type, audit_row.isp_operator_id) == (
+        "router.cookie_policy_applied", "system", router.isp_operator_id)
+    assert audit_row.detail == {"changes": ["hsprof1 http-cookie-lifetime 3d -> 1m"]}
     assert stats["routers_checked"] == 1 and stats["cookie_policy_applied"] == 1 and stats["revoked_cookie"] == 1
 
 
@@ -569,7 +576,11 @@ def _patch_order(monkeypatch, module, calls):
         calls.append("revoke")
         return {}
 
-    monkeypatch.setattr(module, "transition_voucher_status", fake_transition)
+    # The engine transitions directly; the expiry job through the helper that
+    # also writes its audit row.
+    for name in ("transition_voucher_status", "end_voucher_automatically"):
+        if hasattr(module, name):
+            monkeypatch.setattr(module, name, fake_transition)
     monkeypatch.setattr(module, "create_pending_disconnect_event", fake_event)
     monkeypatch.setattr(module, "send_disconnect_with_event", fake_send)
     monkeypatch.setattr(module, "revoke_voucher_access", fake_revoke)

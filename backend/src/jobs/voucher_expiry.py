@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.base import async_session_factory
 from src.db.models import Plan, Router, Session, Voucher
 from src.jobs.job_lock import job_lock
-from src.modules.vouchers.engine import transition_voucher_status
+from src.modules.vouchers.engine import end_voucher_automatically
 from src.modules.mikrotik.access_revocation import revoke_voucher_access
 from src.radius.coa_events import create_pending_disconnect_event, send_disconnect_with_event
 import structlog
@@ -133,7 +133,7 @@ async def _expire_vouchers_locked():
 
 
 async def _transition_and_disconnect(db: AsyncSession, voucher: Voucher, next_status: str):
-    await transition_voucher_status(db, voucher.id, next_status, voucher.isp_operator_id)
+    await end_voucher_automatically(db, voucher.id, next_status, voucher.isp_operator_id, via="expiry_job")
     await _disconnect_open_session(db, voucher)
     # Router-side cleanup AFTER the CoA (running it first made every CoA NAK
     # because the session was already gone): removes any active entry the CoA

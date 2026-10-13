@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.db.base import async_session_factory
 from src.db.models import ISPOperator, OperatorInvoice
-from src.modules.billing.service import PAYSTACK_MINIMUM_GHS, create_invoice
+from src.modules.billing.service import PAYSTACK_MINIMUM_GHS, create_invoice, record_invoice_issued
 from src.modules.notifications import dispatcher as notify
 from src.modules.sms.billing_rollup import roll_up_sms_usage
 
@@ -90,6 +90,7 @@ async def generate_monthly_invoices(ctx=None):
                     await roll_up_sms_usage(
                         db, operator_id=op.id, invoice=invoice, period_start=period_start
                     )
+                    record_invoice_issued(db, invoice, via="monthly")
                     generated += 1
 
                     billing_url = f"{get_settings().platform_app_url}/admin/billing"

@@ -13,7 +13,7 @@ from src.modules.audit.context import (
 )
 from src.modules.audit import fields
 from src.modules.audit.redact import diff, snapshot
-from src.modules.audit.service import record, record_detached
+from src.modules.audit.service import record, record_detached, record_system, record_system_fail_open
 
 __all__ = [
     "OPERATOR_USER",
@@ -29,5 +29,7 @@ __all__ = [
     "fields",
     "record",
     "record_detached",
+    "record_system",
+    "record_system_fail_open",
     "snapshot",
 ]

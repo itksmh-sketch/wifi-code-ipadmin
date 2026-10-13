@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import async_session_factory
 from src.db.models import Router, RouterCredential, RouterProvisionLog, Session, Voucher
+from src.modules import audit
 from src.modules.audit import stored_text
 from src.modules.mikrotik.access_revocation import router_is_reachable
 from src.modules.mikrotik.api_service import MikroTikAPIService
@@ -160,11 +161,19 @@ async def _enforce_cookie_policy(db: AsyncSession, service: MikroTikAPIService, 
         raise
     if not changed:
         return
+    commands = await stored_text.router_commands(db, router, [{"change": c} for c in changed])
     db.add(RouterProvisionLog(
         router_id=router.id, triggered_by=COOKIE_POLICY_TRIGGER, action="update_hotspot", status="success",
         started_at=started, completed_at=datetime.now(timezone.utc),
-        commands_executed=await stored_text.router_commands(db, router, [{"change": c} for c in changed]),
+        commands_executed=commands,
     ))
+    # Live configuration written by the system on a router nobody may be
+    # watching: the operator's trail says so. Same scrubbed text as the log.
+    audit.record_system(
+        db, "router.cookie_policy_applied", isp_operator_id=router.isp_operator_id, target_type="router",
+        target_id=router.id, summary=f"Reset the hotspot login-cookie lifetime on {router.name}",
+        detail={"changes": [c["change"] for c in commands]},
+    )
     await db.commit()
     stats["cookie_policy_applied"] += 1
     logger.warning("reconcile_cookie_policy_applied", router_id=router_id, router_name=router.name, changes=changed)

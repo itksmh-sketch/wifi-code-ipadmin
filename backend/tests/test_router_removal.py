@@ -380,6 +380,10 @@ class FakeQueryDb:
     def __init__(self, routers):
         self._routers = routers
         self.commits = 0
+        self.added = []
+
+    def add(self, obj):
+        self.added.append(obj)
 
     async def execute(self, statement):
         return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self._routers))
@@ -401,6 +405,10 @@ async def test_retry_job_completes_a_previously_failed_removal():
     assert router_row.wg_peer_public_key is None
     assert router_row.wg_enabled is False
     assert db.commits == 1
+    # The finished removal is in the operator's trail, by the system, keys only as "[redacted]".
+    (row,) = db.added
+    assert (row.action, row.actor_type, row.detail) == ("router.wireguard_remove", "system", {"via": "removal_retry"})
+    assert row.changes["wg_peer_public_key"] == "[redacted]" and "peer-pubkey-1" not in str(row.changes)
 
 
 @pytest.mark.asyncio

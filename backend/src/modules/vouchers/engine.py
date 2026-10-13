@@ -211,6 +211,32 @@ async def transition_voucher_status(
     return voucher
 
 
+_AUTO_ACTIONS = {"expired": "voucher.expire", "exhausted": "voucher.exhaust"}
+
+
+async def end_voucher_automatically(
+    db: AsyncSession, voucher_id: uuid.UUID, new_status: str, isp_operator_id: uuid.UUID, *, via: str,
+) -> Voucher:
+    """Expire or exhaust a voucher on the system's own decision (time or data
+    used up), with its audit row in the same commit. ``via`` says what noticed:
+    the expiry job or RADIUS accounting. The voucher only as its masked
+    suffix: a code is bearer credit. The row fails open: the voucher ends
+    whether or not the audit write succeeds."""
+    old_status = (
+        await db.execute(select(Voucher.status).where(Voucher.id == voucher_id, Voucher.isp_operator_id == isp_operator_id))
+    ).scalar_one_or_none()
+    voucher = await transition_voucher_status(db, voucher_id, new_status, isp_operator_id, commit=False)
+    await audit.record_system_fail_open(
+        db, _AUTO_ACTIONS[new_status], isp_operator_id=isp_operator_id, target_type="voucher", target_id=voucher.id,
+        summary=f"Voucher {mask_code(voucher.code)} {new_status}" + (" (data used up)" if new_status == "exhausted" else ""),
+        changes={"status": {"before": old_status, "after": new_status}},
+        detail={"code_suffix": mask_code(voucher.code), "plan_id": voucher.plan_id, "via": via},
+    )
+    await db.commit()
+    await db.refresh(voucher)
+    return voucher
+
+
 async def restore_voucher_status(
     db: AsyncSession,
     voucher_id: uuid.UUID,

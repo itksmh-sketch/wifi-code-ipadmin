@@ -21,6 +21,8 @@ from sqlalchemy import select
 
 from src.db.base import async_session_factory
 from src.db.models import Router
+from src.modules import audit
+from src.modules.audit.fields import ROUTER_WIREGUARD
 from src.modules.wireguard.service import WireGuardError, WireGuardService
 
 logger = structlog.get_logger(__name__)
@@ -47,12 +49,20 @@ async def _retry_incomplete_removals(db, wg: WireGuardService) -> dict:
             continue
 
         await wg.deallocate_tunnel_ip(db, str(router.id))
+        before = ROUTER_WIREGUARD.snapshot(router)
         router.wg_enabled = False
         router.wg_peer_public_key = None
         router.wg_peer_private_key_encrypted = None
         router.wg_tunnel_ip = None
         router.wg_is_connected = False
         router.wg_last_handshake_at = None
+        # The tunnel half of a removal that could not finish at the time. Keys
+        # only as "[redacted]".
+        audit.record_system(
+            db, "router.wireguard_remove", isp_operator_id=router.isp_operator_id, target_type="router",
+            target_id=router.id, summary=f"Finished removing the tunnel of removed router {router.name}",
+            changes=ROUTER_WIREGUARD.diff(before, ROUTER_WIREGUARD.snapshot(router)), detail={"via": "removal_retry"},
+        )
         stats["completed"] += 1
         logger.info("router_removal_wg_retry_completed", router_id=str(router.id))
 

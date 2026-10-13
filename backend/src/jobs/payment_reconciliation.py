@@ -45,6 +45,7 @@ async def run_payment_reconciliation(ctx=None) -> dict:
                     tx.failure_reason = "timeout"
                     tx.completed_at = now
                     service._log_status_change(tx, old_status, tx.status, "poll")
+                    await service._record_status_change(db, tx, old_status, "timeout")
                     stats["timeout"] += 1
                 else:
                     stats["still_pending"] += 1
@@ -93,6 +94,7 @@ async def run_payment_reconciliation(ctx=None) -> dict:
                 tx.failure_reason = "timeout"
                 tx.completed_at = now
                 service._log_status_change(tx, old_status, tx.status, "poll")
+                await service._record_status_change(db, tx, old_status, "timeout")
                 stats["timeout"] += 1
             else:
                 stats["still_pending"] += 1

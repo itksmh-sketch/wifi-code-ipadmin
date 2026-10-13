@@ -8,6 +8,8 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
+from src.modules import audit
+from src.modules.audit.fields import OPERATOR_STATUS
 from src.db.models import (
     ISPOperator,
     OperatorInvoice,
@@ -176,6 +178,26 @@ async def add_line_item(
     return line
 
 
+def record_invoice_issued(db: AsyncSession, invoice: OperatorInvoice, *, via: str) -> None:
+    """The row for an invoice the billing jobs issued, once its lines are all
+    on it (the monthly run adds SMS usage after the subscription line). By the
+    system; in the operator's trail. Caller commits."""
+    audit.record_system(
+        db, "invoice.issue", isp_operator_id=invoice.isp_operator_id, target_type="operator_invoice",
+        target_id=invoice.id, summary=f"Issued invoice {invoice.invoice_number} for GHS {invoice.amount_ghs}",
+        detail={"invoice_number": invoice.invoice_number, "amount_ghs": invoice.amount_ghs, "via": via,
+                "period_start": invoice.period_start, "period_end": invoice.period_end, "due_at": invoice.due_at},
+    )
+
+
+def _operator_status_row(db: AsyncSession, operator: ISPOperator, before: dict, action: str, summary: str,
+                         detail: dict | None = None) -> None:
+    changes = OPERATOR_STATUS.diff(before, OPERATOR_STATUS.snapshot(operator))
+    if changes:
+        audit.record_system(db, action, isp_operator_id=operator.id, target_type="isp_operator", target_id=operator.id,
+                     summary=summary, changes=changes, detail=detail)
+
+
 async def create_invoice(
     db: AsyncSession,
     operator: ISPOperator,
@@ -308,6 +330,13 @@ async def mark_invoice_paid(
     amount_charged_ghs: Decimal | None = None,
 ) -> OperatorInvoice:
     now = datetime.now(timezone.utc)
+    audit.record_system(
+        db, "invoice.paid", isp_operator_id=invoice.isp_operator_id, target_type="operator_invoice",
+        target_id=invoice.id, summary=f"Invoice {invoice.invoice_number} paid",
+        changes={"status": {"before": invoice.status, "after": "paid"}},
+        detail={"invoice_number": invoice.invoice_number, "payment_reference": payment_reference,
+                "invoice_amount_ghs": invoice.amount_ghs, "amount_charged_ghs": amount_charged_ghs},
+    )
     invoice.status = "paid"
     invoice.paid_at = now
     invoice.payment_reference = payment_reference
@@ -344,7 +373,10 @@ async def normalise_billing_status(db: AsyncSession, operator: ISPOperator) -> b
     """
     if operator.billing_status == "active":
         return False
+    before = OPERATOR_STATUS.snapshot(operator)
     operator.billing_status = "active"
+    _operator_status_row(db, operator, before, "operator.billing_status_change",
+                         f"{operator.name} is paid up: billing back to active")
     await db.flush()
     return True
 
@@ -362,6 +394,7 @@ def is_billing_suspension(operator: ISPOperator) -> bool:
 
 async def reactivate_operator(db: AsyncSession, operator: ISPOperator) -> ISPOperator:
     """Lift a *billing* suspension. Callers must gate on is_billing_suspension()."""
+    before = OPERATOR_STATUS.snapshot(operator)
     operator.status = "approved"
     operator.billing_status = "active"
     # Clear the tag with the suspension it describes, so an active operator never
@@ -375,5 +408,7 @@ async def reactivate_operator(db: AsyncSession, operator: ISPOperator) -> ISPOpe
         event_metadata={"reason": "billing_suspension_cleared_by_payment"},
     )
     db.add(event)
+    _operator_status_row(db, operator, before, "operator.reactivate",
+                         f"{operator.name} reactivated: the overdue invoice was paid", detail={"reason": "billing"})
     await db.flush()
     return operator

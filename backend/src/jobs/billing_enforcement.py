@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.db.base import async_session_factory
 from src.db.models import ISPOperator, OperatorInvoice, OperatorBillingEvent
+from src.modules import audit
+from src.modules.audit.fields import OPERATOR_STATUS
 from src.modules.notifications import dispatcher as notify
 
 logger = structlog.get_logger(__name__)
@@ -50,6 +52,13 @@ async def enforce_billing(ctx=None):
 
             for invoice in issued_overdue:
                 try:
+                    audit.record_system(
+                        db, "invoice.overdue", isp_operator_id=invoice.isp_operator_id, target_type="operator_invoice",
+                        target_id=invoice.id, summary=f"Invoice {invoice.invoice_number} is overdue",
+                        changes={"status": {"before": invoice.status, "after": "overdue"}},
+                        detail={"invoice_number": invoice.invoice_number, "due_at": invoice.due_at,
+                                "amount_ghs": invoice.amount_ghs},
+                    )
                     invoice.status = "overdue"
                     event = OperatorBillingEvent(
                         isp_operator_id=invoice.isp_operator_id,
@@ -106,11 +115,19 @@ async def enforce_billing(ctx=None):
                     if not op or op.status == "suspended":
                         continue
 
+                    before = OPERATOR_STATUS.snapshot(op)
                     op.status = "suspended"
                     op.billing_status = "past_due"
                     # Tags this as billing-caused, so a later payment may lift it.
                     # A suspension without this tag is never auto-reactivated.
                     op.suspension_reason = "billing"
+                    audit.record_system(
+                        db, "operator.suspend", isp_operator_id=op.id, target_type="isp_operator", target_id=op.id,
+                        summary=f"{op.name} suspended for non-payment of {invoice.invoice_number}",
+                        changes=OPERATOR_STATUS.diff(before, OPERATOR_STATUS.snapshot(op)),
+                        detail={"reason": "billing", "invoice_number": invoice.invoice_number,
+                                "grace_period_days": settings.grace_period_days},
+                    )
 
                     event = OperatorBillingEvent(
                         isp_operator_id=op.id,
