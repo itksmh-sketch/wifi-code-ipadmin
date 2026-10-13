@@ -30,8 +30,8 @@ PAGE_FILES = sorted([
     BACKEND / "static/apply.html",
 ])
 AREAS = ("/platform", "/reseller", "/apply")
-# 13 platform pages, 7 reseller pages, /apply.
-EXPECTED_PAGE_ROUTES = 21
+# 14 platform pages, 7 reseller pages, /apply.
+EXPECTED_PAGE_ROUTES = 22
 
 FORBIDDEN = [
     # A tag with an on…= attribute, in markup or inside a JS string that builds markup.
@@ -49,7 +49,7 @@ def rel(path: Path) -> str:
 
 
 def test_the_page_list_is_complete():
-    assert len(PAGE_FILES) == 13 + 7 + 1
+    assert len(PAGE_FILES) == 14 + 7 + 1
 
 
 @pytest.mark.parametrize("path", PAGE_FILES, ids=rel)
@@ -70,6 +70,39 @@ def test_file_hash_equals_served_hash(path):
     scripts, styles = csp_pages.inline_blocks(raw.decode("utf-8"))
     for block in scripts + styles:
         assert not re.search(r"\{\{|\{%|\{#", block), f"{rel(path)}: template syntax inside an inline block"
+
+
+# ── Pages with nothing inline at all ─────────────────────────────────────
+# Newer pages carry no inline script or style whatsoever, so they need no
+# hashes and keep working when the CSP is enforced with no 'unsafe-inline'
+# for styles either. Their script builds DOM nodes, never HTML strings.
+NO_INLINE_PAGES = {
+    BACKEND / "src/platform_portal/audit.html": [BACKEND / "src/platform_portal/statics/audit.js"],
+}
+HTML_STRING_SINKS = re.compile(r"\.(?:innerHTML|outerHTML)\b|insertAdjacentHTML|document\.write")
+
+
+@pytest.mark.parametrize("page", sorted(NO_INLINE_PAGES), ids=rel)
+def test_page_has_no_inline_script_style_or_handlers(page):
+    html = page.read_text(encoding="utf-8")
+    scripts, styles = csp_pages.inline_blocks(html)
+    assert scripts == [] and styles == [], f"{rel(page)}: inline <script>/<style> block"
+    assert not re.search(r"<[a-zA-Z][^>]*?\sstyle\s*=", html, re.S), f"{rel(page)}: style attribute"
+    for script in NO_INLINE_PAGES[page]:
+        assert f'src="/platform/statics/{script.name}' in html, f"{rel(page)} does not load {script.name}"
+        js = script.read_text(encoding="utf-8")
+        hits = [name for name, pattern in FORBIDDEN if pattern.search(js)]
+        assert not hits, f"{rel(script)}: {hits}"
+        assert not HTML_STRING_SINKS.search(js), f"{rel(script)}: builds HTML from strings"
+        assert not re.search(r"\.style\b|setAttribute\(\s*['\"]style", js), f"{rel(script)}: sets inline styles"
+
+
+@pytest.mark.asyncio
+async def test_no_inline_pages_are_served_with_no_hashes():
+    res = await get("/platform/audit")
+    assert res.status_code == 200
+    policy = res.headers["content-security-policy-report-only"]
+    assert not [t for t in directive(policy, "script-src") + directive(policy, "style-src-elem") if t.startswith("'sha256-")]
 
 
 # ── The routes ────────────────────────────────────────────────────────────

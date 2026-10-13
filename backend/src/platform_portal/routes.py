@@ -77,6 +77,13 @@ async def platform_analytics_page(request: Request):
     return serve_page(_DIR / "analytics.html", request)
 
 
+@router.get("/platform/audit", include_in_schema=False)
+async def platform_audit_page(request: Request):
+    """The audit log. No inline script or style at all: everything is in
+    statics/audit.js and statics/audit.css."""
+    return serve_page(_DIR / "audit.html", request)
+
+
 @router.get("/platform/styleguide", include_in_schema=False)
 async def platform_styleguide_page(request: Request):
     """Tokens and components from statics/app.css. Gated client-side like every

@@ -17,6 +17,7 @@ import Branding from './pages/Branding';
 import Billing from './pages/Billing';
 import Security from './pages/Security';
 import Users from './pages/Users';
+import AuditLog from './pages/AuditLog';
 import Sidebar from './components/Sidebar';
 import SuspensionBanner from './components/SuspensionBanner';
 import { signOutEverywhere } from './signOut';
@@ -198,6 +199,7 @@ function AdminShell() {
                         <Route path="/branding" element={<RequirePerm perm="config"><Branding /></RequirePerm>} />
                         <Route path="/billing" element={<RequirePerm perm="billing.read"><Billing /></RequirePerm>} />
                         <Route path="/users" element={<RequirePerm perm="users"><Users /></RequirePerm>} />
+                        <Route path="/audit" element={<RequirePerm perm="audit"><AuditLog /></RequirePerm>} />
                         <Route path="/security" element={<Security />} />
                         {/* The password form lived here before it became
                             a tab; bookmarks and older links still work. */}

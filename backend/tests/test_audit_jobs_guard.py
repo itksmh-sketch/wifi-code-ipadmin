@@ -41,6 +41,8 @@ AUDITED_JOBS = {
     # router.cookie_policy_applied: live config written on a router. Its
     # disconnects carry out voucher decisions already recorded.
     "reconcile_hotspot": ("src.jobs.reconcile_hotspot",),
+    # audit.purge, one row per batch it deletes, in the same transaction.
+    "purge_audit_log": ("src.jobs.audit_retention",),
 }
 
 EXEMPT_JOBS = {

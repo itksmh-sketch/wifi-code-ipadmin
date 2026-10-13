@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audit log — Platform Admin</title>
+  <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=10">
+  <link rel="stylesheet" href="/platform/statics/audit.css?v=1">
+</head>
+<body>
+<div class="container">
+  <nav class="nav" id="platform-nav" aria-label="Platform">
+    <a class="brand" href="/platform/operators">Platform <span>Admin</span></a>
+    <button class="nav-link" type="button" id="logout-btn">Sign out</button>
+  </nav>
+  <script src="/platform/statics/nav.js?v=11"></script>
+
+  <div class="section-title">Audit log</div>
+  <p class="section-sub">
+    Who changed what, across every operator and the platform itself, newest first. People's
+    actions are shown by default; turn on system rows to add what the platform did on its own
+    (billing jobs, payment completions, voucher expiry).
+  </p>
+
+  <div id="msg" class="notice bad audit-msg" role="alert" hidden></div>
+
+  <div id="main" hidden>
+    <div class="card audit-filters-card">
+      <form class="audit-filters" id="filters">
+        <label>Operator
+          <select id="f-operator">
+            <option value="">All operators</option>
+            <option value="none">Platform-wide (no operator)</option>
+          </select>
+        </label>
+        <label>Actor
+          <select id="f-actor">
+            <option value="">People</option>
+            <option value="operator_user">Operator users</option>
+            <option value="platform_owner">Platform owners</option>
+            <option value="system">System</option>
+          </select>
+        </label>
+        <label>Action starts with
+          <input type="text" id="f-action" list="action-prefixes" maxlength="64" autocomplete="off" placeholder="e.g. operator or payment.">
+          <datalist id="action-prefixes"></datalist>
+        </label>
+        <label>From
+          <input type="date" id="f-from">
+        </label>
+        <label>To
+          <input type="date" id="f-to">
+        </label>
+        <label class="audit-toggle">
+          <input type="checkbox" id="f-system"> Include system rows
+        </label>
+        <button class="btn" id="f-clear" type="button">Clear</button>
+      </form>
+      <p class="text-muted audit-hint">Dates are UTC and include both ends. Choosing "System" as the actor shows system rows whatever the checkbox says.</p>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table class="table audit-table">
+          <thead>
+            <tr>
+              <th>When (UTC)</th>
+              <th>Operator</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>What happened</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <span id="pager-summary"></span>
+        <button class="btn" id="more-btn" type="button" hidden>Load older rows</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="loading" class="audit-loading">Loading…</div>
+</div>
+
+<script src="/platform/statics/setup-guard.js?v=10"></script>
+<script src="/platform/statics/audit.js?v=1"></script>
+</body>
+</html>

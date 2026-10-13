@@ -43,6 +43,7 @@ from src.modules.mikrotik.setup_routes import router as router_setup_router
 from src.modules.wireguard.routes import router as wireguard_router, peers_router as wireguard_peers_router
 from src.modules.platform.routes import router as platform_router
 from src.modules.platform.notification_template_routes import router as notification_template_router
+from src.modules.audit.routes import admin_router as audit_admin_router, platform_router as audit_platform_router
 from src.modules.platform.owner_security_routes import router as platform_owner_security_router
 from src.modules.platform.owner_account_routes import router as platform_owner_account_router
 from src.admin_portal.routes import router as admin_portal_router
@@ -118,6 +119,8 @@ app.include_router(platform_router, prefix="/api/v1")
 app.include_router(platform_owner_security_router, prefix="/api/v1")
 app.include_router(platform_owner_account_router, prefix="/api/v1")
 app.include_router(notification_template_router, prefix="/api/v1")
+app.include_router(audit_admin_router, prefix="/api/v1")
+app.include_router(audit_platform_router, prefix="/api/v1")
 app.include_router(admin_portal_router)
 app.include_router(platform_portal_router)
 app.include_router(applications_public_router, prefix="/api/v1")

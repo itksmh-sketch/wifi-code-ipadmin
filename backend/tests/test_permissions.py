@@ -178,6 +178,9 @@ ROUTE_PERMISSIONS = {
         ("POST", "/api/v1/admin/users/{user_id}/disable"),
         ("POST", "/api/v1/admin/users/{user_id}/enable"),
     },
+    "audit": {
+        ("GET", "/api/v1/admin/audit"),
+    },
 }
 
 # Routes that also need a recent PIN. P3 added the first three; every user

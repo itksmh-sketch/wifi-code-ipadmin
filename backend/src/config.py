@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     trial_days: int = 14
     grace_period_days: int = 14
 
+    # Audit trail retention (jobs/audit_retention.py): rows older than this
+    # many months are purged nightly, a batch per transaction.
+    audit_retention_months: int = 24
+    audit_purge_batch_size: int = 5000
+
     # WireGuard VPN tunnel (remote router management)
     wg_server_public_key: str = ""
     wg_server_private_key: str = ""

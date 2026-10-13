@@ -37,6 +37,7 @@
     { href: '/platform/providers', label: 'Providers' },
     { href: '/platform/notification-templates', label: 'Templates' },
     { href: '/platform/health', label: 'Service Health' },
+    { href: '/platform/audit', label: 'Audit log' },
   ];
   var ACCOUNT = [
     { href: '/platform/settings', label: 'Settings' },

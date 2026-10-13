@@ -15,6 +15,7 @@ from src.jobs.voucher_expiry import expire_vouchers
 from src.jobs.voucher_sms import send_voucher_sms
 from src.jobs.invoice_generation import generate_monthly_invoices
 from src.jobs.trial_expiry import handle_trial_expiry
+from src.jobs.audit_retention import purge_audit_log
 from src.jobs.billing_enforcement import enforce_billing
 from src.jobs.wireguard_status import check_wireguard_tunnels
 from src.logging_config import configure_logging
@@ -37,7 +38,7 @@ def _redis_settings() -> RedisSettings:
 
 class WorkerSettings:
     redis_settings = _redis_settings()
-    functions = [process_webhook_event, run_payment_reconciliation, expire_vouchers, retry_failed_coa_events, check_exhausted_sessions, check_router_health, collect_router_metrics, generate_monthly_invoices, handle_trial_expiry, enforce_billing, check_wireguard_tunnels, reconcile_sms_usage, reconcile_hotspot, session_watchdog,
+    functions = [process_webhook_event, run_payment_reconciliation, expire_vouchers, retry_failed_coa_events, check_exhausted_sessions, check_router_health, collect_router_metrics, generate_monthly_invoices, handle_trial_expiry, enforce_billing, check_wireguard_tunnels, reconcile_sms_usage, reconcile_hotspot, session_watchdog, purge_audit_log,
                  # max_tries=1: a re-run after a send that went out would text the buyer twice.
                  func(send_voucher_sms, max_tries=1),
                  # Idempotent (re-reads Arkesel and overwrites), so arq's default retries are fine.
@@ -65,6 +66,8 @@ class WorkerSettings:
         cron(reconcile_hotspot, minute={2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57}),
         # Offset from reconcile_hotspot so the two don't contend for the same rows.
         cron(session_watchdog, minute={4, 19, 34, 49}),
+        # Nightly audit retention, off every other job's minute marks.
+        cron(purge_audit_log, hour=3, minute=41),
     ]
 
 

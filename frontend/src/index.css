@@ -442,3 +442,25 @@ th {
     .voucher-card, .voucher-card-code { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 .sidebar-role { text-transform: capitalize; }
+
+/* Audit log page (pages/AuditLog.jsx). */
+.audit-intro { font-size: 14px; color: var(--platform-muted, #4b5563); margin: 0 0 16px; max-width: 760px; }
+.audit-filters { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 16px; }
+.audit-filters label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--platform-muted, #4b5563); }
+.audit-filters select, .audit-filters input[type=text], .audit-filters input[type=date] { min-width: 160px; padding: 7px 10px; font-size: 13px; border: 1px solid #d1d5db; border-radius: 6px; }
+.audit-filters label.audit-toggle { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; padding-bottom: 8px; }
+.audit-error { background: #fee2e2; color: #b91c1c; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; font-size: 14px; }
+.audit-when { white-space: nowrap; font-size: 13px; vertical-align: top; }
+.audit-action { font-family: monospace; font-size: 12px; white-space: nowrap; vertical-align: top; }
+.audit-actor-label { display: block; font-size: 12px; color: var(--platform-muted, #6b7280); margin-top: 4px; word-break: break-all; }
+.audit-summary { margin: 0; }
+.audit-more { margin-top: 6px; }
+.audit-more summary { cursor: pointer; color: var(--platform-muted, #6b7280); font-size: 12px; }
+.audit-subhead { margin: 8px 0 0; font-size: 11px; font-weight: 600; color: var(--platform-muted, #6b7280); text-transform: uppercase; letter-spacing: .05em; }
+.audit-kv { margin: 4px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; font-size: 12px; }
+.audit-kv dt { color: var(--platform-muted, #6b7280); font-family: monospace; }
+.audit-kv dd { margin: 0; word-break: break-word; }
+.audit-before { text-decoration: line-through; color: var(--platform-muted, #6b7280); }
+.audit-arrow { color: var(--platform-muted, #6b7280); padding: 0 4px; }
+.audit-empty { color: #9ca3af; }
+.audit-pager { display: flex; gap: 12px; align-items: center; justify-content: flex-end; margin-top: 12px; font-size: 13px; color: var(--platform-muted, #6b7280); }

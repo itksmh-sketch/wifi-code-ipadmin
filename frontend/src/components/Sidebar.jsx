@@ -32,6 +32,7 @@ const links = [
     { to: '/branding', label: 'Branding', icon: 'building', perm: 'config' },
     { to: '/billing', label: 'Billing', icon: 'mail', perm: 'billing.read' },
     { to: '/users', label: 'Users', icon: 'user', perm: 'users' },
+    { to: '/audit', label: 'Audit log', icon: 'clock', perm: 'audit' },
     { to: '/security', label: 'Security', icon: 'lock' },
 ];
 

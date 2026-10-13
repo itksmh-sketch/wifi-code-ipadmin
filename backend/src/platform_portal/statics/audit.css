@@ -1,0 +1,25 @@
+/* Platform audit log (audit.html). External on purpose: the page carries no
+   inline style or script at all. */
+[hidden]{display:none !important}
+.audit-msg{margin-bottom:var(--sp-4)}
+.audit-filters-card{margin-bottom:var(--sp-4)}
+.audit-filters{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
+.audit-filters label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
+.audit-filters select,.audit-filters input[type=text],.audit-filters input[type=date]{min-width:160px;padding:7px 10px;font-size:13px}
+.audit-filters .btn{padding:7px 14px}
+.audit-filters label.audit-toggle{flex-direction:row;align-items:center;gap:6px;font-size:13px;color:var(--text);padding-bottom:8px}
+.audit-hint{margin:10px 0 0;font-size:12px}
+.audit-loading{text-align:center;padding:60px 0;color:var(--muted)}
+.audit-table td{vertical-align:top}
+.audit-when{white-space:nowrap;font-size:var(--fs-xs)}
+.audit-action{font-family:var(--mono);font-size:var(--fs-xs);white-space:nowrap}
+.audit-actor-label{display:block;font-size:var(--fs-xs);color:var(--muted);word-break:break-all}
+.audit-summary{margin:0}
+.audit-more{margin-top:6px}
+.audit-more summary{cursor:pointer;color:var(--muted);font-size:var(--fs-xs)}
+.audit-kv{margin:6px 0 0;display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;font-size:var(--fs-xs)}
+.audit-kv dt{color:var(--muted);font-family:var(--mono)}
+.audit-kv dd{margin:0;word-break:break-word}
+.audit-before{text-decoration:line-through;color:var(--muted)}
+.audit-arrow{color:var(--muted);padding:0 4px}
+.audit-subhead{margin:8px 0 0;font-size:var(--fs-xs);font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
