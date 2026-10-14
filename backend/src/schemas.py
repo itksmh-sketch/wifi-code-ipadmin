@@ -637,6 +637,13 @@ class PlatformOperatorStatusUpdate(BaseModel):
     hotspot_service_days: Optional[int] = Field(default=None, ge=0, le=365)
 
 
+class PlatformHotspotServiceEnd(BaseModel):
+    """POST /platform/operators/{id}/hotspot-service/end: end a cancelled
+    operator's wind-down now. The reason is internal, as for a status change."""
+    model_config = {"extra": "forbid"}
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
 class PlatformOperatorResponse(BaseModel):
     id: uuid.UUID
     name: str

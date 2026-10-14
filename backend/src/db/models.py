@@ -122,9 +122,12 @@ class ISPOperator(Base):
     # Set together while status == 'cancelled' and only then (CHECK in
     # migration 058). hotspot_service_ends_at is when vouchers already sold
     # stop working: the wind-down chosen at cancellation (0 days = at once).
-    # Phase B enforces it in RADIUS; until then it is recorded only.
+    # RADIUS refuses logins from then on (freeradius/sql.conf).
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
     hotspot_service_ends_at = Column(DateTime(timezone=True), nullable=True)
+    # When jobs.hotspot_service_end disconnected the clients still online at
+    # that end (its once-only mark; migration 059). Cleared on restore.
+    hotspot_service_cut_off_at = Column(DateTime(timezone=True), nullable=True)
     # Captive-portal branding (all nullable; defaults applied at read time so an
     # unconfigured operator renders identically to the original hardcoded portal).
     portal_display_name = Column(Text, nullable=True)

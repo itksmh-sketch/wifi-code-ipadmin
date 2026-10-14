@@ -60,7 +60,7 @@ from src.modules.admin_accounts.security_questions import SECURITY_QUESTIONS
 from src.modules.admin_accounts.provisioning import admin_email_taken, provision_operator_admin
 from src.modules.sms.types import SMSSendResult
 from src.utils.phone import mask_phone
-from src.schemas import DefaultMonthlyFeeUpdate, LoginRequest, PlatformAccessDisable, PlatformAccessEnable, PlatformAdminCreate, PlatformAdminDisable, PlatformAdminPasswordReset, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, PlatformNotificationSMSCredentialResponse, PlatformNotificationSMSCredentialUpdate, PlatformSMSCredentialResponse, PlatformSMSCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse, TransactionDiagnosticUpdate
+from src.schemas import DefaultMonthlyFeeUpdate, LoginRequest, PlatformAccessDisable, PlatformAccessEnable, PlatformAdminCreate, PlatformAdminDisable, PlatformAdminPasswordReset, PlatformHotspotServiceEnd, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, PlatformNotificationSMSCredentialResponse, PlatformNotificationSMSCredentialUpdate, PlatformSMSCredentialResponse, PlatformSMSCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse, TransactionDiagnosticUpdate
 from src.modules.billing.service import DEFAULT_MONTHLY_FEE_KEY, get_default_monthly_fee
 from src.modules.payments.filters import REAL_TRANSACTIONS_ONLY
 from src.utils.encryption import encrypt_secret
@@ -426,6 +426,7 @@ async def _operator_row(db: AsyncSession, operator: ISPOperator) -> dict:
         "suspension_reason": operator.suspension_reason,
         "cancelled_at": operator.cancelled_at,
         "hotspot_service_ends_at": operator.hotspot_service_ends_at,
+        "hotspot_service_cut_off_at": operator.hotspot_service_cut_off_at,
         "created_at": operator.created_at,
         "admin_count": admin_count,
         "admin_logins_disabled_at": operator.admin_logins_disabled_at,
@@ -780,6 +781,25 @@ async def update_operator_status(
             event=change.notice, email=operator.contact_email, phone=operator.contact_phone,
             isp_name=operator.name,
         )
+    return await _operator_row(db, operator)
+
+
+@router.post("/operators/{operator_id}/hotspot-service/end", dependencies=[Depends(audit.audited)])
+async def end_operator_hotspot_service(
+    operator_id: uuid.UUID,
+    body: PlatformHotspotServiceEnd,
+    db: AsyncSession = Depends(get_db),
+    _: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """End a cancelled operator's hotspot wind-down now, without restoring and
+    cancelling again (modules.platform.operator_status.end_hotspot_service_now)."""
+    operator = await _locked_operator(db, operator_id)
+    try:
+        await operator_status.end_hotspot_service_now(db, operator, reason=body.reason)
+    except operator_status.StatusChangeRefused as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    await db.commit()
+    await db.refresh(operator)
     return await _operator_row(db, operator)
 
 

@@ -95,6 +95,7 @@ OPERATOR_CREATE = _fields("ISPOperator", (
 
 OPERATOR_STATUS = _fields("ISPOperator", (
     "status", "billing_status", "suspension_reason", "cancelled_at", "hotspot_service_ends_at",
+    "hotspot_service_cut_off_at",
 ))
 
 OPERATOR_BILLING = _fields("ISPOperator", ("monthly_fee_ghs", "trial_ends_at"))

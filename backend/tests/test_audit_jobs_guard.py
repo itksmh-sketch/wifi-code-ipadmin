@@ -39,10 +39,13 @@ AUDITED_JOBS = {
     # status refresh it also does is monitoring.
     "check_wireguard_tunnels": ("src.jobs.wireguard_status",),
     # router.cookie_policy_applied: live config written on a router. Its
-    # disconnects carry out voucher decisions already recorded.
+    # disconnects carry out voucher decisions already recorded, or the end of
+    # a cancelled operator's wind-down (operator.hotspot_service_ended).
     "reconcile_hotspot": ("src.jobs.reconcile_hotspot",),
     # audit.purge, one row per batch it deletes, in the same transaction.
     "purge_audit_log": ("src.jobs.audit_retention",),
+    # operator.hotspot_service_ended, once per wind-down, with the counts.
+    "end_hotspot_service": ("src.jobs.hotspot_service_end",),
 }
 
 EXEMPT_JOBS = {

@@ -4,6 +4,7 @@ from arq.connections import RedisSettings
 from src.config import get_settings
 from src.jobs.check_exhausted_sessions import check_exhausted_sessions
 from src.jobs.coa_retry import retry_failed_coa_events
+from src.jobs.hotspot_service_end import end_hotspot_service
 from src.jobs.collect_router_metrics import collect_router_metrics
 from src.jobs.payment_reconciliation import run_payment_reconciliation
 from src.jobs.reconcile_hotspot import reconcile_hotspot
@@ -38,7 +39,7 @@ def _redis_settings() -> RedisSettings:
 
 class WorkerSettings:
     redis_settings = _redis_settings()
-    functions = [process_webhook_event, run_payment_reconciliation, expire_vouchers, retry_failed_coa_events, check_exhausted_sessions, check_router_health, collect_router_metrics, generate_monthly_invoices, handle_trial_expiry, enforce_billing, check_wireguard_tunnels, reconcile_sms_usage, reconcile_hotspot, session_watchdog, purge_audit_log,
+    functions = [process_webhook_event, run_payment_reconciliation, expire_vouchers, retry_failed_coa_events, check_exhausted_sessions, check_router_health, collect_router_metrics, generate_monthly_invoices, handle_trial_expiry, enforce_billing, check_wireguard_tunnels, reconcile_sms_usage, reconcile_hotspot, session_watchdog, purge_audit_log, end_hotspot_service,
                  # max_tries=1: a re-run after a send that went out would text the buyer twice.
                  func(send_voucher_sms, max_tries=1),
                  # Idempotent (re-reads Arkesel and overwrites), so arq's default retries are fine.
@@ -68,6 +69,10 @@ class WorkerSettings:
         cron(session_watchdog, minute={4, 19, 34, 49}),
         # Nightly audit retention, off every other job's minute marks.
         cron(purge_audit_log, hour=3, minute=41),
+        # A cancelled operator's wind-down end: disconnect whoever is still
+        # online (RADIUS already refuses their logins). Every minute, at :20,
+        # clear of expire_vouchers (:00/:15/:30/:45) and coa_retry (:30).
+        cron(end_hotspot_service, second=20),
     ]
 
 

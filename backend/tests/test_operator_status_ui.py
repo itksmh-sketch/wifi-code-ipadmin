@@ -91,7 +91,8 @@ def test_script_builds_nothing_csp_would_refuse():
     assert "javascript:" not in js
     assert "eval(" not in js and "new Function" not in js and "setTimeout('" not in js
     for field in ("status", "billing_status", "suspension_reason", "invoice_number", "amount_ghs",
-                  "reseller_wallet_total_ghs", "cancelled_at", "hotspot_service_ends_at", "name"):
+                  "reseller_wallet_total_ghs", "cancelled_at", "hotspot_service_ends_at",
+                  "hotspot_service_cut_off_at", "name"):
         for match in re.finditer(r"\+ (?:i|operator)\." + field + r"\b", js):
             line = js[js.rfind("\n", 0, match.start()) + 1:js.find("\n", match.start())]
             # textContent is safe; anything else must go through esc().
@@ -117,3 +118,25 @@ def test_operators_list_has_no_one_click_status_buttons():
     html = LIST.read_text()
     assert 'data-action="set-status"' not in html and "setStatus(" not in html
     assert "#status-card" in html
+
+
+def test_end_service_now_is_offered_only_to_a_cancelled_operator_still_in_wind_down():
+    js = SCRIPT.read_text()
+    assert "if (operator.status === 'cancelled' && !serviceEnded()) list.unshift(END_SERVICE);" in js
+    # Same boundary as the server and the RADIUS check query: ended at <= now.
+    assert "return ends !== null && ends <= new Date();" in js
+
+
+def test_end_service_now_posts_to_the_server_route():
+    from src.app import app
+
+    js = SCRIPT.read_text()
+    assert "base + '/hotspot-service/end', { method: 'POST'" in js
+    paths = {(m, r.path) for r in app.routes if hasattr(r, "methods") for m in r.methods}
+    assert ("POST", "/api/v1/platform/operators/{operator_id}/hotspot-service/end") in paths
+
+
+def test_page_no_longer_says_the_cutoff_is_not_enforced():
+    for text in (PAGE.read_text(), SCRIPT.read_text()):
+        assert "not enforced" not in text
+    assert "operator_status.js?v=2" in PAGE.read_text()

@@ -1,6 +1,8 @@
 // Account status controls on the operator detail page: approve, suspend,
 // unsuspend, cancel and restore (PUT /operators/{id}/status). The moves offered
-// are the ones modules/platform/operator_status.py allows.
+// are the ones modules/platform/operator_status.py allows. A cancelled operator
+// still in its wind-down also gets "End hotspot service now"
+// (POST /operators/{id}/hotspot-service/end), which is not a status move.
 //
 // An external file so the page gains no inline script: everything is bound
 // here with addEventListener, nothing uses an inline handler or a style
@@ -29,6 +31,8 @@
     restore: { status: 'approved', label: 'Restore', button: 'btn primary' },
   };
 
+  const END_SERVICE = 'end-service';
+
   let operator = null;
   let pending = null; // the move being confirmed
 
@@ -43,6 +47,11 @@
     if (!s) return '';
     const d = new Date(s);
     return isNaN(d) ? '' : d.toLocaleString();
+  }
+
+  function serviceEnded() {
+    const ends = operator.hotspot_service_ends_at ? new Date(operator.hotspot_service_ends_at) : null;
+    return ends !== null && ends <= new Date();
   }
 
   function money(n) {
@@ -89,12 +98,30 @@
     } else if (operator.status === 'cancelled') {
       lines.push('Cancelled ' + when(operator.cancelled_at) + '. No admin or reseller can sign in, '
         + 'new sales are refused and they are not invoiced.');
-      lines.push('Hotspot service for vouchers already sold: until ' + when(operator.hotspot_service_ends_at)
-        + ' (not enforced yet).');
+      if (operator.hotspot_service_cut_off_at) {
+        lines.push('Hotspot service ended ' + when(operator.hotspot_service_ends_at)
+          + '. Clients still online were disconnected ' + when(operator.hotspot_service_cut_off_at) + '.');
+      } else if (serviceEnded()) {
+        lines.push('Hotspot service ended ' + when(operator.hotspot_service_ends_at)
+          + '. Logins are refused; clients still online are being disconnected (within a minute).');
+      } else {
+        lines.push('Hotspot service for vouchers already sold: until ' + when(operator.hotspot_service_ends_at)
+          + '. After that, logins are refused and clients still online are disconnected.');
+      }
     } else if (operator.status === 'pending') {
       lines.push('Not approved yet.');
     }
     return lines;
+  }
+
+  function actions() {
+    const list = (MOVES[operator.status] || []).slice();
+    if (operator.status === 'cancelled' && !serviceEnded()) list.unshift(END_SERVICE);
+    return list;
+  }
+
+  function label(action) {
+    return action === END_SERVICE ? 'End hotspot service now' : MOVE[action].label;
   }
 
   function render() {
@@ -105,8 +132,8 @@
       + '</p>';
     html += stateLines().map(l => '<p class="detail-line dim">' + esc(l) + '</p>').join('');
     html += '<div class="actions">'
-      + (MOVES[operator.status] || []).map(m => '<button class="' + (m === 'cancel' || m === 'suspend' ? 'btn danger' : 'btn')
-        + '" type="button" data-status-action="' + m + '">' + esc(MOVE[m].label) + '</button>').join('')
+      + actions().map(m => '<button class="' + (m === 'cancel' || m === 'suspend' || m === END_SERVICE ? 'btn danger' : 'btn')
+        + '" type="button" data-status-action="' + m + '">' + esc(label(m)) + '</button>').join('')
       + '</div>';
     $('status-body').innerHTML = html;
   }
@@ -154,6 +181,11 @@
       return 'Every admin and reseller is signed out now and cannot sign in again. New sales stop and they '
         + 'are no longer invoiced. Their data is kept, and you can restore them later.' + told;
     }
+    if (move === END_SERVICE) {
+      return 'Ends the wind-down now instead of ' + when(operator.hotspot_service_ends_at) + ': the hotspot '
+        + 'refuses their customers\' logins from now on, and anyone still online is disconnected within a '
+        + 'minute. They stay cancelled. No notice is sent.';
+    }
     if (move === 'restore') {
       return 'Admins and resellers can sign in again (sessions ended by the cancellation stay ended) and '
         + 'sales reopen. Invoicing resumes, on trial if the trial has not ended. The platform sign-in '
@@ -187,7 +219,7 @@
 
   function open(move) {
     pending = move;
-    $('status-title').textContent = MOVE[move].label + ': ' + operator.name;
+    $('status-title').textContent = label(move) + ': ' + operator.name;
     $('status-explain').textContent = explain(move);
     const cancelling = move === 'cancel';
     $('status-cancel-wrap').hidden = !cancelling;
@@ -198,8 +230,8 @@
       syncEndNow();
     }
     $('status-reason').value = '';
-    $('status-submit').textContent = MOVE[move].label;
-    $('status-submit').className = MOVE[move].button;
+    $('status-submit').textContent = label(move);
+    $('status-submit').className = move === END_SERVICE ? 'btn danger' : MOVE[move].button;
     notice($('status-msg'), '');
     $('status-overlay').classList.add('show');
     $('status-reason').focus();
@@ -212,7 +244,8 @@
 
   async function submit() {
     if (!pending) return;
-    const body = { status: MOVE[pending].status };
+    const ending = pending === END_SERVICE;
+    const body = ending ? {} : { status: MOVE[pending].status };
     const reason = $('status-reason').value.trim();
     if (reason) body.reason = reason;
     if (pending === 'cancel') {
@@ -231,7 +264,9 @@
     const btn = $('status-submit');
     btn.disabled = true;
     try {
-      const res = await api(base + '/status', { method: 'PUT', body: JSON.stringify(body) });
+      const res = ending
+        ? await api(base + '/hotspot-service/end', { method: 'POST', body: JSON.stringify(body) })
+        : await api(base + '/status', { method: 'PUT', body: JSON.stringify(body) });
       if (!res.ok) { notice($('status-msg'), await errorText(res, 'Could not change the status')); return; }
       close();
       window.location.reload();
@@ -249,7 +284,7 @@
     if (!el || !operator) return;
     const action = el.dataset.statusAction;
     if (action === 'close') { close(); return; }
-    if (MOVE[action] && (MOVES[operator.status] || []).includes(action)) open(action);
+    if (actions().includes(action)) open(action);
   });
   $('status-end-now').addEventListener('change', syncEndNow);
   $('status-submit').addEventListener('click', submit);

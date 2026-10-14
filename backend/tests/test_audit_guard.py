@@ -142,6 +142,7 @@ AUDITED = {
     ("POST", "/api/v1/platform/operators/{operator_id}/admins/{admin_id}/reset-password"),
     ("PUT", "/api/v1/platform/operators/{operator_id}/billing"),
     ("PUT", "/api/v1/platform/operators/{operator_id}/status"),
+    ("POST", "/api/v1/platform/operators/{operator_id}/hotspot-service/end"),
     ("PUT", "/api/v1/platform/payment-credentials"),
     ("POST", "/api/v1/platform/payment-credentials/test"),
     ("PATCH", "/api/v1/platform/payment-transactions/{transaction_id}/diagnostic"),

@@ -153,7 +153,7 @@
       <input id="status-days" type="number" min="0" max="365" step="1" value="30">
       <label class="check"><input type="checkbox" id="status-end-now">
         <span>End hotspot service now</span></label>
-      <p class="help">Recorded now. The hotspot cutoff itself is not enforced yet: vouchers already sold keep working until it is.</p>
+      <p class="help">Vouchers already sold keep working until then. After that the hotspot refuses their logins and disconnects anyone still online, within a minute. 0 days or "End now" does that at once.</p>
     </div>
     <label for="status-reason">Reason (optional, kept internal)</label>
     <textarea id="status-reason" maxlength="500"></textarea>
@@ -806,6 +806,6 @@ async function load() {
 load();
 </script>
 <script src="/platform/statics/operator_access.js?v=1"></script>
-<script src="/platform/statics/operator_status.js?v=1"></script>
+<script src="/platform/statics/operator_status.js?v=2"></script>
 </body>
 </html>

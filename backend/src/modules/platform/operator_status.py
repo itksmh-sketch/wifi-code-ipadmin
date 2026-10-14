@@ -21,11 +21,15 @@ What each move does:
   * cancel: billing 'cancelled' (never invoiced again), every admin and
     reseller signed out at once and kept out (admin_accounts.access), new
     sales refused. cancelled_at and the end of the hotspot wind-down are
-    recorded; Phase B enforces the wind-down in RADIUS. Data is kept.
+    recorded. From that end RADIUS refuses logins (freeradius/sql.conf), and
+    jobs.hotspot_service_end disconnects whoever is still online. Data is kept.
   * unsuspend / restore: billing back to trial or active
     (billing.service.resumed_billing_status). Sessions ended by a cancellation
     stay ended. The platform's sign-in switch is a separate axis and is left
     as it is.
+
+end_hotspot_service_now brings a cancelled operator's wind-down end forward
+to now (no restore and re-cancel); it writes its own audit row.
 
 Every move writes one operator.status_change audit row in the caller's
 transaction; the typed reason goes there only (detail.reason, which the
@@ -59,6 +63,13 @@ DEFAULT_HOTSPOT_SERVICE_DAYS = 30
 SUSPENDED_NOTICE = "account_suspended_manual"
 RESTORED_NOTICE = "account_restored"
 CANCELLED_NOTICE = "account_cancelled"
+
+
+def hotspot_service_ended(ends_at: datetime | None, now: datetime) -> bool:
+    """Whether a wind-down end has passed: the same test as the RADIUS check
+    query (hotspot_service_ends_at <= NOW()). NULL, the case for every
+    operator that isn't cancelled, never has."""
+    return ends_at is not None and ends_at <= now
 
 
 class StatusChangeRefused(Exception):
@@ -144,6 +155,7 @@ async def change_status(
                 operator.billing_status = resumed_billing_status(operator, now)
                 operator.cancelled_at = None
                 operator.hotspot_service_ends_at = None
+                operator.hotspot_service_cut_off_at = None
                 summary = f"Restored {operator.name} from cancellation"
                 description = f"{operator.name} restored from cancellation by platform owner."
             db.add(OperatorBillingEvent(
@@ -169,3 +181,36 @@ async def change_status(
         detail=detail,
     )
     return StatusChange(previous=previous, notice=notice)
+
+
+async def end_hotspot_service_now(
+    db: AsyncSession,
+    operator: ISPOperator,
+    *,
+    reason: str | None,
+    now: datetime | None = None,
+) -> None:
+    """Move a cancelled operator's wind-down end to now. Caller holds the
+    operator row (FOR UPDATE) and commits. RADIUS refuses its logins from the
+    commit; jobs.hotspot_service_end disconnects whoever is online within a
+    minute. No notice: the operator was told at cancellation."""
+    now = now or datetime.now(timezone.utc)
+    if operator.status != "cancelled":
+        raise StatusChangeRefused(409, f"{operator.name} is not cancelled.")
+    if hotspot_service_ended(operator.hotspot_service_ends_at, now):
+        raise StatusChangeRefused(409, f"Hotspot service for {operator.name} has already ended.")
+    reason = access.clean_reason(reason)
+    before = OPERATOR_STATUS.snapshot(operator)
+    due = operator.hotspot_service_ends_at
+    operator.hotspot_service_ends_at = now
+    operator.updated_at = now
+    audit.record(
+        db,
+        "operator.hotspot_service_end_now",
+        isp_operator_id=operator.id,
+        target_type="isp_operator",
+        target_id=operator.id,
+        summary=f"Ended hotspot service for {operator.name} now",
+        changes=OPERATOR_STATUS.diff(before, OPERATOR_STATUS.snapshot(operator)),
+        detail={"reason": reason, "was_due": due.isoformat()},
+    )

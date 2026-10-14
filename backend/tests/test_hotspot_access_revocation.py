@@ -416,8 +416,10 @@ class ReconcileService:
 
 
 class ReconcileDb:
-    def __init__(self, routers, vouchers, sessions):
+    def __init__(self, routers, vouchers, sessions, service_ends_at=None):
         self.routers, self.vouchers, self.sessions = routers, vouchers, sessions
+        # The router's operator's hotspot_service_ends_at (NULL unless cancelled).
+        self.service_ends_at = service_ends_at
         self.updates, self.commits, self.rollbacks = [], 0, 0
         self.added = []
 
@@ -429,6 +431,8 @@ class ReconcileDb:
         if sql.startswith("UPDATE"):
             self.updates.append(statement)
             return SimpleNamespace()
+        if "FROM isp_operators" in sql:
+            return SimpleNamespace(scalar_one_or_none=lambda: self.service_ends_at)
         if "FROM routers" in sql:
             rows = self.routers
         elif "FROM vouchers" in sql:
@@ -628,3 +632,67 @@ async def test_expiry_sends_coa_before_router_cleanup(monkeypatch, has_session):
 
 async def _async_result(row):
     return SimpleNamespace(scalar_one_or_none=lambda: row)
+
+
+# ── reconciliation: a cancelled operator's wind-down ──────────────────────
+# Every voucher of an operator whose hotspot_service_ends_at has passed counts
+# as revoked; during the wind-down vouchers are judged on their own, exactly
+# as for any other operator. Same boundary as the RADIUS check query (<=).
+
+def test_service_ended_matches_the_radius_boundary():
+    from src.modules.platform.operator_status import hotspot_service_ended
+
+    assert hotspot_service_ended(None, NOW) is False
+    assert hotspot_service_ended(NOW + timedelta(seconds=1), NOW) is False
+    assert hotspot_service_ended(NOW, NOW) is True
+    assert hotspot_service_ended(NOW - timedelta(seconds=1), NOW) is True
+
+
+def test_wind_down_leaves_a_valid_tracked_client_alone():
+    plan = rh.plan_reconciliation(
+        active=[_active("GNPD", "40m")], cookies=[{"id": "*1", "user": "GNPD"}],
+        vouchers_by_name={"GNPD": _voucher("active", expires_at=NOW + timedelta(hours=3))},
+        open_sessions=[_session("GNPD")], now=NOW, service_ended=False,
+    )
+    assert plan.revoked_online == [] and plan.revoked_cookie == [] and plan.phantom_session == []
+
+
+def test_after_the_end_every_known_voucher_is_revoked_but_unknown_names_are_not():
+    vouchers = {"GNPD": _voucher("active", expires_at=NOW + timedelta(hours=3)), "U7QK": _voucher("unused")}
+    plan = rh.plan_reconciliation(
+        active=[_active("GNPD", "40m"), _active("U7QK", "1m"), _active("local-admin")],
+        cookies=[{"id": "*1", "user": "GNPD"}, {"id": "*2", "user": "local-admin"}],
+        vouchers_by_name=vouchers, open_sessions=[_session("GNPD")], now=NOW, service_ended=True,
+    )
+    assert {e["user"] for e in plan.revoked_online} == {"GNPD", "U7QK"}
+    assert [c["user"] for c in plan.revoked_cookie] == ["GNPD"]
+    assert [e["user"] for e in plan.unknown_online] == ["local-admin"]
+
+
+@pytest.mark.parametrize("ends_in, removed", [
+    (None, False),                     # not cancelled
+    (timedelta(hours=2), False),       # inside the wind-down
+    (timedelta(seconds=-1), True),     # the end has passed
+])
+def test_job_revokes_a_valid_client_only_once_the_operators_end_has_passed(monkeypatch, ends_in, removed):
+    router = _router()
+    valid = SimpleNamespace(id=uuid.uuid4(), code="X9RW", username="GNPD", status="active",
+                            expires_at=datetime.now(timezone.utc) + timedelta(hours=3))
+    svc = ReconcileService(active=[_active("GNPD", "40m")], cookies=[])
+    svc.enforce_cookie_policy = _compliant(svc)
+    ends_at = None if ends_in is None else datetime.now(timezone.utc) + ends_in
+    session = SimpleNamespace(id=uuid.uuid4(), username="GNPD", started_at=datetime.now(timezone.utc) - timedelta(minutes=40))
+    db = ReconcileDb([router], [valid], [session], service_ends_at=ends_at)
+
+    stats = _run_job(monkeypatch, db, svc)
+
+    assert (("remove", str(router.id), ["GNPD"]) in svc.calls) is removed
+    assert stats["revoked_online"] == (1 if removed else 0)
+    assert db.updates == []  # the tracked session row is never closed as a phantom
+
+
+def _compliant(svc):
+    async def compliant(router_id):
+        svc.calls.append(("policy", router_id))
+        return []
+    return compliant

@@ -9,7 +9,9 @@ so it was unmetered and "disable voucher" had nothing to disconnect. This job
 starts from the router instead:
 
 * ``revoked_online``   — router has an active entry for a voucher that is not
-                         valid (disabled/expired/exhausted).
+                         valid (disabled/expired/exhausted, or any voucher
+                         once the router's operator's hotspot service has
+                         ended: hotspot_service_ends_at passed).
                          Remediated: active entry removed + cookies cleared.
 * ``revoked_cookie``   — router holds a login cookie for a voucher that is not
                          valid. Remediated: cookie cleared.
@@ -42,11 +44,12 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import async_session_factory
-from src.db.models import Router, RouterCredential, RouterProvisionLog, Session, Voucher
+from src.db.models import ISPOperator, Router, RouterCredential, RouterProvisionLog, Session, Voucher
 from src.modules import audit
 from src.modules.audit import stored_text
 from src.modules.mikrotik.access_revocation import router_is_reachable
 from src.modules.mikrotik.api_service import MikroTikAPIService
+from src.modules.platform.operator_status import hotspot_service_ended
 
 logger = structlog.get_logger(__name__)
 
@@ -80,7 +83,12 @@ def parse_uptime(value: str | None) -> timedelta | None:
     return timedelta(seconds=sum(int(n) * _UPTIME_SECONDS[u] for n, u in matches))
 
 
-def voucher_is_valid(voucher: Any, now: datetime) -> bool:
+def voucher_is_valid(voucher: Any, now: datetime, service_ended: bool = False) -> bool:
+    """``service_ended``: the router's operator is cancelled and its wind-down
+    end has passed, so no voucher of theirs is valid any more. During the
+    wind-down it is False and vouchers are judged on their own."""
+    if service_ended:
+        return False
     if voucher is None or voucher.status not in VALID_VOUCHER_STATUSES:
         return False
     return voucher.expires_at is None or voucher.expires_at > now
@@ -102,6 +110,7 @@ def plan_reconciliation(
     vouchers_by_name: dict[str, Any],
     open_sessions: list[Any],
     now: datetime,
+    service_ended: bool = False,
 ) -> ReconcilePlan:
     """Pure classification — no I/O. ``active`` rows are ActiveUserInfo dumps,
     ``cookies`` rows come from get_hotspot_cookies()."""
@@ -117,7 +126,7 @@ def plan_reconciliation(
             plan.unknown_online.append(entry)
             continue
         voucher = vouchers_by_name[name]
-        if not voucher_is_valid(voucher, now):
+        if not voucher_is_valid(voucher, now, service_ended):
             plan.revoked_online.append(entry)
         elif name not in open_names:
             uptime = parse_uptime(entry.get("uptime"))
@@ -127,7 +136,7 @@ def plan_reconciliation(
     for cookie in cookies:
         name = cookie.get("user")
         # Cookies for names we don't know (e.g. a local hotspot user) are left alone.
-        if name in vouchers_by_name and not voucher_is_valid(vouchers_by_name[name], now):
+        if name in vouchers_by_name and not voucher_is_valid(vouchers_by_name[name], now, service_ended):
             plan.revoked_cookie.append(cookie)
 
     for session in open_sessions:
@@ -221,8 +230,18 @@ async def _reconcile_router(
         await db.execute(select(Session).where(Session.router_id == router.id, Session.stopped_at.is_(None)))
     ).scalars().all()
 
+    ends_at = (
+        await db.execute(
+            select(ISPOperator.hotspot_service_ends_at).where(ISPOperator.id == router.isp_operator_id)
+        )
+    ).scalar_one_or_none()
+    service_ended = hotspot_service_ended(ends_at, now)
+    if service_ended:
+        logger.info("reconcile_hotspot_service_ended", router_id=router_id, isp_operator_id=str(router.isp_operator_id))
+
     plan = plan_reconciliation(
-        active=active, cookies=cookies, vouchers_by_name=vouchers_by_name, open_sessions=open_sessions, now=now
+        active=active, cookies=cookies, vouchers_by_name=vouchers_by_name, open_sessions=open_sessions, now=now,
+        service_ended=service_ended,
     )
 
     for entry in plan.untracked_online:
