@@ -8,7 +8,7 @@ from urllib.parse import unquote, urlparse
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Form
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import or_, select, cast
+from sqlalchemy import cast, func, or_, select
 from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ from src.modules.branding.service import build_branding
 from src.modules.payments.dependencies import get_payment_service
 from src.modules.payments.service import PaymentService
 from src.modules.payments.types import PaymentMethod, PaymentStatus
+from src.modules.platform.operator_status import hotspot_service_ended
 from src.utils.portal_token import decode_portal_preview_token, decode_portal_router_token
 from src.schemas import (
     BrandingResponse,
@@ -468,6 +469,63 @@ async def portal_payment_status(
     )
 
 
+# Why the portal refuses a code, worded for the customer. RADIUS rejects
+# exactly these, and the router turns a RADIUS reject into a silent reload of
+# the login page, so the portal says it first. A refusal the customer can't
+# act on (the operator's service has ended, or inconsistent data) gets
+# RADIUS's own generic reject reply (freeradius/sites-enabled/default).
+INVALID_CODE_DETAIL = "Invalid voucher code"
+EXPIRED_DETAIL = "Code has expired"
+USED_UP_DETAIL = "Code has been fully used"
+DISABLED_DETAIL = "Code has been disabled by admin"
+VOUCHER_REFUSED_DETAIL = "Access denied: voucher may be expired, exhausted, or disabled"
+
+
+def _refuse(detail: str):
+    raise HTTPException(status_code=400, detail=detail)
+
+
+async def _voucher_for_login(db: AsyncSession, code: str, operator_id) -> Voucher:
+    """The voucher RADIUS would accept on a router of operator_id, else a 400
+    saying why not. The same conditions as freeradius/sql.conf
+    authorize_check_query, on the database clock, so the portal never hands
+    out a password RADIUS then rejects. tests/test_portal_authenticate_flow.py
+    runs that query on the same rows to keep the two in step."""
+    row = (
+        await db.execute(
+            select(Voucher, Plan, ISPOperator.hotspot_service_ends_at, func.now())
+            .join(Plan, Plan.id == Voucher.plan_id)
+            .join(ISPOperator, ISPOperator.id == Voucher.isp_operator_id)
+            # Another operator's code is as unknown here as a mistyped one.
+            .where(Voucher.code == code, Voucher.isp_operator_id == operator_id)
+        )
+    ).one_or_none()
+    if row is None:
+        _refuse(INVALID_CODE_DETAIL)
+    voucher, plan, service_ends_at, now = row
+    # Operator-wide or bad data: nothing the customer can do about it.
+    if hotspot_service_ended(service_ends_at, now):
+        _refuse(VOUCHER_REFUSED_DETAIL)
+    if plan.isp_operator_id != voucher.isp_operator_id or (plan.data_limit_mb is not None and voucher.data_used_mb is None):
+        _refuse(VOUCHER_REFUSED_DETAIL)
+    # The voucher's own state first, then what RADIUS checks beyond it.
+    if voucher.status == "disabled":
+        _refuse(DISABLED_DETAIL)
+    if voucher.status == "expired":
+        _refuse(EXPIRED_DETAIL)
+    if voucher.status == "exhausted":
+        _refuse(USED_UP_DETAIL)
+    if voucher.status not in ("unused", "active"):
+        _refuse(VOUCHER_REFUSED_DETAIL)
+    if plan.is_active is not True:
+        _refuse(DISABLED_DETAIL)
+    if voucher.expires_at is not None and voucher.expires_at <= now:  # before expire_vouchers marks it
+        _refuse(EXPIRED_DETAIL)
+    if plan.data_limit_mb is not None and voucher.data_used_mb >= plan.data_limit_mb:
+        _refuse(USED_UP_DETAIL)
+    return voucher
+
+
 @router.post("/portal/authenticate", response_model=PortalAuthenticateResponse)
 async def portal_authenticate(
     request: Request,
@@ -488,17 +546,7 @@ async def portal_authenticate(
     operator_id, _ = await _resolve_operator(db, rt, gateway)
 
     code = code.strip().upper()
-    result = await db.execute(select(Voucher).where(Voucher.code == code, Voucher.isp_operator_id == operator_id))
-    voucher = result.scalar_one_or_none()
-
-    if not voucher:
-        raise HTTPException(status_code=400, detail="Invalid voucher code")
-    if voucher.status == "expired":
-        raise HTTPException(status_code=400, detail="Code has expired")
-    if voucher.status == "exhausted":
-        raise HTTPException(status_code=400, detail="Code has been fully used")
-    if voucher.status == "disabled":
-        raise HTTPException(status_code=400, detail="Code has been disabled by admin")
+    voucher = await _voucher_for_login(db, code, operator_id)
 
     return PortalAuthenticateResponse(
         success=True,
