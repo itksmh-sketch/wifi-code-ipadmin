@@ -22,6 +22,8 @@ from src.db.models import (
     PlatformSMSCredential,
     Plan,
     ProviderCatalogEntry,
+    Reseller,
+    ResellerWallet,
     Router,
     RouterCredential,
     RouterSetupStatus,
@@ -50,7 +52,7 @@ from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.platform import character_code, owner_lockout
 from src.modules import audit
 from src.modules.audit import fields as audit_fields
-from src.modules.platform import owner_audit
+from src.modules.platform import operator_status, owner_audit
 from src.modules.admin_accounts import access, platform_reset
 from src.modules.notifications import dispatcher as notify
 from src.modules.admin_accounts.notifications import send_temp_password_sms
@@ -72,8 +74,6 @@ from src.utils.auth import (
 )
 
 router = APIRouter(prefix="/platform", tags=["platform"])
-
-VALID_OPERATOR_STATUSES = {"pending", "approved", "suspended", "cancelled"}
 
 
 def _provisioned_admin_payload(admin: AdminUser, temp_password: str, sms_result: SMSSendResult) -> dict:
@@ -423,6 +423,9 @@ async def _operator_row(db: AsyncSession, operator: ISPOperator) -> dict:
         "contact_phone": operator.contact_phone,
         "status": operator.status,
         "billing_status": operator.billing_status,
+        "suspension_reason": operator.suspension_reason,
+        "cancelled_at": operator.cancelled_at,
+        "hotspot_service_ends_at": operator.hotspot_service_ends_at,
         "created_at": operator.created_at,
         "admin_count": admin_count,
         "admin_logins_disabled_at": operator.admin_logins_disabled_at,
@@ -724,6 +727,29 @@ async def get_operator(
     row["total_sessions"] = (
         await db.execute(select(func.count()).select_from(Session).where(Session.isp_operator_id == operator.id))
     ).scalar() or 0
+    # For the Cancel dialog: what is still owed to the platform, and what the
+    # operator's resellers have prepaid (stranded once sales stop).
+    unpaid = (
+        await db.execute(
+            select(OperatorInvoice)
+            .where(OperatorInvoice.isp_operator_id == operator.id, OperatorInvoice.status.in_(("issued", "overdue")))
+            .order_by(OperatorInvoice.due_at)
+        )
+    ).scalars().all()
+    row["unpaid_invoices"] = [
+        {"id": str(inv.id), "invoice_number": inv.invoice_number, "amount_ghs": float(inv.amount_ghs),
+         "status": inv.status, "due_at": inv.due_at}
+        for inv in unpaid
+    ]
+    row["reseller_wallet_total_ghs"] = float(
+        (
+            await db.execute(
+                select(func.coalesce(func.sum(ResellerWallet.balance_ghs), 0))
+                .join(Reseller, Reseller.id == ResellerWallet.reseller_id)
+                .where(Reseller.isp_operator_id == operator.id)
+            )
+        ).scalar() or 0
+    )
     return row
 
 
@@ -731,56 +757,29 @@ async def get_operator(
 async def update_operator_status(
     operator_id: uuid.UUID,
     body: PlatformOperatorStatusUpdate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     owner: PlatformOwner = Depends(get_platform_owner_context),
 ):
-    if body.status not in VALID_OPERATOR_STATUSES:
-        raise HTTPException(status_code=400, detail="Invalid operator status")
-    operator = await db.get(ISPOperator, operator_id)
-    if not operator:
-        raise HTTPException(status_code=404, detail="Operator not found")
-
-    previous_status = operator.status
-    before = audit_fields.OPERATOR_STATUS.snapshot(operator)
-    operator.status = body.status
-    operator.updated_at = datetime.now(timezone.utc)
-    if body.status == "approved" and not operator.approved_at:
-        operator.approved_at = datetime.now(timezone.utc)
-        operator.approved_by_platform_owner_id = owner.id
-    if body.status == "cancelled":
-        operator.billing_status = "cancelled"
-
-    # A suspension the platform owner imposed is NOT reversible by paying an
-    # invoice. Tagging it is what stops the billing webhook from lifting it.
-    if body.status == "suspended":
-        operator.suspension_reason = "manual"
-    elif previous_status == "suspended":
-        operator.suspension_reason = None
-
-    # Manual status changes previously left no trace at all, so the audit trail
-    # covered only billing-driven suspensions — half the story, and the half you
-    # least need when explaining why an operator's status changed.
-    if body.status == "suspended" and previous_status != "suspended":
-        db.add(OperatorBillingEvent(
-            isp_operator_id=operator.id,
-            event_type="suspended",
-            description=f"{operator.name} suspended by platform owner.",
-            event_metadata={"reason": "manual", "suspended_by_platform_owner_id": str(owner.id)},
-        ))
-    elif previous_status == "suspended" and body.status != "suspended":
-        db.add(OperatorBillingEvent(
-            isp_operator_id=operator.id,
-            event_type="reactivated",
-            description=f"{operator.name} un-suspended by platform owner (status set to {body.status}).",
-            event_metadata={"reason": "manual", "reactivated_by_platform_owner_id": str(owner.id)},
-        ))
-
-    changes = audit_fields.OPERATOR_STATUS.diff(before, audit_fields.OPERATOR_STATUS.snapshot(operator))
-    if changes:
-        audit.record(db, "operator.status_change", isp_operator_id=operator.id, target_type="isp_operator",
-                     target_id=operator.id, summary=f"Set {operator.name} to {operator.status}", changes=changes)
+    """Approve, suspend, unsuspend, cancel or restore an operator. Which moves
+    are allowed and what each does: modules.platform.operator_status. The
+    operator is told by email and SMS after the commit; the reason is not sent."""
+    operator = await _locked_operator(db, operator_id)
+    try:
+        change = await operator_status.change_status(
+            db, operator, body.status, owner_id=owner.id, reason=body.reason,
+            hotspot_service_days=body.hotspot_service_days,
+        )
+    except operator_status.StatusChangeRefused as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
     await db.commit()
     await db.refresh(operator)
+    if change.notice:
+        background_tasks.add_task(
+            notify.notify_operator_status_changed,
+            event=change.notice, email=operator.contact_email, phone=operator.contact_phone,
+            isp_name=operator.name,
+        )
     return await _operator_row(db, operator)
 
 
@@ -851,6 +850,8 @@ async def reset_operator_admin_password(
     # A reset texts a temporary password and would hand a working credential
     # to an account that can't use it — or that becomes usable the moment
     # sign-in is turned back on. Re-enable first, then reset.
+    if operator is not None and operator.status == "cancelled":
+        raise HTTPException(status_code=409, detail=OPERATOR_CANCELLED)
     if not admin.is_active:
         raise HTTPException(status_code=409, detail=ADMIN_DISABLED_RESET)
     if operator is not None and operator.admin_logins_disabled_at is not None:
@@ -889,8 +890,12 @@ async def create_operator_admin(
     db: AsyncSession = Depends(get_db),
     _: PlatformOwner = Depends(get_platform_owner_context),
 ):
-    if not await db.get(ISPOperator, operator_id):
+    operator = await db.get(ISPOperator, operator_id)
+    if not operator:
         raise HTTPException(status_code=404, detail="Operator not found")
+    # The new admin could never sign in, and would be texted a password anyway.
+    if operator.status == "cancelled":
+        raise HTTPException(status_code=409, detail=OPERATOR_CANCELLED)
     if await admin_email_taken(db, body.email):
         raise HTTPException(status_code=409, detail="Admin email already exists")
     admin, temp_password = await provision_operator_admin(
@@ -911,14 +916,18 @@ async def create_operator_admin(
 
 
 # ── Disabling sign-in ───────────────────────────────────────────────────────
-# Kept apart from suspension (PUT /status), which is about billing and lets
-# the operator sign in to pay. See modules.admin_accounts.access.
+# Kept apart from suspension (PUT /status), which lets the operator sign in
+# (to pay, or to see why). Cancellation does block sign-in, through the same
+# rule. See modules.admin_accounts.access.
 
 ADMIN_DISABLED_RESET = "This admin's sign-in is disabled. Re-enable it before resetting the password."
 OPERATOR_LOGINS_DISABLED_RESET = (
     "Sign-in is disabled for this operator. Re-enable it before resetting a password."
 )
 ALL_USERS_SCOPE = "all dashboard users and resellers"
+# Re-enabling sign-in, resetting a password or adding an admin would text
+# someone about an account that still can't be used.
+OPERATOR_CANCELLED = "This operator is cancelled. Restore it before changing sign-in."
 
 
 async def _locked_operator(db: AsyncSession, operator_id: uuid.UUID) -> ISPOperator:
@@ -983,6 +992,8 @@ async def enable_operator_admin_logins(
     """Turn the operator switch back off. Admins disabled individually stay
     disabled."""
     operator = await _locked_operator(db, operator_id)
+    if operator.status == "cancelled":
+        raise HTTPException(status_code=409, detail=OPERATOR_CANCELLED)
     if operator.admin_logins_disabled_at is None:
         raise HTTPException(status_code=409, detail="Sign-in is not disabled for this operator.")
     access.enable_operator_logins(db, operator, reason=body.reason)
@@ -1053,9 +1064,11 @@ async def enable_operator_admin(
     admin = await _locked_admin(db, operator_id, admin_id)
     if admin.is_active:
         raise HTTPException(status_code=409, detail="This admin's sign-in is not disabled.")
+    operator = await db.get(ISPOperator, operator_id)
+    if operator is not None and operator.status == "cancelled":
+        raise HTTPException(status_code=409, detail=OPERATOR_CANCELLED)
     access.enable_admin(db, admin, reason=body.reason)
     await db.commit()
-    operator = await db.get(ISPOperator, operator_id)
     background_tasks.add_task(
         notify.notify_admin_access_changed,
         disabled=False, email=admin.email, phone=_admin_notice_phone(admin),
@@ -1894,7 +1907,7 @@ async def update_platform_settings(
 # billing_status and status are different enums measuring different axes — an
 # operator can be billing_status='active' while status='suspended' (a manual
 # access cut). They are reported separately and never merged into one list.
-_BILLING_STATUSES = ["trial", "active", "past_due", "cancelled"]
+_BILLING_STATUSES = ["trial", "active", "past_due", "paused", "cancelled"]
 
 
 @router.get("/analytics/snapshot")

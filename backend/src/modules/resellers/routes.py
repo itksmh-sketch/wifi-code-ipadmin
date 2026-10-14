@@ -10,6 +10,7 @@ from src.db.base import get_db
 from src.db.models import ISPOperator, Plan, Reseller, ResellerWallet, ResellerVoucherAllocation, Site, Voucher
 from src.middleware.reseller_auth import get_current_reseller, update_reseller_last_login
 from src.modules.admin_accounts.access import reseller_may_sign_in
+from src.middleware.auth import SALES_PAUSED_DETAIL, sales_blocked
 from src.middleware.rate_limit import enforce_rate_limit
 from src.modules.resellers.wallet_service import InsufficientFundsError, WalletService
 from src.modules.vouchers.engine import generate_voucher_code, generate_voucher_password, generate_voucher_username
@@ -194,15 +195,16 @@ async def reseller_purchase_vouchers(
     # Suspension is a billing-enforcement lever, so it has to reach every path
     # that mints new stock — not just the captive portal. Without this a
     # suspended operator's resellers keep drawing down their wallets and keep
-    # selling, and the operator's business runs on untouched. Same status and
+    # selling, and the operator's business runs on untouched. (Cancelled is
+    # refused too; its resellers can't sign in, so this is a backstop.) Same status and
     # wording as /portal/initiate-payment so the two revenue paths fail
     # identically. Checked before the wallet is touched: a blocked purchase must
     # not debit anyone.
     operator = (
         await db.execute(select(ISPOperator).where(ISPOperator.id == reseller.isp_operator_id))
     ).scalar_one_or_none()
-    if operator and operator.status == "suspended":
-        raise HTTPException(status_code=503, detail="This hotspot is temporarily unavailable for new purchases")
+    if sales_blocked(operator):
+        raise HTTPException(status_code=503, detail=SALES_PAUSED_DETAIL)
 
     tx_ctx = db.begin() if not db.in_transaction() else None
     if tx_ctx:

@@ -16,6 +16,7 @@ from src.config import get_settings
 from src.db.base import get_db
 from src.db.models import ISPOperator, PaymentTransaction, Plan, Router, Site, Voucher
 from src.middleware.csp_pages import portal_csp_headers
+from src.middleware.auth import SALES_PAUSED_DETAIL, sales_blocked
 from src.middleware.rate_limit import enforce_rate_limit
 from src.middleware.tenant_refs import load_owned
 from types import SimpleNamespace
@@ -344,8 +345,8 @@ async def portal_initiate_payment(
 
     from src.db.models import ISPOperator
     _op = (await db.execute(select(ISPOperator).where(ISPOperator.id == operator_id))).scalar_one_or_none()
-    if _op and _op.status == "suspended":
-        raise HTTPException(status_code=503, detail="This hotspot is temporarily unavailable for new purchases")
+    if sales_blocked(_op):
+        raise HTTPException(status_code=503, detail=SALES_PAUSED_DETAIL)
 
     plan = (
         await db.execute(

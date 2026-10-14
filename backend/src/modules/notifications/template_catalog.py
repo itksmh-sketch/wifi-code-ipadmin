@@ -163,15 +163,36 @@ EVENTS: dict[str, EventDef] = {
     ),
     "account_suspended": EventDef(
         event="account_suspended",
-        label="Account suspended",
-        description="Sent when an unpaid account is suspended.",
+        label="Account suspended (non-payment)",
+        description="Sent by the billing system when an unpaid invoice passes the grace period.",
         placeholders=("isp_name", "payment_url", "platform_name"),
     ),
     "account_reactivated": EventDef(
         event="account_reactivated",
-        label="Account reactivated",
-        description="Sent when payment clears and full access is restored.",
+        label="Account reactivated (payment)",
+        description="Sent when payment clears a non-payment suspension and full access is restored.",
         placeholders=("isp_name", "next_invoice_date", "platform_name"),
+    ),
+    # The three below are platform-initiated status changes (PUT
+    # /platform/operators/{id}/status). As with sign-in disabled, the reason
+    # the platform owner typed is internal and is never offered here.
+    "account_suspended_manual": EventDef(
+        event="account_suspended_manual",
+        label="Account suspended by the platform",
+        description="Sent when the platform suspends an operator by hand. Paying an invoice does not lift it.",
+        placeholders=("isp_name", "support_email", "platform_name"),
+    ),
+    "account_restored": EventDef(
+        event="account_restored",
+        label="Account restored by the platform",
+        description="Sent when the platform lifts a suspension by hand, or restores a cancelled operator.",
+        placeholders=("isp_name", "support_email", "platform_name"),
+    ),
+    "account_cancelled": EventDef(
+        event="account_cancelled",
+        label="Account cancelled",
+        description="Sent when the platform cancels an operator: dashboard and reseller sign-in and new sales stop.",
+        placeholders=("isp_name", "support_email", "platform_name"),
     ),
     # Platform-initiated only: an operator disabling its own users sends nothing.
     # The reason the platform owner typed is internal and is never offered here.
@@ -433,6 +454,83 @@ _default(
 _default(
     "account_reactivated", SMS,
     body_text="{platform_name}: Payment received! Full access restored. Next invoice: {next_invoice_date}.",
+)
+
+# New with migration 058: never f-strings, so there is no legacy text to match.
+_default(
+    "account_suspended_manual", EMAIL,
+    subject="Account suspended — {isp_name}",
+    body_html=(
+        "<h2>Account suspended — {isp_name}</h2>"
+        "<p>Your <strong>{platform_name}</strong> account for {isp_name} has been suspended by the platform team.</p>"
+        "<p><strong>What this means:</strong></p>"
+        "<ul><li>You can still sign in and see your account</li>"
+        "<li>New sales through the captive portal and resellers are paused</li>"
+        "<li>New vouchers, plans, routers and other setup changes are paused</li>"
+        "<li>Vouchers already sold and sessions in progress keep working</li></ul>"
+        "<p>Paying an invoice does not lift this suspension. "
+        "Questions? Email us at <a href='mailto:{support_email}'>{support_email}</a></p>"
+    ),
+    body_text=(
+        "Your {platform_name} account for {isp_name} has been suspended by the platform team.\n"
+        "You can still sign in. New sales and setup changes are paused; vouchers already sold keep working.\n"
+        "Paying an invoice does not lift this suspension. Questions? Email {support_email}"
+    ),
+)
+_default(
+    "account_suspended_manual", SMS,
+    body_text=(
+        "{platform_name}: Your {isp_name} account has been suspended by the platform team. "
+        "New sales and setup changes are paused; vouchers already sold keep working. Contact {support_email}."
+    ),
+)
+
+_default(
+    "account_restored", EMAIL,
+    subject="Account restored — {isp_name}",
+    body_html=(
+        "<h2>Account restored — {isp_name}</h2>"
+        "<p>Your <strong>{platform_name}</strong> account for {isp_name} is active again. "
+        "Sales and setup changes are open. Sign in to continue.</p>"
+        "<p>Questions? Email us at <a href='mailto:{support_email}'>{support_email}</a></p>"
+    ),
+    body_text=(
+        "Your {platform_name} account for {isp_name} is active again. "
+        "Sales and setup changes are open. Sign in to continue.\n"
+        "Questions? Email {support_email}"
+    ),
+)
+_default(
+    "account_restored", SMS,
+    body_text=(
+        "{platform_name}: Your {isp_name} account is active again. "
+        "Sales are open; sign in to continue. Questions: {support_email}"
+    ),
+)
+
+_default(
+    "account_cancelled", EMAIL,
+    subject="Account closed — {isp_name}",
+    body_html=(
+        "<h2>Account closed — {isp_name}</h2>"
+        "<p>Your <strong>{platform_name}</strong> account for {isp_name} has been closed by the platform team.</p>"
+        "<ul><li>Dashboard and reseller sign-in are off</li>"
+        "<li>New sales through the captive portal and resellers have stopped</li>"
+        "<li>Your account data is kept</li></ul>"
+        "<p>Questions? Email us at <a href='mailto:{support_email}'>{support_email}</a></p>"
+    ),
+    body_text=(
+        "Your {platform_name} account for {isp_name} has been closed by the platform team.\n"
+        "Dashboard and reseller sign-in are off and new sales have stopped. Your account data is kept.\n"
+        "Questions? Email {support_email}"
+    ),
+)
+_default(
+    "account_cancelled", SMS,
+    body_text=(
+        "{platform_name}: Your {isp_name} account has been closed. Dashboard and reseller sign-in are off "
+        "and new sales have stopped. Contact {support_email}."
+    ),
 )
 
 # New with migration 056: never f-strings, so there is no legacy text to match.

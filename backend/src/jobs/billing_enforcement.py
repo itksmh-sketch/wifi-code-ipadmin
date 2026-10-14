@@ -80,7 +80,10 @@ async def enforce_billing(ctx=None):
                         db.add(grace_event)
 
                         op = await db.get(ISPOperator, invoice.isp_operator_id)
-                        if op:
+                        # A cancelled operator is never suspended, so "pay by X to
+                        # avoid suspension" would be untrue. The invoice is still
+                        # marked overdue above.
+                        if op and op.status != "cancelled":
                             billing_url = f"{settings.platform_app_url}/admin/billing"
                             try:
                                 await notify.notify_grace_period(
@@ -112,7 +115,11 @@ async def enforce_billing(ctx=None):
             for invoice in suspension_candidates:
                 try:
                     op = await db.get(ISPOperator, invoice.isp_operator_id)
-                    if not op or op.status == "suspended":
+                    # Only a trading operator is suspended. Already suspended
+                    # (for billing or by hand) needs nothing; and a cancelled or
+                    # pending operator must not be turned into a suspended one,
+                    # which a later payment would then "reactivate".
+                    if not op or op.status != "approved":
                         continue
 
                     before = OPERATOR_STATUS.snapshot(op)

@@ -1,10 +1,12 @@
 """Who may sign in, and the platform's switches for turning that off.
 
-Two switches, one rule:
+Two switches and one status, one rule:
 
   * per admin: ``admin_users.is_active`` (with disabled_* saying who and why);
   * per operator: ``isp_operators.admin_logins_disabled_at``, which shuts out
-    every admin AND every reseller of that operator.
+    every admin AND every reseller of that operator;
+  * ``isp_operators.status == 'cancelled'``, which does the same for as long
+    as the operator stays cancelled (src.modules.platform.operator_status).
 
 ``admin_may_sign_in()`` / ``reseller_may_sign_in()`` are the single definition
 of "allowed in". Login, refresh, the per-request guards, the reset flows and
@@ -28,7 +30,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, exists, func, select, update
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import AdminOtpCode, AdminUser, ISPOperator, Reseller
@@ -40,21 +42,23 @@ PLATFORM_OWNER = "platform_owner"
 OPERATOR_USER = "operator_user"
 
 
-def _operator_logins_enabled(operator_id_column):
+def _operator_lets_users_in(operator_id_column):
     return ~exists().where(
         ISPOperator.id == operator_id_column,
-        ISPOperator.admin_logins_disabled_at.is_not(None),
+        or_(ISPOperator.admin_logins_disabled_at.is_not(None), ISPOperator.status == "cancelled"),
     )
 
 
 def admin_may_sign_in():
-    """WHERE clause: this admin row is active and its operator's logins are on."""
-    return and_(AdminUser.is_active == True, _operator_logins_enabled(AdminUser.isp_operator_id))  # noqa: E712
+    """WHERE clause: this admin row is active, its operator's logins are on and
+    the operator is not cancelled."""
+    return and_(AdminUser.is_active == True, _operator_lets_users_in(AdminUser.isp_operator_id))  # noqa: E712
 
 
 def reseller_may_sign_in():
-    """WHERE clause: this reseller is active and its operator's logins are on."""
-    return and_(Reseller.is_active == True, _operator_logins_enabled(Reseller.isp_operator_id))  # noqa: E712
+    """WHERE clause: this reseller is active, its operator's logins are on and
+    the operator is not cancelled."""
+    return and_(Reseller.is_active == True, _operator_lets_users_in(Reseller.isp_operator_id))  # noqa: E712
 
 
 def _now() -> datetime:
@@ -125,33 +129,43 @@ def enable_admin(db: AsyncSession, admin: AdminUser, *, reason: str | None) -> N
     )
 
 
+async def sign_out_operator(db: AsyncSession, operator_id: uuid.UUID) -> tuple[int, int]:
+    """End every session of an operator's admins and resellers, now.
+
+    One UPDATE bumps every admin's token_version and clears their PIN
+    elevation; their open one-time codes are expired. Resellers have no
+    token_version: the per-request reseller guard re-checks the operator, so
+    their sessions end on the next call once the caller's change commits.
+    Returns (admins signed out, resellers blocked). Caller commits.
+    """
+    signed_out = (
+        await db.execute(
+            update(AdminUser)
+            .where(AdminUser.isp_operator_id == operator_id)
+            .values(token_version=AdminUser.token_version + 1, pin_verified_until=None)
+            .returning(AdminUser.id)
+        )
+    ).scalars().all()
+    await _expire_open_codes(db, AdminUser.isp_operator_id == operator_id)
+    resellers = (
+        await db.execute(select(func.count()).select_from(Reseller).where(Reseller.isp_operator_id == operator_id))
+    ).scalar_one()
+    return len(signed_out), resellers
+
+
 async def disable_operator_logins(
     db: AsyncSession, operator: ISPOperator, *, owner_id: uuid.UUID, reason: str | None
 ) -> int:
     """Turn off sign-in for every admin and reseller of ``operator``.
 
-    One UPDATE signs every admin out (token_version) and clears their PIN
-    elevation. Resellers have no token_version; the per-request reseller guard
-    checks the operator flag, so their sessions end on the next call. Returns
-    how many admins were signed out. Caller holds the operator row (FOR
-    UPDATE) and commits.
+    Signs everyone out through sign_out_operator. Returns how many admins
+    were signed out. Caller holds the operator row (FOR UPDATE) and commits.
     """
     reason = clean_reason(reason)
     operator.admin_logins_disabled_at = _now()
     operator.admin_logins_disabled_by = owner_id
     operator.admin_logins_disabled_reason = reason
-    signed_out = (
-        await db.execute(
-            update(AdminUser)
-            .where(AdminUser.isp_operator_id == operator.id)
-            .values(token_version=AdminUser.token_version + 1, pin_verified_until=None)
-            .returning(AdminUser.id)
-        )
-    ).scalars().all()
-    await _expire_open_codes(db, AdminUser.isp_operator_id == operator.id)
-    resellers = (
-        await db.execute(select(func.count()).select_from(Reseller).where(Reseller.isp_operator_id == operator.id))
-    ).scalar_one()
+    signed_out, resellers = await sign_out_operator(db, operator.id)
     audit.record(
         db,
         "operator.admin_logins_disable",
@@ -159,9 +173,9 @@ async def disable_operator_logins(
         target_type="isp_operator",
         target_id=operator.id,
         summary=f"Disabled all sign-in for {operator.name}",
-        detail={"reason": reason, "admins_signed_out": len(signed_out), "resellers_blocked": resellers},
+        detail={"reason": reason, "admins_signed_out": signed_out, "resellers_blocked": resellers},
     )
-    return len(signed_out)
+    return signed_out
 
 
 def enable_operator_logins(db: AsyncSession, operator: ISPOperator, *, reason: str | None) -> None:

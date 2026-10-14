@@ -224,10 +224,25 @@ async def update_last_login(user_id, db: AsyncSession):
 
 
 SUSPENDED_DETAIL = "Account suspended — pay your invoice to restore access"
+CANCELLED_DETAIL = "This account is closed."
+SALES_PAUSED_DETAIL = "This hotspot is temporarily unavailable for new purchases"
+
+# Operators that may not take a new sale: the captive portal's
+# initiate-payment and reseller purchases. Payments already started still
+# finish (callbacks, webhooks, status polls are never gated).
+SALES_BLOCKED_STATUSES = frozenset({"suspended", "cancelled"})
+
+
+def sales_blocked(operator) -> bool:
+    """Whether this operator may not start a new sale. A missing row is not
+    blocked, for the reason assert_operator_not_suspended gives."""
+    return operator is not None and operator.status in SALES_BLOCKED_STATUSES
 
 
 async def assert_operator_not_suspended(db: AsyncSession, isp_operator_id) -> None:
-    """Raise 403 if this operator is suspended. Shared by both guards below.
+    """Raise 403 if this operator is suspended (or cancelled). Shared by both
+    guards below. A cancelled operator's admins can't sign in at all
+    (admin_accounts.access); refusing here as well is a backstop.
 
     A missing operator row is deliberately NOT a suspension — the same
     `if operator and ...` shape the captive portal and the reseller purchase
@@ -257,6 +272,8 @@ async def assert_operator_not_suspended(db: AsyncSession, isp_operator_id) -> No
             status_code=status.HTTP_403_FORBIDDEN,
             detail=SUSPENDED_DETAIL,
         )
+    if operator and operator.status == "cancelled":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CANCELLED_DETAIL)
 
 
 async def require_active_operator(

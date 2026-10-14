@@ -294,3 +294,28 @@ async def notify_admin_access_changed(
         await _send_email(email, subj, html, text)
     if phone:
         await _send_sms(phone, await store.render_sms(event, values))
+
+
+OPERATOR_STATUS_EVENTS = ("account_suspended_manual", "account_restored", "account_cancelled")
+
+
+async def notify_operator_status_changed(
+    *, event: str, email: str | None, phone: str | None, isp_name: str
+) -> None:
+    """account_suspended_manual / account_restored / account_cancelled. Only the
+    platform's own status changes call this; the billing system's suspension
+    and payment reactivation keep notify_suspended / notify_reactivated. No
+    reason is passed in, so none can reach the operator. Either address may be
+    missing: each channel is skipped rather than sent to nobody."""
+    if event not in OPERATOR_STATUS_EVENTS:
+        raise ValueError(f"Not an operator status event: {event}")
+    values = {
+        "isp_name": isp_name,
+        "support_email": await _support_email(),
+        "platform_name": await get_platform_name(),
+    }
+    if email:
+        subj, html, text = await store.render_email(event, values)
+        await _send_email(email, subj, html, text)
+    if phone:
+        await _send_sms(phone, await store.render_sms(event, values))

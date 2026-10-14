@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=10">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=11">
   <style>
     /* Dialogs, status dots and the copy row come from app.css. */
     .town-block{margin-bottom:var(--sp-6)}
@@ -99,6 +99,16 @@
       <div id="admins-body"></div>
     </div>
 
+    <!-- Account status: driven by statics/operator_status.js (no inline code). -->
+    <div class="card stacked" id="status-card">
+      <div class="card-header">
+        <span class="card-title">Account status</span>
+        <span class="text-muted">Suspend, cancel or restore</span>
+      </div>
+      <div id="status-err" class="notice bad" hidden></div>
+      <div id="status-body"><p class="text-muted">Loading…</p></div>
+    </div>
+
     <!-- Sign-in access: driven by statics/operator_access.js (no inline code). -->
     <div class="card stacked" id="access-card">
       <div class="card-header">
@@ -127,6 +137,30 @@
     <div class="modal-actions">
       <button class="btn" type="button" data-access-action="cancel">Cancel</button>
       <button class="btn danger" type="button" id="access-submit">Disable</button>
+    </div>
+  </div>
+</div>
+
+<!-- Change account status. Its own backdrop, opened with the .show class. -->
+<div id="status-overlay" class="modal-backdrop">
+  <div class="modal-dialog sm" role="dialog" aria-modal="true" aria-labelledby="status-title">
+    <div class="modal-title" id="status-title"></div>
+    <p class="text-muted" id="status-explain"></p>
+    <div id="status-msg" class="notice bad" hidden></div>
+    <div id="status-cancel-wrap" hidden>
+      <div id="status-owed"></div>
+      <label for="status-days">Keep hotspot service for vouchers already sold (days)</label>
+      <input id="status-days" type="number" min="0" max="365" step="1" value="30">
+      <label class="check"><input type="checkbox" id="status-end-now">
+        <span>End hotspot service now</span></label>
+      <p class="help">Recorded now. The hotspot cutoff itself is not enforced yet: vouchers already sold keep working until it is.</p>
+    </div>
+    <label for="status-reason">Reason (optional, kept internal)</label>
+    <textarea id="status-reason" maxlength="500"></textarea>
+    <p class="help">Recorded in the platform audit trail. Never shown to the operator or sent to them.</p>
+    <div class="modal-actions">
+      <button class="btn" type="button" data-status-action="close">Cancel</button>
+      <button class="btn danger" type="button" id="status-submit">Save</button>
     </div>
   </div>
 </div>
@@ -772,5 +806,6 @@ async function load() {
 load();
 </script>
 <script src="/platform/statics/operator_access.js?v=1"></script>
+<script src="/platform/statics/operator_status.js?v=1"></script>
 </body>
 </html>

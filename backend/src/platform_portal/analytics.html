@@ -7,9 +7,9 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=10">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=11">
   <style>
-    .count-grid{display:grid;gap:var(--sp-3);grid-template-columns:repeat(4,minmax(0,1fr))}
+    .count-grid{display:grid;gap:var(--sp-3);grid-template-columns:repeat(5,minmax(0,1fr))}
     @media(max-width:760px){.count-grid{grid-template-columns:repeat(2,1fr)}}
     .count-cell{background:var(--surface-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--sp-4)}
     .count-cell .n,.access-line .n{font-size:var(--fs-xl);font-weight:700;letter-spacing:-.02em;line-height:1.15;font-variant-numeric:tabular-nums}
@@ -72,6 +72,7 @@
       <div class="count-cell"><div class="n">—</div><div class="k"><span class="badge trial">trial</span></div></div>
       <div class="count-cell"><div class="n">—</div><div class="k"><span class="badge active">active</span></div></div>
       <div class="count-cell"><div class="n">—</div><div class="k"><span class="badge past_due">past due</span></div></div>
+      <div class="count-cell"><div class="n">—</div><div class="k"><span class="badge paused">paused</span></div></div>
       <div class="count-cell"><div class="n">—</div><div class="k"><span class="badge cancelled">cancelled</span></div></div>
     </div>
     <p class="axis-note">
@@ -170,7 +171,7 @@ function renderRevenue(d) {
   document.getElementById('m-outstanding').textContent = fmtMoney(d.total_outstanding_ghs);
 }
 
-const BILLING_ORDER = ['trial', 'active', 'past_due', 'cancelled'];
+const BILLING_ORDER = ['trial', 'active', 'past_due', 'paused', 'cancelled'];
 
 function renderSnapshot(d) {
   const ops = d.operators || {};

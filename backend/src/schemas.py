@@ -627,7 +627,14 @@ class PlatformAccessEnable(BaseModel):
 
 
 class PlatformOperatorStatusUpdate(BaseModel):
+    """PUT /platform/operators/{id}/status. The reason is internal: it goes to
+    the audit trail only, is hidden from the operator's audit view, and no
+    notice can carry it. hotspot_service_days applies to cancellation only:
+    how long vouchers already sold keep working (0 = end now)."""
+    model_config = {"extra": "forbid"}
     status: str
+    reason: Optional[str] = Field(default=None, max_length=500)
+    hotspot_service_days: Optional[int] = Field(default=None, ge=0, le=365)
 
 
 class PlatformOperatorResponse(BaseModel):

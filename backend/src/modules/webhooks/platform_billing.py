@@ -121,8 +121,12 @@ async def platform_billing_webhook(request: Request, db: AsyncSession = Depends(
 
     # The invoice knows who it belongs to. Taking the operator from the payload
     # would let a charge assert a different tenant than the one being billed.
+    # Locked: what happens next depends on the operator's status, which the
+    # platform's status route changes under the same lock.
     operator = (
-        await db.execute(select(ISPOperator).where(ISPOperator.id == invoice.isp_operator_id))
+        await db.execute(
+            select(ISPOperator).where(ISPOperator.id == invoice.isp_operator_id).with_for_update()
+        )
     ).scalar_one_or_none()
     if not operator:
         logger.error("platform_billing_webhook operator_missing invoice=%s", invoice.invoice_number)
@@ -176,7 +180,7 @@ async def platform_billing_webhook(request: Request, db: AsyncSession = Depends(
     await mark_invoice_paid(db, invoice, reference, amount_charged_ghs=verdict.charged_ghs)
     # Independent of suspension: an operator who paid inside the grace period is
     # past_due but not suspended, and would otherwise stay past_due forever and
-    # never be invoiced again.
+    # never be invoiced again. (A cancelled or paused operator is left alone.)
     await normalise_billing_status(db, operator)
 
     if was_billing_suspended:

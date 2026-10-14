@@ -29,6 +29,7 @@ from fastapi import HTTPException
 from src.app import app
 from src.db.models import AdminUser, ISPOperator
 from src.middleware.auth import (
+    CANCELLED_DETAIL,
     SUSPENDED_DETAIL,
     TenantContext,
     assert_operator_not_suspended,
@@ -225,10 +226,21 @@ async def test_guard_raises_403_for_suspended_operator():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["approved", "pending", "cancelled"])
+@pytest.mark.parametrize("status", ["approved", "pending"])
 async def test_guard_passes_non_suspended_operators(status):
     operator = _operator(status)
     await assert_operator_not_suspended(FakeDb(operator), operator.id)
+
+
+@pytest.mark.asyncio
+async def test_guard_refuses_cancelled_operator():
+    """A cancelled operator's admins can't sign in at all; the write guard
+    refusing too is the backstop."""
+    operator = _operator("cancelled")
+    with pytest.raises(HTTPException) as exc:
+        await assert_operator_not_suspended(FakeDb(operator), operator.id)
+    assert exc.value.status_code == 403
+    assert exc.value.detail == CANCELLED_DETAIL
 
 
 @pytest.mark.asyncio

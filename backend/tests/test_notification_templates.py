@@ -102,9 +102,12 @@ LEGACY_CASES = {
 }
 
 
-# Added after the f-string era (migration 056): there is no earlier text for
-# them to match, so they are covered by the catalog-consistency tests only.
-NO_LEGACY_TEXT = {"admin_access_disabled", "admin_access_restored"}
+# Added after the f-string era (migrations 056 and 058): there is no earlier
+# text for them to match, so they are covered by the catalog-consistency tests only.
+NO_LEGACY_TEXT = {
+    "admin_access_disabled", "admin_access_restored",
+    "account_suspended_manual", "account_restored", "account_cancelled",
+}
 
 
 def test_legacy_cases_cover_every_event():

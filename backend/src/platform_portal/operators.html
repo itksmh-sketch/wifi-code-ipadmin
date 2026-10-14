@@ -7,7 +7,7 @@
   <link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
   <link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
-  <link rel="stylesheet" href="/platform/statics/app.css?v=10">
+  <link rel="stylesheet" href="/platform/statics/app.css?v=11">
   <style>
     /* The applicant's free-text message: kept as typed, scrolls when long. */
     .app-message{white-space:pre-wrap;overflow-wrap:anywhere;font-size:var(--fs-sm);line-height:1.5;background:var(--surface-input);color:var(--text);
@@ -212,9 +212,7 @@ function renderTable(rows) {
       <td>${fmtDate(op.created_at)}</td>
       <td>
         <div class="actions">
-          ${op.status === 'pending' ? `<button class="btn sm primary" data-action="set-status" data-id="${escHtml(op.id)}" data-status="approved">Approve</button>` : ''}
-          ${op.status === 'approved' ? `<button class="btn sm danger" data-action="set-status" data-id="${escHtml(op.id)}" data-status="suspended">Suspend</button>` : ''}
-          ${op.status === 'suspended' ? `<button class="btn sm" data-action="set-status" data-id="${escHtml(op.id)}" data-status="approved">Unsuspend</button>` : ''}
+          <a class="btn sm" href="/platform/operators/${escHtml(op.id)}#status-card">Change status</a>
         </div>
       </td>
     </tr>
@@ -223,26 +221,6 @@ function renderTable(rows) {
 
 function escHtml(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-async function setStatus(id, status) {
-  try {
-    const res = await api(`/api/v1/platform/operators/${id}/status`, {
-      method: 'PUT',
-      body: JSON.stringify({status}),
-    });
-    if (!res.ok) {
-      const d = await res.json();
-      alert(d.detail || 'Failed to update status');
-      return;
-    }
-    const updated = await res.json();
-    const idx = allOperators.findIndex(o => o.id === id);
-    if (idx !== -1) allOperators[idx] = updated;
-    applyFilter();
-  } catch (e) {
-    alert('Network error');
-  }
 }
 
 function applyFilter() {
@@ -334,7 +312,6 @@ function closeModals() {
 // the rows and dialog buttons rebuilt by innerHTML (no inline handlers: CSP).
 const ACTIONS = {
   'close-modals': () => closeModals(),
-  'set-status':   el => setStatus(el.dataset.id, el.dataset.status),
   'open-detail':  el => openDetail(el.dataset.id),
   'open-approve': el => openApprove(el.dataset.id),
   'open-reject':  el => openReject(el.dataset.id),

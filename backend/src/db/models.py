@@ -103,7 +103,9 @@ class ISPOperator(Base):
     approved_by_platform_owner_id = Column(UUID(as_uuid=True), ForeignKey("platform_owners.id"), nullable=True)
     monthly_fee_ghs = Column(Numeric(10, 2), nullable=False, server_default="0.00")
     billing_status = Column(
-        ENUM("trial", "active", "past_due", "cancelled", name="operator_billing_status", create_type=False),
+        # 'paused': not invoiced while the platform has suspended the operator
+        # by hand (migration 058); unsuspending puts them back on trial/active.
+        ENUM("trial", "active", "past_due", "cancelled", "paused", name="operator_billing_status", create_type=False),
         nullable=False,
         server_default="'trial'",
     )
@@ -117,6 +119,12 @@ class ISPOperator(Base):
         ENUM("billing", "manual", name="operator_suspension_reason", create_type=False),
         nullable=True,
     )
+    # Set together while status == 'cancelled' and only then (CHECK in
+    # migration 058). hotspot_service_ends_at is when vouchers already sold
+    # stop working: the wind-down chosen at cancellation (0 days = at once).
+    # Phase B enforces it in RADIUS; until then it is recorded only.
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    hotspot_service_ends_at = Column(DateTime(timezone=True), nullable=True)
     # Captive-portal branding (all nullable; defaults applied at read time so an
     # unconfigured operator renders identically to the original hardcoded portal).
     portal_display_name = Column(Text, nullable=True)

@@ -369,9 +369,14 @@ async def normalise_billing_status(db: AsyncSession, operator: ISPOperator) -> b
     forever, and generate_monthly_invoices (which selects billing_status ==
     'active') silently never invoiced them again.
 
+    Never for a cancelled operator (paying a final invoice must not restart
+    their invoicing) or a paused one (a manual suspension pauses invoicing
+    until the platform lifts it): those only change through the platform's
+    status route.
+
     Returns True if it changed anything.
     """
-    if operator.billing_status == "active":
+    if operator.billing_status in ("active", "cancelled", "paused"):
         return False
     before = OPERATOR_STATUS.snapshot(operator)
     operator.billing_status = "active"
@@ -379,6 +384,16 @@ async def normalise_billing_status(db: AsyncSession, operator: ISPOperator) -> b
                          f"{operator.name} is paid up: billing back to active")
     await db.flush()
     return True
+
+
+def resumed_billing_status(operator: ISPOperator, now: datetime | None = None) -> str:
+    """The billing status an operator goes back to when the platform lifts a
+    manual suspension or restores a cancelled operator: still on trial if the
+    trial has not ended, otherwise invoiced as usual."""
+    now = now or datetime.now(timezone.utc)
+    if operator.trial_ends_at is not None and operator.trial_ends_at > now:
+        return "trial"
+    return "active"
 
 
 def is_billing_suspension(operator: ISPOperator) -> bool:

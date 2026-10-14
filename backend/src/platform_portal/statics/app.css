@@ -214,7 +214,7 @@ input.readout{font-family:var(--mono);letter-spacing:.04em;background:transparen
 
 .badge{display:inline-block;padding:2px var(--sp-2);border-radius:var(--radius-pill);font-size:var(--fs-xs);font-weight:500;line-height:16px;border:1px solid transparent;white-space:nowrap}
 .badge.approved,.badge.active{background:var(--success-tint);border-color:var(--success-border);color:var(--success-text)}
-.badge.pending{background:var(--warning-tint);border-color:var(--warning-border);color:var(--warning-text)}
+.badge.pending,.badge.paused{background:var(--warning-tint);border-color:var(--warning-border);color:var(--warning-text)}
 .badge.suspended,.badge.past_due{background:var(--danger-tint);border-color:var(--danger-border);color:var(--danger-text)}
 .badge.cancelled{background:var(--neutral-tint);border-color:var(--border);color:var(--muted)}
 .badge.trial{background:var(--info-tint);border-color:var(--info-border);color:var(--info-text)}
