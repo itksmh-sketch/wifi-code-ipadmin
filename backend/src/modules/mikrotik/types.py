@@ -117,7 +117,15 @@ class RadiusConfig(BaseModel):
     id: str | None = None
     service: str | None = None
     address: str | None = None
-    secret: str | None = None
+    # The router's RADIUS shared secret as /radius print returns it (only for
+    # an API user with the 'sensitive' policy). Never serialized: excluded
+    # from model_dump/model_dump_json and repr, so no API response (router
+    # diagnostics) can carry it. Nothing reads it today; the wizard and the
+    # provisioner write the secret from the router's own record.
+    secret: str | None = Field(default=None, exclude=True, repr=False)
+    # Whether the router reported a non-empty secret; None when it didn't
+    # return the field at all (an API user without 'sensitive').
+    secret_configured: bool | None = None
     authentication_port: int | None = None
     accounting_port: int | None = None
     disabled: bool = False

@@ -755,6 +755,7 @@ class MikroTikAPIService:
                 service=row.get("service"),
                 address=row.get("address"),
                 secret=row.get("secret"),
+                secret_configured=bool(row["secret"]) if "secret" in row else None,
                 authentication_port=_to_int(row.get("authentication-port")),
                 accounting_port=_to_int(row.get("accounting-port")),
                 disabled=_to_bool(row.get("disabled")),
