@@ -898,7 +898,7 @@ async def test_reconcile_row(env, tenant, monkeypatch):
     from src.modules.payments import routes as payment_routes
 
     async def pool():
-        async def enqueue_job(name):
+        async def enqueue_job(name, **kwargs):
             return SimpleNamespace(job_id="job-recon-1")
         return SimpleNamespace(enqueue_job=enqueue_job)
 

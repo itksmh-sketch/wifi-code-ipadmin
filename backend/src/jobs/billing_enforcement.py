@@ -84,7 +84,7 @@ async def enforce_billing(ctx=None):
                         # avoid suspension" would be untrue. The invoice is still
                         # marked overdue above.
                         if op and op.status != "cancelled":
-                            billing_url = f"{settings.platform_app_url}/admin/billing"
+                            billing_url = await notify.app_url("/admin/billing")
                             try:
                                 await notify.notify_grace_period(
                                     email=op.contact_email,

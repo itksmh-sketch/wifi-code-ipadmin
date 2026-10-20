@@ -11,7 +11,6 @@ import structlog
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.config import get_settings
 from src.db.base import async_session_factory
 from src.db.models import ISPOperator, OperatorInvoice
 from src.modules.billing.service import PAYSTACK_MINIMUM_GHS, create_invoice, record_invoice_issued
@@ -93,7 +92,7 @@ async def generate_monthly_invoices(ctx=None):
                     record_invoice_issued(db, invoice, via="monthly")
                     generated += 1
 
-                    billing_url = f"{get_settings().platform_app_url}/admin/billing"
+                    billing_url = await notify.app_url("/admin/billing")
                     try:
                         await notify.notify_invoice_issued(
                             email=op.contact_email,

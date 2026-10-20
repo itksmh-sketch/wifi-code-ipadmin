@@ -27,6 +27,7 @@ from src.schemas import (
 from src.utils.reseller_auth import (
     create_reseller_access_token,
     create_reseller_refresh_token,
+    hash_reseller_password,
     verify_reseller_password,
     verify_reseller_token,
 )
@@ -34,16 +35,35 @@ from src.utils.reseller_auth import (
 router = APIRouter(prefix="/reseller", tags=["reseller"])
 wallet_service = WalletService()
 
+# Unknown email, wrong password and a disabled account (or one whose operator's
+# logins are off) all answer with exactly this, as admin login does.
+INVALID_CREDENTIALS = "Invalid email or password"
+
+# Verified against when no account matched, so that path costs about the same
+# as a wrong password. Without it the unknown and disabled cases return before
+# any bcrypt work and are measurably faster, which tells apart exactly what the
+# shared message hides.
+_DUMMY_HASH = hash_reseller_password("dummy-password-for-timing-equalisation")
+
 
 @router.post("/auth/login", response_model=TokenResponse, responses={401: {"model": ErrorResponse}})
 async def reseller_login(body: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     client_ip = request.client.host if request.client else "unknown"
     await enforce_rate_limit(client_ip, "reseller:login", limit=10, window_seconds=60)
 
-    result = await db.execute(select(Reseller).where(Reseller.email == body.email, reseller_may_sign_in()))
+    # Stored lowercased (admin_routes lowercases on create and edit), so a
+    # reseller who types their address with capitals is still found.
+    email = (body.email or "").strip().lower()
+    result = await db.execute(
+        select(Reseller).where(func.lower(Reseller.email) == email, reseller_may_sign_in())
+    )
     reseller = result.scalar_one_or_none()
-    if not reseller or not verify_reseller_password(body.password, reseller.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+    if reseller is None:
+        # Disabled resellers land here too: reseller_may_sign_in filters them out.
+        verify_reseller_password(body.password, _DUMMY_HASH)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS)
+    if not verify_reseller_password(body.password, reseller.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_CREDENTIALS)
 
     await update_reseller_last_login(reseller.id, db)
 

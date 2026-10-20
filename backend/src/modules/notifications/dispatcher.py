@@ -109,6 +109,30 @@ async def _support_email() -> str:
         return _settings().platform_support_email
 
 
+async def app_url(path: str) -> str:
+    """A link into the dashboard (``path`` like "/admin/billing") for an
+    operator-facing notification.
+
+    The base is read from the platform_settings table, as the security SMS
+    (admin_accounts.notifications._login_url) and the webhook URL do: that row
+    is what a platform owner edits in the portal's Settings page, and on this
+    deployment it holds the public HTTPS domain while .env holds the bare
+    server address. Own short-lived session, like _support_email; falls back to
+    config on any failure (config is also get_setting's default for an empty
+    row), so a lookup error degrades the link rather than the notification.
+    """
+    try:
+        from src.db.base import async_session_factory
+        from src.modules.platform.settings_service import get_setting
+
+        async with async_session_factory() as db:
+            base = await get_setting(db, "platform_app_url")
+    except Exception as exc:
+        logger.error("notification_app_url_lookup_failed error=%s — using config", exc)
+        base = _settings().platform_app_url
+    return f"{(base or '').strip().rstrip('/')}{path}"
+
+
 async def notify_application_received(*, email: str, contact_name: str, isp_name: str, phone: str) -> None:
     values = {
         "contact_name": contact_name,
@@ -137,7 +161,7 @@ async def notify_application_approved(
     values = {
         "contact_name": contact_name,
         "isp_name": isp_name,
-        "login_url": f"{_settings().platform_app_url}/admin",
+        "login_url": await app_url("/admin"),
         "admin_email": admin_email,
         "temp_password": temp_password,
         "trial_days": trial_days,
@@ -184,7 +208,7 @@ async def notify_trial_expiry_warning(
         "trial_end_date": trial_end_date,
         "days_remaining": days_remaining,
         "monthly_fee_ghs": monthly_fee_ghs,
-        "billing_url": f"{_settings().platform_app_url}/admin/billing",
+        "billing_url": await app_url("/admin/billing"),
         "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("trial_expiry_warning", values)
@@ -195,7 +219,7 @@ async def notify_trial_expiry_warning(
 async def notify_trial_expired(*, email: str, phone: str, isp_name: str) -> None:
     values = {
         "isp_name": isp_name,
-        "billing_url": f"{_settings().platform_app_url}/admin/billing",
+        "billing_url": await app_url("/admin/billing"),
         "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("trial_expired", values)
@@ -256,7 +280,7 @@ async def notify_grace_period(
 async def notify_suspended(*, email: str, phone: str, isp_name: str) -> None:
     values = {
         "isp_name": isp_name,
-        "payment_url": f"{_settings().platform_app_url}/admin/billing",
+        "payment_url": await app_url("/admin/billing"),
         "platform_name": await get_platform_name(),
     }
     subj, html, text = await store.render_email("account_suspended", values)

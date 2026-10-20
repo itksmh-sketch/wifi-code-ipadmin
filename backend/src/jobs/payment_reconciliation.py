@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -12,7 +13,14 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
-async def run_payment_reconciliation(ctx=None) -> dict:
+async def run_payment_reconciliation(ctx=None, *, isp_operator_id: str | None = None) -> dict:
+    """Settle pending payments older than 15 minutes against their provider.
+
+    The cron run passes no operator and covers every tenant. A manual run from
+    an operator's dashboard (POST /payments/reconcile) passes that operator's
+    id and touches only its own payments: one operator must not be able to
+    set off provider calls on, and status changes to, another's.
+    """
     service = get_payment_service()
     now = datetime.now(timezone.utc)
     fifteen_minutes_ago = now - timedelta(minutes=15)
@@ -28,12 +36,13 @@ async def run_payment_reconciliation(ctx=None) -> dict:
     }
 
     async with async_session_factory() as db:
-        result = await db.execute(
-            select(PaymentTransaction).where(
-                PaymentTransaction.status == PaymentStatus.PENDING.value,
-                PaymentTransaction.initiated_at < fifteen_minutes_ago,
-            )
+        query = select(PaymentTransaction).where(
+            PaymentTransaction.status == PaymentStatus.PENDING.value,
+            PaymentTransaction.initiated_at < fifteen_minutes_ago,
         )
+        if isp_operator_id is not None:
+            query = query.where(PaymentTransaction.isp_operator_id == uuid.UUID(str(isp_operator_id)))
+        result = await db.execute(query)
         pending_rows = list(result.scalars().all())
 
         for tx in pending_rows:
@@ -100,5 +109,5 @@ async def run_payment_reconciliation(ctx=None) -> dict:
                 stats["still_pending"] += 1
 
         await db.commit()
-    logger.info("payment_reconciliation_completed", module=__name__, **stats)
+    logger.info("payment_reconciliation_completed", module=__name__, isp_operator_id=isp_operator_id, **stats)
     return stats

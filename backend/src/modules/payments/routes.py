@@ -220,9 +220,14 @@ async def refund_payment(
 
 
 @router.post("/reconcile", dependencies=[Depends(audit.audited), Depends(require_perm(MONEY))])
-async def trigger_reconcile(_=Depends(get_admin_tenant_context)):
+async def trigger_reconcile(ctx: TenantContext = Depends(get_admin_tenant_context)):
+    # Scoped to the caller's operator; the scheduled run still covers everyone.
+    # No operator means no scope, and the job reads a missing one as "every
+    # tenant", so refuse before anything is queued.
+    if ctx.is_platform_owner or ctx.isp_operator_id is None:
+        raise HTTPException(status_code=403, detail="Reconciliation runs for one operator; this account has none")
     redis = await get_redis_pool()
-    job = await redis.enqueue_job("run_payment_reconciliation")
+    job = await redis.enqueue_job("run_payment_reconciliation", isp_operator_id=str(ctx.isp_operator_id))
     job_id = job.job_id if job else None
     await audit.record_detached(
         "payment.reconcile", target_type="job", target_id=job_id,
