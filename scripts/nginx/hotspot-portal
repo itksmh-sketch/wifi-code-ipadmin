@@ -1,0 +1,31 @@
+# Captive portal on its own name, plain HTTP only (routers post the hotspot
+# login from the page to the router's own http address, which browsers block
+# from an https page). Only the portal and the CSP report endpoint its pages
+# post to; everything else is refused. ip-admin.duckdns.org stays HTTPS.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ip-admin-portal.duckdns.org;
+
+    location /portal/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;   # always http: a client can't claim https
+    }
+
+    # CSP violation reports from portal pages (same-origin report-uri)
+    location = /api/v1/csp-report {
+        limit_except POST { deny all; }
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / { return 404; }
+}

@@ -1,0 +1,16 @@
+# Catch-all for port 80: any request whose Host isn't one of the named sites
+# (bare IP, scanners, stale names). Nothing is served from here.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 404;
+}
+
+# Catch-all for 443: refuse TLS unless the client asks for one of our names.
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+}
