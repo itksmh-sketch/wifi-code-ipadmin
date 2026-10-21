@@ -109,8 +109,9 @@ async def link_payment(ids, voucher_id, *, status="success", diagnostic=False):
 
 async def allocate_to_reseller(ids, voucher_id):
     await sql(
-        "insert into reseller_voucher_allocations (reseller_id,voucher_id,purchase_price_ghs) values (:r,:v,4)",
-        r=ids["reseller"], v=voucher_id,
+        "insert into reseller_voucher_allocations (reseller_id,voucher_id,purchase_price_ghs,isp_operator_id) "
+        "values (:r,:v,4,:op)",
+        r=ids["reseller"], v=voucher_id, op=ids["op"],
     )
 
 

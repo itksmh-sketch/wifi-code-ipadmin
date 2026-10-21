@@ -229,7 +229,7 @@ async def test_reseller_allocation_blocks_delete(env):
         db.add(reseller)
         await db.flush()
         db.add(ResellerVoucherAllocation(reseller_id=reseller.id, voucher_id=voucher_id,
-                                         purchase_price_ghs=Decimal("4.00")))
+                                         purchase_price_ghs=Decimal("4.00"), isp_operator_id=client.operator_id))
         await db.commit()
 
     res = await delete_plan(client, plan["id"])

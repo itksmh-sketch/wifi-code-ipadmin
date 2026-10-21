@@ -657,36 +657,6 @@ class PlatformOperatorResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# --- Reseller (Phase 3) ---
-class ResellerVoucherPurchaseRequest(BaseModel):
-    plan_id: uuid.UUID
-    quantity: int
-
-
-class ResellerMarkSoldRequest(BaseModel):
-    sold_to_phone: str
-
-
-class ResellerWalletResponse(BaseModel):
-    balance_ghs: float
-    lifetime_topped_up_ghs: float
-    lifetime_spent_ghs: float
-
-
-class ResellerWalletTransactionResponse(BaseModel):
-    id: uuid.UUID
-    type: str
-    amount_ghs: float
-    balance_after_ghs: float
-    description: Optional[str] = None
-    reference: str
-    voucher_id: Optional[uuid.UUID] = None
-    triggered_by: str
-    created_at: Optional[datetime] = None
-
-    model_config = {"from_attributes": True}
-
-
 # --- Provider catalog ---
 
 class OperatorProviderResponse(BaseModel):

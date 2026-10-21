@@ -64,8 +64,7 @@ from src.db.models import PlatformOwnerSecurityEvent
 from src.modules.platform.owner_setup import is_valid_code, looks_like_test_email, mark_setup_complete
 from src.utils.reseller_auth import hash_reseller_password
 from src.utils.encryption import encrypt_secret
-from src.db.models import CommissionRule, Reseller, ResellerVoucherAllocation, ResellerWallet, ResellerWalletTransaction
-from src.modules.resellers.wallet_service import WalletService
+from src.db.models import Reseller
 
 settings = get_settings()
 
@@ -142,7 +141,6 @@ async def refuse_if_live(db: AsyncSession) -> None:
 
 
 BATCH_ID = "SEED-BATCH-001"
-RESELLER_SEED_BATCH = "SEED-RESELLER-ALLOC"
 
 
 async def seed():
@@ -158,7 +156,6 @@ async def seed():
     async with async_session() as db:
         await refuse_if_live(db)
         print("🌱 Seeding database...")
-        wallet_service = WalletService()
         owner = (
             await db.execute(select(PlatformOwner).where(PlatformOwner.email == settings.platform_owner_email))
         ).scalar_one_or_none()
@@ -422,9 +419,6 @@ async def seed():
             price_ghs=10.00,
             is_active=True,
         )
-        plan_time_id = plan_time.id
-        plan_time_duration = plan_time.duration_minutes
-
         # --- 10 Test Vouchers ---
         cnt = (
             await db.execute(
@@ -472,7 +466,7 @@ async def seed():
             for v in existing:
                 print(f"   Code: {v.code} | Username: {v.username} | Password: {v.password}")
 
-        # --- Phase 3: Resellers + wallets + commission + allocations ---
+        # --- Phase 3: Resellers (codes are allocated to them from the dashboard) ---
         async def ensure_reseller(*, name: str, email: str, phone: str, role: str, town_id, site_id):
             r3 = await db.execute(select(Reseller).where(Reseller.email == email))
             existing_reseller = r3.scalar_one_or_none()
@@ -504,7 +498,7 @@ async def seed():
             town_id=town.id,
             site_id=site1.id,
         )
-        town_agent = await ensure_reseller(
+        await ensure_reseller(
             name="Town Agent One",
             email="agent1@example.com",
             phone="233244000002",
@@ -512,134 +506,15 @@ async def seed():
             town_id=town.id,
             site_id=None,
         )
-        # Store primitives early; rollback/commit can expire ORM instances.
-        reseller1_id = reseller1.id
-        reseller1_email = reseller1.email
-        reseller1_site_id = reseller1.site_id
-        town_agent_id = town_agent.id
-        town_agent_email = town_agent.email
-        town_agent_site_id = town_agent.site_id
-
-        async def ensure_wallet(reseller_id):
-            r4 = await db.execute(select(ResellerWallet).where(ResellerWallet.reseller_id == reseller_id))
-            w = r4.scalar_one_or_none()
-            if w:
-                return w
-            w = ResellerWallet(reseller_id=reseller_id)
-            db.add(w)
+        # 10% on every code reseller1 sells; the town agent earns the operator
+        # default (0% unless set).
+        if reseller1.commission_type is None:
+            reseller1.commission_type = "percent"
+            reseller1.commission_value = 10
             await db.commit()
-            print(f"  ✅ Wallet created for reseller {reseller_id}")
-            return w
-
-        await ensure_wallet(reseller1_id)
-        await ensure_wallet(town_agent_id)
-
-        async def ensure_wallet_funded(reseller_id):
-            w = (await db.execute(select(ResellerWallet).where(ResellerWallet.reseller_id == reseller_id))).scalar_one()
-            if Decimal(str(w.balance_ghs)) >= Decimal("500.00"):
-                print(f"  ⏭ Wallet already funded: reseller {reseller_id} balance={w.balance_ghs}")
-                return
-            reference = f"seed-topup-{reseller_id}"
-            existing_topup = (
-                await db.execute(select(ResellerWalletTransaction).where(ResellerWalletTransaction.reference == reference))
-            ).scalar_one_or_none()
-            if existing_topup is not None:
-                print(f"  ⏭ Wallet seed topup already recorded: reseller {reseller_id}")
-                return
-            # SQLAlchemy sessions auto-begin on SELECT; rollback before starting an explicit transaction ctx.
-            await db.rollback()
-            async with db.begin():
-                await wallet_service.topup(
-                    db,
-                    reseller_id=reseller_id,
-                    amount_ghs=Decimal("500.00"),
-                    description="Seed funding",
-                    triggered_by="system",
-                    reference=reference,
-                )
-            print(f"  ✅ Wallet funded: reseller {reseller_id} +500.00")
-
-        from decimal import Decimal  # local import for seed script
-
-        await ensure_wallet_funded(reseller1_id)
-        await ensure_wallet_funded(town_agent_id)
-
-        # Commission rule: 10% on all plans for reseller1
-        r5 = await db.execute(
-            select(CommissionRule).where(
-                CommissionRule.reseller_id == reseller1_id,
-                CommissionRule.plan_id.is_(None),
-                CommissionRule.type == "percentage",
-                CommissionRule.value == 10,
-            )
-        )
-        if r5.scalar_one_or_none() is None:
-            rule = CommissionRule(
-                isp_operator_id=tenant_zero_id,
-                reseller_id=reseller1_id,
-                plan_id=None,
-                type="percentage",
-                value=Decimal("10.0000"),
-                is_active=True,
-            )
-            db.add(rule)
-            await db.commit()
-            print("  ✅ Commission rule created: reseller1 10% all plans")
+            print("  ✅ Commission set: reseller1 10%")
         else:
-            print("  ⏭ Commission rule already exists: reseller1 10% all plans")
-
-        # Allocate 5 vouchers to each reseller (purchase workflow in one atomic transaction per reseller)
-        async def ensure_allocations(*, reseller_id, reseller_email: str, reseller_site_id, plan_id, plan_duration_minutes, qty: int):
-            existing_cnt = (
-                await db.execute(
-                    select(func.count())
-                    .select_from(ResellerVoucherAllocation)
-                    .join(Voucher, Voucher.id == ResellerVoucherAllocation.voucher_id)
-                    .where(ResellerVoucherAllocation.reseller_id == reseller_id, Voucher.batch_id == RESELLER_SEED_BATCH)
-                )
-            ).scalar_one()
-            if existing_cnt >= qty:
-                print(f"  ⏭ Allocations already exist for {reseller_email}: {existing_cnt}")
-                return
-
-            to_create = qty - int(existing_cnt)
-            await db.rollback()
-            async with db.begin():
-                for _ in range(to_create):
-                    v = Voucher(
-                        isp_operator_id=tenant_zero_id,
-                        plan_id=plan_id,
-                        site_id=reseller_site_id,
-                        code=generate_voucher_code(),
-                        username=generate_voucher_username(),
-                        password=generate_voucher_password(),
-                        status="unused",
-                        device_policy="single",
-                        max_devices=1,
-                        expires_at=datetime.now(timezone.utc) + timedelta(minutes=plan_duration_minutes) if plan_duration_minutes else None,
-                        batch_id=RESELLER_SEED_BATCH,
-                    )
-                    db.add(v)
-                    await db.flush()
-                    await wallet_service.purchase(db, reseller_id=reseller_id, voucher_id=v.id, plan_id=plan_id, triggered_by="system", description="Seed voucher allocation")
-            print(f"  ✅ Allocated {to_create} vouchers to {reseller_email}")
-
-        await ensure_allocations(
-            reseller_id=reseller1_id,
-            reseller_email=reseller1_email,
-            reseller_site_id=reseller1_site_id,
-            plan_id=plan_time_id,
-            plan_duration_minutes=plan_time_duration,
-            qty=5,
-        )
-        await ensure_allocations(
-            reseller_id=town_agent_id,
-            reseller_email=town_agent_email,
-            reseller_site_id=town_agent_site_id,
-            plan_id=plan_time_id,
-            plan_duration_minutes=plan_time_duration,
-            qty=5,
-        )
+            print("  ⏭ Commission already set: reseller1")
 
         print("\n🎉 Seeding complete!")
 

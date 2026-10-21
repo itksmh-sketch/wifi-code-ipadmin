@@ -1,11 +1,13 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import async_session_factory
 from src.db.models import Plan, Router, Session, Voucher
 from src.jobs.job_lock import job_lock
+from src.modules import audit
+from src.modules.audit.redact import mask_code
 from src.modules.vouchers.engine import end_voucher_automatically
 from src.modules.mikrotik.access_revocation import revoke_voucher_access
 from src.radius.coa_events import create_pending_disconnect_event, send_disconnect_with_event
@@ -115,12 +117,15 @@ async def _expire_vouchers_locked():
                         error=str(e),
                     )
 
+            unredeemed_count = await _expire_past_sell_by(db, now)
+
             await db.commit()
             logger.info(
                 "voucher_expiry_completed",
                 module=__name__,
                 expired_count=expired_count,
                 exhausted_count=exhausted_count,
+                unredeemed_expired_count=unredeemed_count,
             )
 
         except Exception as e:
@@ -130,6 +135,30 @@ async def _expire_vouchers_locked():
                 error=str(e),
             )
             await db.rollback()
+
+
+async def _expire_past_sell_by(db: AsyncSession, now: datetime) -> int:
+    """Unused reseller codes past their sell-by (vouchers.redeem_by): expired,
+    so RADIUS refuses them too (the portal already does, from redeem_by
+    itself). One guarded UPDATE: a code a customer redeems at the same moment
+    is 'active' by then and is left alone. Never in use, so nothing to
+    disconnect."""
+    rows = (
+        await db.execute(
+            update(Voucher)
+            .where(Voucher.status == "unused", Voucher.redeem_by.isnot(None), Voucher.redeem_by < now)
+            .values(status="expired")
+            .returning(Voucher.id, Voucher.isp_operator_id, Voucher.code, Voucher.plan_id)
+        )
+    ).all()
+    for voucher_id, operator_id, code, plan_id in rows:
+        await audit.record_system_fail_open(
+            db, "voucher.expire", isp_operator_id=operator_id, target_type="voucher", target_id=voucher_id,
+            summary=f"Voucher {mask_code(code)} expired (not redeemed by its sell-by date)",
+            changes={"status": {"before": "unused", "after": "expired"}},
+            detail={"code_suffix": mask_code(code), "plan_id": plan_id, "via": "sell_by"},
+        )
+    return len(rows)
 
 
 async def _transition_and_disconnect(db: AsyncSession, voucher: Voucher, next_status: str):

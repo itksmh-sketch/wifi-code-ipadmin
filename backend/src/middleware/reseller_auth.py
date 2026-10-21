@@ -13,6 +13,14 @@ from src.utils.reseller_auth import verify_reseller_token
 security = HTTPBearer()
 
 
+def reseller_token_current(payload: dict, reseller: Reseller) -> bool:
+    """A reseller token is only valid for the reseller's current token_version.
+    Tokens minted before the claim existed carry none and are rejected (a
+    one-time re-login), as admin tokens are."""
+    claim = payload.get("tv")
+    return isinstance(claim, int) and not isinstance(claim, bool) and claim == int(reseller.token_version or 0)
+
+
 async def get_current_reseller(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
@@ -35,7 +43,7 @@ async def get_current_reseller(
         )
     )  # noqa: E712
     reseller = result.scalar_one_or_none()
-    if not reseller:
+    if not reseller or not reseller_token_current(payload, reseller):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Reseller not found or inactive")
     return reseller
 

@@ -1,6 +1,6 @@
 import uuid
 import datetime
-from sqlalchemy import CheckConstraint, Column, String, Text, Integer, Float, Boolean, DateTime, ForeignKey, BigInteger, Numeric, UniqueConstraint, Index, func, text
+from sqlalchemy import CheckConstraint, Column, Date, String, Text, Integer, Float, Boolean, DateTime, ForeignKey, BigInteger, Numeric, UniqueConstraint, Index, func, text
 from sqlalchemy.dialects.postgresql import UUID, INET, MACADDR, ENUM, JSONB
 from sqlalchemy.orm import relationship
 from src.db.base import Base
@@ -128,6 +128,12 @@ class ISPOperator(Base):
     # When jobs.hotspot_service_end disconnected the clients still online at
     # that end (its once-only mark; migration 059). Cleared on restore.
     hotspot_service_cut_off_at = Column(DateTime(timezone=True), nullable=True)
+    # Reseller defaults (migration 060). A reseller with no commission of its
+    # own earns this; codes allocated without a sell-by date get one this many
+    # days out (NULL: no sell-by).
+    reseller_commission_type = Column(String(10), nullable=False, server_default="percent")
+    reseller_commission_value = Column(Numeric(10, 2), nullable=False, server_default="0")
+    reseller_redeem_days = Column(Integer, nullable=True)
     # Captive-portal branding (all nullable; defaults applied at read time so an
     # unconfigured operator renders identically to the original hardcoded portal).
     portal_display_name = Column(Text, nullable=True)
@@ -704,6 +710,10 @@ class Voucher(Base):
     source = Column(String(16), nullable=False, server_default="manual")
     # Set when an operator confirms a print run; a later run skips these.
     printed_at = Column(DateTime(timezone=True), nullable=True)
+    # Sell-by for a code allocated to a reseller (migration 060): past it an
+    # unused code can no longer be redeemed, and the expiry job marks it
+    # expired. Not the plan's own clock, which still starts at first use.
+    redeem_by = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     plan = relationship("Plan", back_populates="vouchers")
@@ -1104,6 +1114,12 @@ class Reseller(Base):
     is_active = Column(Boolean, server_default="true", nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
+    # Both NULL: the operator's default commission applies (migration 060).
+    commission_type = Column(String(10), nullable=True)
+    commission_value = Column(Numeric(10, 2), nullable=True)
+    # Checked on every reseller request and refresh; bumped to end every
+    # session at once (disable, password change).
+    token_version = Column(Integer, nullable=False, server_default="0")
 
 
 class ResellerWallet(Base):
@@ -1148,16 +1164,86 @@ class CommissionRule(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ResellerAllocation(Base):
+    """One allocation: ``quantity`` codes of one plan handed to one reseller
+    (migration 060). The reseller owes ``unit_price_ghs`` (the plan price when
+    allocated) for each code a customer redeems."""
+    __tablename__ = "reseller_allocations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id"), nullable=False)
+    reseller_id = Column(UUID(as_uuid=True), ForeignKey("resellers.id"), nullable=False)
+    plan_id = Column(UUID(as_uuid=True), ForeignKey("plans.id"), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    unit_price_ghs = Column(Numeric(10, 2), nullable=False)
+    redeem_by = Column(DateTime(timezone=True), nullable=True)
+    created_by_admin_id = Column(UUID(as_uuid=True), ForeignKey("admin_users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class ResellerVoucherAllocation(Base):
+    """One code held by a reseller. Rows from the prepaid wallet era have no
+    allocation_id; they never earn and are not counted (migration 060)."""
     __tablename__ = "reseller_voucher_allocations"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
     reseller_id = Column(UUID(as_uuid=True), ForeignKey("resellers.id"), nullable=False)
     voucher_id = Column(UUID(as_uuid=True), ForeignKey("vouchers.id"), unique=True, nullable=False)
     allocated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Wallet-era columns, no longer written.
     sold_at = Column(DateTime(timezone=True), nullable=True)
     sold_to_phone = Column(String(64), nullable=True)
     purchase_price_ghs = Column(Numeric(10, 2), nullable=False)
+    allocation_id = Column(UUID(as_uuid=True), ForeignKey("reseller_allocations.id"), nullable=True)
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id"), nullable=False)
+    # allocated | reclaimed. A reclaimed code is disabled for good.
+    status = Column(String(10), nullable=False, server_default="allocated")
+    reclaimed_at = Column(DateTime(timezone=True), nullable=True)
+    reclaimed_by_admin_id = Column(UUID(as_uuid=True), ForeignKey("admin_users.id"), nullable=True)
+    reclaim_reason = Column(Text, nullable=True)
+
+
+class ResellerRedemption(Base):
+    """A reseller's code redeemed by a customer: what the reseller owes for it
+    and the commission earned, at the rate in force at that moment. Written by
+    the database (trigger reseller_record_redemption, or the nightly repair
+    job), never by the app, and append-only (migration 060)."""
+    __tablename__ = "reseller_redemptions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id"), nullable=False)
+    reseller_id = Column(UUID(as_uuid=True), ForeignKey("resellers.id"), nullable=False)
+    voucher_id = Column(UUID(as_uuid=True), ForeignKey("vouchers.id"), unique=True, nullable=False)
+    voucher_allocation_id = Column(UUID(as_uuid=True), ForeignKey("reseller_voucher_allocations.id"), nullable=False)
+    allocation_id = Column(UUID(as_uuid=True), ForeignKey("reseller_allocations.id"), nullable=False)
+    plan_id = Column(UUID(as_uuid=True), ForeignKey("plans.id"), nullable=False)
+    price_ghs = Column(Numeric(10, 2), nullable=False)
+    commission_type = Column(String(10), nullable=False)
+    commission_value = Column(Numeric(10, 2), nullable=False)
+    commission_ghs = Column(Numeric(10, 2), nullable=False)
+    owed_ghs = Column(Numeric(10, 2), nullable=False)
+    redeemed_at = Column(DateTime(timezone=True), nullable=False)
+    # trigger | repair (added by the nightly job; shown as such in the ledger).
+    source = Column(String(10), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ResellerAccountEntry(Base):
+    """Money between an operator and a reseller: a cash handover (payment) or
+    the correction of one (reversal). Append-only; a payment is reversed at
+    most once and a reversal never is (migration 060)."""
+    __tablename__ = "reseller_account_entries"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id"), nullable=False)
+    reseller_id = Column(UUID(as_uuid=True), ForeignKey("resellers.id"), nullable=False)
+    kind = Column(String(10), nullable=False)
+    amount_ghs = Column(Numeric(10, 2), nullable=False)
+    reverses_entry_id = Column(UUID(as_uuid=True), ForeignKey("reseller_account_entries.id"), unique=True, nullable=True)
+    received_on = Column(Date, nullable=False)
+    note = Column(Text, nullable=True)
+    recorded_by_admin_id = Column(UUID(as_uuid=True), ForeignKey("admin_users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 # ---------------------------------------------------------------------------

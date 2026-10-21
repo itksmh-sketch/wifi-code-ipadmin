@@ -173,7 +173,7 @@ async def test_staff_sample_route_per_module_is_403(client):
         ("PUT", "/api/v1/admin/branding"),
         ("PUT", "/api/v1/sms-template/voucher"),
         ("POST", "/api/v1/admin/resellers"),
-        ("POST", "/api/v1/admin/commission-rules"),
+        ("POST", "/api/v1/admin/resellers/{reseller_id}/payments"),
         ("PUT", "/api/v1/payments/{payment_id}/refund"),
         ("GET", "/api/v1/payments/export"),
         ("PUT", "/api/v1/payment-credentials/{provider}"),

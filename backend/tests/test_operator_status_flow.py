@@ -309,9 +309,14 @@ async def test_status_matrix(env, status, logins_off):
     assert bought.status_code == (404 if sells else 503), bought.text
 
     if signs_in:
-        purchase = await client.post("/reseller/vouchers/purchase", headers=bearer(reseller_tokens["access_token"]),
-                                     json={"plan_id": str(uuid.uuid4()), "quantity": 1})
-        assert purchase.status_code == (404 if sells else 503), purchase.text
+        # Reseller stock comes from the operator now: allocating is what a
+        # suspension must block (the plan id doesn't exist, so an open
+        # operator gets 404).
+        fresh_admin = (await sign_in(client, admin)).json()
+        allocated = await client.post(f"/admin/resellers/{reseller.id}/allocations",
+                                      headers=bearer(fresh_admin["access_token"]),
+                                      json={"plan_id": str(uuid.uuid4()), "quantity": 1})
+        assert allocated.status_code == (404 if sells else 403), allocated.text
 
 
 # ── 2. the transition table ───────────────────────────────────────────────

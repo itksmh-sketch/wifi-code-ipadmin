@@ -112,12 +112,14 @@ AUDITED = {
     ("POST", "/api/v1/auth/reset/verify-otp"),
     ("PUT", "/api/v1/admin/branding"),
     ("POST", "/api/v1/admin/branding/logo"),
-    ("POST", "/api/v1/admin/commission-rules"),
-    ("DELETE", "/api/v1/admin/commission-rules/{rule_id}"),
-    ("PUT", "/api/v1/admin/commission-rules/{rule_id}"),
     ("POST", "/api/v1/admin/resellers"),
     ("PUT", "/api/v1/admin/resellers/{reseller_id}"),
-    ("PUT", "/api/v1/admin/resellers/{reseller_id}/topup"),
+    # Reseller consignment (060)
+    ("PUT", "/api/v1/admin/reseller-settings"),
+    ("POST", "/api/v1/admin/resellers/{reseller_id}/allocations"),
+    ("POST", "/api/v1/admin/resellers/{reseller_id}/reclaim"),
+    ("POST", "/api/v1/admin/resellers/{reseller_id}/payments"),
+    ("POST", "/api/v1/admin/resellers/{reseller_id}/payments/{entry_id}/reversal"),
     ("PUT", "/api/v1/sms-template/voucher"),
     # P4 batch 5: platform owner
     ("PUT", "/api/v1/platform/applications/{application_id}/approve"),

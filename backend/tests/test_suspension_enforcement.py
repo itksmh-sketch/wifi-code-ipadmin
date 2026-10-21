@@ -66,7 +66,7 @@ MUST_BE_GATED = [
     ("POST",   f"{API}/towns/{{town_id}}/sites"),
     # Distribution channel.
     ("POST",   f"{API}/admin/resellers"),
-    ("PUT",    f"{API}/admin/resellers/{{reseller_id}}/topup"),
+    ("POST",   f"{API}/admin/resellers/{{reseller_id}}/allocations"),
     # Re-arming the till / the gateway (the shared credentials factory, once
     # per category).
     ("PUT",    f"{API}/payment-credentials/{{provider}}"),

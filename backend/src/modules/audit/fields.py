@@ -80,10 +80,12 @@ VOUCHER_SMS_TEMPLATE = _fields("ISPOperator", ("voucher_sms_template",))
 
 # password_hash is secret-named: "[redacted]" when a new password was set,
 # absent otherwise. The phone shows only as changed.
-RESELLER = _fields("Reseller", ("name", "email", "phone", "role", "town_id", "site_id", "is_active", "password_hash"),
+RESELLER = _fields("Reseller", ("name", "email", "phone", "role", "town_id", "site_id", "is_active", "password_hash",
+                                 "commission_type", "commission_value"),
                    hidden=("phone",))
 
-COMMISSION_RULE = _fields("CommissionRule", ("reseller_id", "plan_id", "type", "value", "is_active"))
+RESELLER_DEFAULTS = _fields("ISPOperator", ("reseller_commission_type", "reseller_commission_value",
+                                            "reseller_redeem_days"))
 
 # Platform side. An operator's contact phone is a real number: a row says
 # only that it changed.
@@ -110,7 +112,7 @@ NOTIFICATION_TEMPLATE = _fields("PlatformNotificationTemplate", ("subject", "bod
 PLATFORM_OWNER_PROFILE = _fields("PlatformOwner", ("name",))
 
 ALL = (PLAN, VOUCHER, TOWN, SITE, ROUTER, ROUTER_REMOVAL, ROUTER_WIREGUARD, ROUTER_CREDENTIAL, CONFIG_TEMPLATE,
-       BRANDING, VOUCHER_SMS_TEMPLATE, RESELLER, COMMISSION_RULE, OPERATOR_PROFILE, OPERATOR_CREATE,
+       BRANDING, VOUCHER_SMS_TEMPLATE, RESELLER, RESELLER_DEFAULTS, OPERATOR_PROFILE, OPERATOR_CREATE,
        OPERATOR_STATUS, OPERATOR_BILLING, PROVIDER_CATALOG, NOTIFICATION_TEMPLATE, PLATFORM_OWNER_PROFILE)
 
 

@@ -27,8 +27,9 @@ AUDITED_JOBS = {
     # payment.status_change, in the payment service every trigger shares.
     "process_webhook_event": ("src.modules.payments.service",),
     "run_payment_reconciliation": ("src.jobs.payment_reconciliation", "src.modules.payments.service"),
-    # voucher.expire / voucher.exhaust.
-    "expire_vouchers": ("src.modules.vouchers.engine",),
+    # voucher.expire / voucher.exhaust; voucher.expire for an unredeemed code
+    # past its sell-by.
+    "expire_vouchers": ("src.modules.vouchers.engine", "src.jobs.voucher_expiry"),
     # invoice.issue.
     "generate_monthly_invoices": ("src.modules.billing.service",),
     # operator.trial_end, invoice.issue.
@@ -46,6 +47,8 @@ AUDITED_JOBS = {
     "purge_audit_log": ("src.jobs.audit_retention",),
     # operator.hotspot_service_ended, once per wind-down, with the counts.
     "end_hotspot_service": ("src.jobs.hotspot_service_end",),
+    # reseller.redemption_repaired, with each row it adds.
+    "repair_reseller_redemptions": ("src.jobs.reseller_redemption_repair",),
 }
 
 EXEMPT_JOBS = {

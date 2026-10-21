@@ -1129,37 +1129,31 @@ async def test_reseller_rows(env, tenant):
     assert (await c.put(f"/admin/resellers/{rid}", headers=h, json={"name": "Kofi A"})).status_code == 200
     assert (await c.put(f"/admin/resellers/{rid}", headers=h, json={"name": "Kofi A"})).status_code == 200  # no-op
     assert (await c.put(f"/admin/resellers/{rid}", headers=h, json={"password": "NewResPass-88y", "phone": "0201112224"})).status_code == 200
-    assert (await c.put(f"/admin/resellers/{rid}/topup", headers=h, json={"amount_ghs": 25, "description": "float"})).status_code == 200
+    assert (await c.put(f"/admin/resellers/{rid}", headers=h, json={"commission_type": "fixed", "commission_value": "0.50"})).status_code == 200
 
     [created] = await rows(tenant["operator"], "reseller.create", rid)
     assert created.changes["email"] == {"before": None, "after": email} and created.changes["password_hash"] == REDACTED
     assert created.changes["phone"] == "changed"
-    renamed, secured = await rows(tenant["operator"], "reseller.update", rid)
+    renamed, secured, commission = await rows(tenant["operator"], "reseller.update", rid)
     assert renamed.changes == {"name": {"before": "Kofi", "after": "Kofi A"}}, "no password, no phone: not touched"
     assert secured.changes == {"password_hash": REDACTED, "phone": "changed"}
-    [topup] = await rows(tenant["operator"], "reseller.topup", rid)
-    assert (topup.detail["amount_ghs"], topup.detail["balance_after_ghs"], topup.detail["description"]) == ("25.00", "25.00", "float")
-    for row in (created, renamed, secured, topup):
+    assert secured.detail == {"sessions_ended": True}
+    assert commission.changes == {"commission_type": {"before": None, "after": "fixed"},
+                                  "commission_value": {"before": None, "after": "0.50"}}
+    for row in (created, renamed, secured, commission):
         assert_actor(row, tenant)
         assert_none_of(row, RESELLER_PASSWORD, "NewResPass-88y", *RESELLER_PHONE_FORMS, "0201112224")
 
 
-async def test_commission_rule_rows(env, tenant):
+async def test_reseller_defaults_rows(env, tenant):
     c, h = env["client"], tenant["h"]
-    plan = await new_plan(env, tenant, price_ghs=float(1 + uuid.uuid4().int % 900))
-    rule_id = (await c.post("/admin/commission-rules", headers=h, json={"plan_id": plan["id"], "type": "percentage", "value": 10})).json()["id"]
-    assert (await c.put(f"/admin/commission-rules/{rule_id}", headers=h, json={"value": 12})).status_code == 200
-    assert (await c.put(f"/admin/commission-rules/{rule_id}", headers=h, json={"value": "12"})).status_code == 200  # same value
-    assert (await c.delete(f"/admin/commission-rules/{rule_id}", headers=h)).status_code == 200
-    assert (await c.delete(f"/admin/commission-rules/{rule_id}", headers=h)).status_code == 200  # already gone: no row
-    created, = await rows(tenant["operator"], "commission_rule.create", rule_id)
-    assert created.changes["plan_id"] == {"before": None, "after": plan["id"]} and created.changes["value"]["after"] == "10.0000"
-    [updated] = await rows(tenant["operator"], "commission_rule.update", rule_id)
-    assert updated.changes == {"value": {"before": "10.0000", "after": "12.0000"}}
-    [deleted] = await rows(tenant["operator"], "commission_rule.delete", rule_id)
-    assert deleted.changes["value"] == {"before": "12.0000", "after": None}
-    for row in (created, updated, deleted):
-        assert_actor(row, tenant)
+    body = {"commission_type": "percent", "commission_value": 7.5, "redeem_days": 30}
+    assert (await c.put("/admin/reseller-settings", headers=h, json=body)).status_code == 200
+    assert (await c.put("/admin/reseller-settings", headers=h, json=body)).status_code == 200  # same values: no row
+    [row] = await rows(tenant["operator"], "reseller.defaults_update", tenant["operator"].id)
+    assert row.changes == {"reseller_commission_value": {"before": "0.00", "after": "7.50"},
+                           "reseller_redeem_days": {"before": None, "after": 30}}
+    assert_actor(row, tenant)
 
 
 async def test_branding_rows_and_logo_fails_closed(env, tenant, monkeypatch, tmp_path):
@@ -1384,22 +1378,6 @@ async def test_reseller_cannot_point_at_another_operators_town_or_site(env, tena
     assert (await c.put(f"/admin/resellers/{rid}", headers=h, json={"site_id": None})).status_code == 200
 
 
-async def test_commission_rule_cannot_point_at_another_operators_plan_or_reseller(env, tenant, other):
-    from src.db.models import CommissionRule
-
-    c, h = env["client"], tenant["h"]
-    for field, label in (("plan_id", "Plan"), ("reseller_id", "Reseller")):
-        res = await c.post("/admin/commission-rules", headers=h, json={field: other[field[:-3]], "type": "percentage", "value": 50})
-        missing = await c.post("/admin/commission-rules", headers=h, json={field: str(uuid.uuid4()), "type": "percentage", "value": 50})
-        await _same_404(res, missing, label)
-    rule_id = (await c.post("/admin/commission-rules", headers=h, json={"type": "percentage", "value": 5})).json()["id"]
-    res = await c.put(f"/admin/commission-rules/{rule_id}", headers=h, json={"value": 99, "plan_id": other["plan"]})
-    assert res.status_code == 404
-    async with async_session_factory() as db:
-        rules = (await db.execute(select(CommissionRule).where(CommissionRule.isp_operator_id == tenant["operator"].id))).scalars().all()
-    assert [(str(r.id), r.plan_id, float(r.value)) for r in rules] == [(rule_id, None, 5.0)]
-
-
 async def test_provision_cannot_use_another_operators_template(env, tenant, other, fake_router_side):
     from src.db.models import ConfigTemplate, RouterProvisionLog
     from src.modules.mikrotik.template_engine import ConfigTemplateService, TemplateValidationError
@@ -1445,21 +1423,6 @@ async def test_disconnect_cannot_name_another_operators_voucher(env, tenant, oth
     assert calls == [], "the router was never contacted"
     async with async_session_factory() as db:
         assert (await db.execute(select(CoAEvent).where(CoAEvent.router_id == uuid.UUID(rid)))).scalars().all() == []
-
-
-async def test_topup_refuses_zero_and_negative_amounts(env, tenant):
-    from src.db.models import ResellerWallet
-
-    c, h = env["client"], tenant["h"]
-    rid = (await c.post("/admin/resellers", headers=h, json={"name": "T", "email": f"t-{uuid.uuid4().hex[:8]}@throwaway.test",
-                                                            "password": "T-Res-Pass-1"})).json()["id"]
-    for amount in (0, -5, "-0.01", "NaN", "Infinity"):
-        res = await c.put(f"/admin/resellers/{rid}/topup", headers=h, json={"amount_ghs": amount})
-        assert res.status_code == 400, (amount, res.status_code, res.text)
-    async with async_session_factory() as db:
-        wallet = (await db.execute(select(ResellerWallet).where(ResellerWallet.reseller_id == uuid.UUID(rid)))).scalar_one()
-    assert float(wallet.balance_ghs) == 0.0
-    assert await rows(tenant["operator"], "reseller.topup", rid) == []
 
 
 # ── Tenant isolation on public routes: portal and payment webhooks ──────────

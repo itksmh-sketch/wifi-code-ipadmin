@@ -11,7 +11,6 @@ from src.modules.payments.types import (
     PaymentNextAction,
     PaymentStatus,
 )
-from src.modules.resellers.wallet_service import _pick_commission_rule, _RuleView
 
 
 class DummyProvider:
@@ -255,79 +254,3 @@ async def test_refresh_still_verifies_awaiting_input_tx_when_forced(monkeypatch)
 
     with pytest.raises(RuntimeError, match="verify-called"):
         await service.refresh_transaction_status(FakeDb([]), tx=tx, force=True)
-
-
-def _rule(reseller_id, plan_id, value: str, is_active: bool = True) -> _RuleView:
-    return _RuleView(
-        id=uuid.uuid4(),
-        reseller_id=reseller_id,
-        plan_id=plan_id,
-        type="percentage",
-        value=Decimal(value),
-        is_active=is_active,
-    )
-
-
-def test_commission_priority_level_1_reseller_and_plan_specific():
-    reseller_id = uuid.uuid4()
-    plan_id = uuid.uuid4()
-    rules = [
-        _rule(None, None, "1.0000"),
-        _rule(None, plan_id, "2.0000"),
-        _rule(reseller_id, None, "3.0000"),
-        _rule(reseller_id, plan_id, "4.0000"),
-    ]
-    picked = _pick_commission_rule(rules, reseller_id=reseller_id, plan_id=plan_id)
-    assert picked is not None
-    assert picked.reseller_id == reseller_id
-    assert picked.plan_id == plan_id
-    assert picked.value == Decimal("4.0000")
-
-
-def test_commission_priority_level_2_reseller_specific_plan_null():
-    reseller_id = uuid.uuid4()
-    plan_id = uuid.uuid4()
-    rules = [
-        _rule(None, None, "1.0000"),
-        _rule(None, plan_id, "2.0000"),
-        _rule(reseller_id, None, "3.0000"),
-    ]
-    picked = _pick_commission_rule(rules, reseller_id=reseller_id, plan_id=plan_id)
-    assert picked is not None
-    assert picked.reseller_id == reseller_id
-    assert picked.plan_id is None
-    assert picked.value == Decimal("3.0000")
-
-
-def test_commission_priority_level_3_plan_specific_reseller_null():
-    reseller_id = uuid.uuid4()
-    plan_id = uuid.uuid4()
-    rules = [
-        _rule(None, None, "1.0000"),
-        _rule(None, plan_id, "2.0000"),
-    ]
-    picked = _pick_commission_rule(rules, reseller_id=reseller_id, plan_id=plan_id)
-    assert picked is not None
-    assert picked.reseller_id is None
-    assert picked.plan_id == plan_id
-    assert picked.value == Decimal("2.0000")
-
-
-def test_commission_priority_level_4_global_default():
-    reseller_id = uuid.uuid4()
-    plan_id = uuid.uuid4()
-    rules = [
-        _rule(None, None, "1.0000"),
-    ]
-    picked = _pick_commission_rule(rules, reseller_id=reseller_id, plan_id=plan_id)
-    assert picked is not None
-    assert picked.reseller_id is None
-    assert picked.plan_id is None
-    assert picked.value == Decimal("1.0000")
-
-
-def test_commission_priority_level_5_no_rule_returns_none():
-    reseller_id = uuid.uuid4()
-    plan_id = uuid.uuid4()
-    picked = _pick_commission_rule([], reseller_id=reseller_id, plan_id=plan_id)
-    assert picked is None

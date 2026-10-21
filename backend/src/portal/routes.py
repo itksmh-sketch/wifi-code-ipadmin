@@ -521,6 +521,11 @@ async def _voucher_for_login(db: AsyncSession, code: str, operator_id) -> Vouche
         _refuse(DISABLED_DETAIL)
     if voucher.expires_at is not None and voucher.expires_at <= now:  # before expire_vouchers marks it
         _refuse(EXPIRED_DETAIL)
+    # A reseller code past its sell-by. RADIUS doesn't read redeem_by; it
+    # refuses once expire_vouchers has marked the code expired, seconds later.
+    # Until then this is the only way to the password, so it is enough.
+    if voucher.status == "unused" and voucher.redeem_by is not None and voucher.redeem_by <= now:
+        _refuse(EXPIRED_DETAIL)
     if plan.data_limit_mb is not None and voucher.data_used_mb >= plan.data_limit_mb:
         _refuse(USED_UP_DETAIL)
     return voucher

@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -22,19 +24,46 @@ from src.modules.payments.types import PaymentMethod, PaymentProviderName
 # setup is pending, so the target server must be seeded with the setup opt-in
 # (see src/db/seeds/seed.py), and these same values passed here:
 #   PLATFORM_OWNER_EMAIL / PLATFORM_OWNER_PASSWORD, SEED_OWNER_CHARACTER_CODE.
-# This suite only talks HTTP; it never writes to the database itself.
+# This suite talks HTTP, with two exceptions that stand in for things outside
+# the app: the SMS carrying an operator admin's onboarding code, and the
+# WireGuard sidecar that gives a router its tunnel IP. Both are written straight
+# into the target server's database (conftest has already refused a
+# DATABASE_URL that isn't a throwaway one); everything else uses the real routes.
 PLATFORM_OWNER_EMAIL = os.getenv("PLATFORM_OWNER_EMAIL", "owner@yourisp.com")
 _PLATFORM_OWNER_TOKEN: str | None = None
 # Temp passwords returned (once) by POST /platform/operators, keyed by slug.
 _TEMP_PASSWORDS: dict[str, str] = {}
+# The password each operator admin chose at onboarding, keyed by slug.
+_PASSWORDS: dict[str, str] = {}
+# Every admin this suite signs in as gets this PIN: money and credential routes
+# want a recent one (require_recent_pin), and signing in clears it.
+ADMIN_PIN = "482913"
+
+
+def _sign_in(email: str, password: str) -> str:
+    status, body = _request("POST", "/api/v1/auth/login", body={"email": email, "password": password})
+    assert status == 200, body
+    return body["access_token"]
+
+
+def _elevate(token: str, password: str) -> str:
+    """Enter the PIN (setting it first if the account has none), so the token
+    passes require_recent_pin for the next 15 minutes."""
+    status, body = _request("POST", "/api/v1/auth/me/pin/verify", token=token, body={"pin": ADMIN_PIN})
+    if status != 200:
+        status, body = _request("POST", "/api/v1/auth/me/pin", token=token, body={
+            "current_password": password, "new_pin": ADMIN_PIN, "confirm_pin": ADMIN_PIN,
+        })
+        assert status == 200, body
+        status, body = _request("POST", "/api/v1/auth/me/pin/verify", token=token, body={"pin": ADMIN_PIN})
+    assert status == 200, body
+    return token
 
 
 def _login_admin(email: str | None = None, password: str | None = None) -> str:
     if email is None:
         email, password = ADMIN_EMAIL, env_password("ADMIN_PASSWORD")
-    status, body = _request("POST", "/api/v1/auth/login", body={"email": email, "password": password})
-    assert status == 200, body
-    return body["access_token"]
+    return _elevate(_sign_in(email, password), password)
 
 
 def _login_platform_owner() -> str:
@@ -82,12 +111,83 @@ def _unique_slug(prefix: str) -> str:
     return f"{prefix}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
 
 
+def _in_target_db(work):
+    """Run ``await work(db)`` in a session on the target server's database and
+    return its result. Its own event loop, and the pool is disposed inside it:
+    pooled connections can't outlive the loop they were opened on."""
+    from src.db.base import async_session_factory, engine
+
+    async def run():
+        try:
+            async with async_session_factory() as db:
+                result = await work(db)
+                await db.commit()
+                return result
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(run())
+
+
+def _plant_onboarding_code(admin_id: str, phone: str) -> str:
+    """The code the onboarding SMS would carry, issued by the app's own OTP
+    service and returned, as the admin's phone would show it."""
+    from src.modules.admin_accounts import otp as otp_service
+
+    async def issue(db):
+        _, code = await otp_service.issue_code(db, admin_user_id=uuid.UUID(admin_id), purpose="onboarding", phone=phone)
+        return code
+
+    return _in_target_db(issue)
+
+
+def _give_tunnel_ip(router_id: str) -> str:
+    """What WireGuard setup would do: a tunnel IP for the router. RADIUS (and
+    the accounting route) find a router by it, never by its ip_address."""
+    from sqlalchemy import update
+
+    from src.db.models import Router
+
+    seed = uuid.uuid4().bytes
+    tunnel_ip = f"10.103.{seed[0]}.{max(1, seed[1])}"
+
+    async def assign(db):
+        await db.execute(update(Router).where(Router.id == uuid.UUID(router_id)).values(wg_tunnel_ip=tunnel_ip))
+
+    _in_target_db(assign)
+    return tunnel_ip
+
+
+def _token_subject(token: str) -> str:
+    payload = token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["sub"]
+
+
+def _onboard(slug: str) -> None:
+    """Take a new operator admin from its temp password through onboarding:
+    verify the phone with the code, choose a password and security question."""
+    email = f"admin-{slug}@example.com"
+    token = _sign_in(email, _TEMP_PASSWORDS[slug])
+    status, setup = _request("GET", "/api/v1/auth/onboarding/status", token=token)
+    assert status == 200 and setup["must_complete_onboarding"], setup
+    code = _plant_onboarding_code(_token_subject(token), "233244000001")
+    status, body = _request("POST", "/api/v1/auth/onboarding/otp/verify", token=token, body={"code": code})
+    assert status == 200, body
+    password = f"Tw-{uuid.uuid4().hex[:10]}-9x"
+    status, body = _request("POST", "/api/v1/auth/onboarding/password", token=token, body={
+        "new_password": password, "confirm_password": password,
+        "security_question": setup["security_questions"][0]["key"], "security_answer": "throwaway answer",
+    })
+    assert status == 200, body
+    _PASSWORDS[slug] = password
+
+
 def _login_operator_admin(slug: str) -> str:
-    # NOTE: a freshly created admin is on a temp password and must complete
-    # onboarding (SMS OTP) before the admin API serves it; these HTTP-only tests
-    # have no way to read the OTP, so admin API calls made with this token get
-    # 403 X-Onboarding-Required until the suite gains an onboarding fixture.
-    return _login_admin(email=f"admin-{slug}@example.com", password=_TEMP_PASSWORDS[slug])
+    """A signed-in, onboarded, PIN-elevated session for the operator's first
+    admin, onboarding it on first use."""
+    if slug not in _PASSWORDS:
+        _onboard(slug)
+    return _login_admin(email=f"admin-{slug}@example.com", password=_PASSWORDS[slug])
 
 
 def _create_operator_pair(prefix: str = "phase1") -> tuple[dict, dict, str, str]:
@@ -131,6 +231,7 @@ def _create_network(admin_token: str, slug: str) -> dict:
         },
     )
     assert status == 201, router
+    router["wg_tunnel_ip"] = _give_tunnel_ip(router["id"])
 
     status, plan = _request(
         "POST",
@@ -173,7 +274,8 @@ def _start_radius_session(voucher: dict, router: dict, session_id: str):
             "acct_status_type": "Start",
             "username": voucher["username"],
             "acct_session_id": session_id,
-            "nas_ip_address": router["ip_address"],
+            # The VPN-only platform keys a router on its tunnel IP.
+            "nas_ip_address": router["wg_tunnel_ip"],
             "nas_identifier": router["nas_identifier"],
             "calling_station_id": "AA:BB:CC:DD:EE:01",
             "framed_ip_address": "192.168.88.10",
@@ -449,20 +551,26 @@ def test_sessions_are_isolated_by_operator_id():
     assert status == 404
 
 
-def test_operator_reseller_cannot_buy_another_operators_plan():
+def test_operator_cannot_allocate_another_operators_plan_or_to_their_reseller():
     _, _, admin_a, admin_b = _create_operator_pair("phase1-reseller")
     network_a = _create_network(admin_a, "phase1-reseller-a")
     network_b = _create_network(admin_b, "phase1-reseller-b")
-    reseller = _create_reseller(admin_a, network_a, "phase1-reseller-a")
-    reseller_token = _login_reseller(reseller["email"])
+    reseller_a = _create_reseller(admin_a, network_a, "phase1-reseller-a")
 
     status, _ = _request(
         "POST",
-        "/api/v1/reseller/vouchers/purchase",
-        token=reseller_token,
+        f"/api/v1/admin/resellers/{reseller_a['id']}/allocations",
+        token=admin_a,
         body={"plan_id": network_b["plan"]["id"], "quantity": 1},
     )
-    assert status in (403, 404)
+    assert status == 404
+    status, _ = _request(
+        "POST",
+        f"/api/v1/admin/resellers/{reseller_a['id']}/allocations",
+        token=admin_b,
+        body={"plan_id": network_b["plan"]["id"], "quantity": 1},
+    )
+    assert status == 404
 
 
 def test_radius_accounting_rejects_cross_operator_voucher_router_pair():
@@ -480,6 +588,13 @@ def test_radius_accounting_rejects_cross_operator_voucher_router_pair():
     status, sessions_a = _request("GET", "/api/v1/sessions", token=admin_a)
     assert status == 200, sessions_a
     assert voucher_a["id"] not in {row["voucher_id"] for row in sessions_a["sessions"]}
+
+    # Control: the same start on its own operator's router is recorded, so the
+    # refusal above is the cross-operator check, not a start that never lands.
+    _start_radius_session(voucher_a, network_a["router"], f"phase1-own-{uuid.uuid4().hex}")
+    status, sessions_a = _request("GET", "/api/v1/sessions", token=admin_a)
+    assert status == 200, sessions_a
+    assert voucher_a["id"] in {row["voucher_id"] for row in sessions_a["sessions"]}
 
 
 def test_captive_portal_gateway_only_returns_operator_plans():
