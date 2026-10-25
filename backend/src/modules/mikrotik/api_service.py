@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -37,6 +38,12 @@ logger = structlog.get_logger(__name__)
 HOTSPOT_COOKIE_LIFETIME = "1m"
 HOTSPOT_PROFILE_NAME = "hsprof1"
 
+# A connect that times out is tried once more after this pause. The tunnel to
+# some routers drops packets for a moment now and then, and a connect that
+# timed out sent the router nothing, so trying again is safe. Only the connect
+# is retried, never a command.
+CONNECT_RETRY_DELAY = 2
+
 
 class RouterCredentialsMissingError(Exception):
     pass
@@ -48,6 +55,18 @@ class MikroTikOperationError(Exception):
         self.message = message
         self.commands = commands or []
         self.status = status
+
+
+def failed_to_connect(exc: MikroTikOperationError) -> bool:
+    """True when the router was never reached: only the connect step ran, and it
+    failed for want of an answer. A refused login reached the router, and a
+    command that failed or an operation that overran is not this either."""
+    return (
+        bool(exc.commands)
+        and all(c.get("path") == "connect" for c in exc.commands)
+        and exc.commands[-1].get("status") == "failed"
+        and exc.status != "auth_failed"
+    )
 
 
 @dataclass
@@ -418,7 +437,8 @@ class MikroTikAPIService:
                 access,
                 operation,
                 data or {},
-                timeout=timeout or self.command_timeout,
+                # Room for a retried connect, so it doesn't eat the operation's own time.
+                timeout=(timeout or self.command_timeout) + self.connection_timeout + CONNECT_RETRY_DELAY,
             )
             await self._update_router_connection_status(router_id, "online")
             return result, commands
@@ -509,23 +529,37 @@ class MikroTikAPIService:
         data: dict[str, Any],
     ) -> tuple[Any, list[dict[str, Any]]]:
         connection: MikroTikConnection | None = None
-        connect_entry = {
-            "path": "connect",
-            "command": "open",
-            "params": {"host": access.host, "port": access.api_port, "username": access.api_username, "use_ssl": access.use_ssl},
-            "status": "running",
-            "started_at": _utcnow().isoformat(),
-        }
-        commands = [connect_entry]
+        commands: list[dict[str, Any]] = []
         try:
-            connection = self.connect(
-                router_id=access.router_id,
-                host=access.host,
-                port=access.api_port,
-                username=access.api_username,
-                password=access.api_password,
-                use_ssl=access.use_ssl,
-            )
+            for attempt in (1, 2):
+                connect_entry = {
+                    "path": "connect",
+                    "command": "open",
+                    "params": {"host": access.host, "port": access.api_port, "username": access.api_username, "use_ssl": access.use_ssl},
+                    "status": "running",
+                    "started_at": _utcnow().isoformat(),
+                }
+                if attempt == 2:
+                    connect_entry["attempt"] = 2
+                commands.append(connect_entry)
+                try:
+                    connection = self.connect(
+                        router_id=access.router_id,
+                        host=access.host,
+                        port=access.api_port,
+                        username=access.api_username,
+                        password=access.api_password,
+                        use_ssl=access.use_ssl,
+                    )
+                    break
+                except (RouterOsApiError, ConnectionError, OSError) as exc:
+                    error = _normalize_error(exc)
+                    if attempt == 2 or _classify_status(error) != "timeout":
+                        raise
+                    connect_entry["status"] = "failed"
+                    connect_entry["completed_at"] = _utcnow().isoformat()
+                    connect_entry["error"] = error
+                    time.sleep(CONNECT_RETRY_DELAY)
             connect_entry["status"] = "success"
             connect_entry["completed_at"] = _utcnow().isoformat()
             runner = SyncCommandRunner(connection.api, commands)

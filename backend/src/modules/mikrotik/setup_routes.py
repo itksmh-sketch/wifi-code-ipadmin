@@ -366,14 +366,25 @@ async def apply_nat(router_id: uuid.UUID, body: NatApplyRequest, db: AsyncSessio
         """NAT is the final wizard step, so we also wire the captive-portal
         redirect here: once the router has internet (NAT masquerade), it can fetch
         the platform login page. Failures surface as a NAT-section error so the
-        operator knows the portal didn't get configured."""
+        operator knows the portal didn't get configured.
+
+        The router clock (NTP + time zone) is set last, for the same reason. It
+        is housekeeping: NAT and the portal are already in place by then, so a
+        failure there is reported in the message and the command log instead of
+        failing the step."""
         message, commands = await setup.apply_nat(str(router_id), data)
         portal_base = get_settings().effective_portal_public_base_url
         if portal_base:
             token = create_portal_router_token(str(router_id))
             portal_message, portal_commands = await setup.apply_portal(str(router_id), portal_base, token)
-            return f"{message}; {portal_message}", commands + portal_commands
-        return f"{message}; portal redirect skipped (portal base URL not configured)", commands
+            message, commands = f"{message}; {portal_message}", commands + portal_commands
+        else:
+            message = f"{message}; portal redirect skipped (portal base URL not configured)"
+        try:
+            time_message, time_commands = await setup.apply_time(str(router_id))
+        except MikroTikOperationError as exc:
+            time_message, time_commands = f"time sync not configured ({exc.message})", exc.commands
+        return f"{message}; {time_message}", commands + time_commands
 
     return await _run_apply(
         db, router_id, tenant, "nat", "setup_nat",

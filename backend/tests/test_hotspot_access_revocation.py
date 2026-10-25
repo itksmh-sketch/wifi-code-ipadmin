@@ -447,6 +447,9 @@ class ReconcileDb:
     async def rollback(self):
         self.rollbacks += 1
 
+    async def refresh(self, obj):
+        pass
+
     async def __aenter__(self):
         return self
 

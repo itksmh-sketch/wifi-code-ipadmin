@@ -34,6 +34,11 @@ WG_INTERFACE_PREFIXES = ("wg", "wireguard")
 
 ALLOWED_PREFIXES = (22, 23, 24, 25, 26, 27, 28)
 LEASE_TIMES = {"1h": "01:00:00", "4h": "04:00:00", "8h": "08:00:00", "24h": "1d"}
+# Router clock: NTP over the router's own internet link, Ghana time (UTC+0, no
+# DST). A hand-set clock drifts and makes router logs impossible to line up
+# with the platform's.
+NTP_SERVERS = "0.pool.ntp.org,1.pool.ntp.org"
+TIME_ZONE = "Africa/Accra"
 
 
 class SetupValidationError(Exception):
@@ -526,6 +531,15 @@ def _op_apply_nat(runner: SyncCommandRunner, data: dict[str, Any]) -> str:
     return "NAT & firewall configured"
 
 
+def _op_apply_time(runner: SyncCommandRunner, _: dict[str, Any]) -> str:
+    """Turn on the NTP client and set the time zone. RouterOS 7 syntax, which
+    every router has: the WireGuard tunnel needs it. Both are singletons, so a
+    re-run just sets the same values again."""
+    runner.execute("/system/clock", "set", params={"time-zone-autodetect": "no", "time-zone-name": TIME_ZONE})
+    runner.execute("/system/ntp/client", "set", params={"enabled": "yes", "servers": NTP_SERVERS})
+    return "time sync configured"
+
+
 def _op_remove_duplicate_nat(runner: SyncCommandRunner, _: dict[str, Any]) -> str:
     """Remove all but the first wizard-created masquerade rule."""
     nat_rules = runner.execute("/ip/firewall/nat", "print")
@@ -629,7 +643,15 @@ def nat_terminal_commands(cfg: dict[str, Any]) -> list[str]:
         lines.append('/ip/firewall/filter/add chain=forward connection-state=invalid action=drop comment="drop-invalid"')
     if "icmp" in options:
         lines.append('/ip/firewall/filter/add chain=input protocol=icmp action=accept comment="allow-icmp"')
+    lines.extend(time_terminal_commands())
     return lines
+
+
+def time_terminal_commands() -> list[str]:
+    return [
+        f"/system/clock/set time-zone-autodetect=no time-zone-name={TIME_ZONE}",
+        f"/system/ntp/client/set enabled=yes servers={NTP_SERVERS}",
+    ]
 
 
 # ─── Service facade ─────────────────────────────────────────────────────────
@@ -674,6 +696,9 @@ class RouterSetupService:
 
     async def remove_duplicate_nat(self, router_id: str):
         return await self.apply(router_id, _op_remove_duplicate_nat, {})
+
+    async def apply_time(self, router_id: str):
+        return await self.apply(router_id, _op_apply_time, {})
 
     async def apply_portal(self, router_id: str, portal_base_url: str, rt_token: str | None = None):
         """Configure the captive-portal redirect: profile login-by, walled-garden

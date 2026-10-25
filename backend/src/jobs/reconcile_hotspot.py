@@ -30,6 +30,8 @@ reaches, so routers that were offline when the policy changed pick it up as
 soon as they're back.
 
 Only routers that are reachable and have stored API credentials are checked.
+A router the job cannot reach is recorded on its provision log once it has
+failed ``UNREACHABLE_AFTER`` runs in a row, and again when it comes back.
 """
 from __future__ import annotations
 
@@ -48,7 +50,7 @@ from src.db.models import ISPOperator, Router, RouterCredential, RouterProvision
 from src.modules import audit
 from src.modules.audit import stored_text
 from src.modules.mikrotik.access_revocation import router_is_reachable
-from src.modules.mikrotik.api_service import MikroTikAPIService
+from src.modules.mikrotik.api_service import MikroTikAPIService, MikroTikOperationError, failed_to_connect
 from src.modules.platform.operator_status import hotspot_service_ended
 
 logger = structlog.get_logger(__name__)
@@ -63,6 +65,19 @@ PHANTOM_GRACE = timedelta(minutes=5)
 KICK_UNTRACKED = False
 
 VALID_VOUCHER_STATUSES = {"unused", "active"}
+
+# A router the job can't reach is recorded once it has failed this many runs
+# in a row (5 minutes apart), not on every run: the tunnel to some routers
+# drops or turns lossy for a few minutes now and then, and a row per blip
+# buried the real failures. "Can't reach" is a connect that failed or anything
+# that timed out (on a lossy link the connect gets through and a command then
+# stalls); a refused login or a command the router rejected is not, and is
+# recorded every time. The streak is counted in Redis; one left untouched this long (the
+# job stopped running) starts over. Without Redis (a direct call, no arq ctx)
+# every failure is recorded, as before.
+UNREACHABLE_AFTER = 3
+UNREACHABLE_STREAK_TTL = 3600
+UNREACHABLE_TRIGGER = "reconcile_hotspot:unreachable"
 
 _UPTIME_PART = re.compile(r"(\d+)([wdhms])")
 _UPTIME_SECONDS = {"w": 604800, "d": 86400, "h": 3600, "m": 60, "s": 1}
@@ -149,25 +164,99 @@ def plan_reconciliation(
 COOKIE_POLICY_TRIGGER = "reconcile_hotspot:cookie_policy"
 
 
-async def _enforce_cookie_policy(db: AsyncSession, service: MikroTikAPIService, router: Router, stats: dict) -> None:
+def _unreachable(exc: Exception) -> bool:
+    return isinstance(exc, MikroTikOperationError) and (failed_to_connect(exc) or exc.status == "timeout")
+
+
+def _streak_key(router_id: str) -> str:
+    return f"reconcile_hotspot:unreachable:{router_id}"
+
+
+async def _bump_unreachable_streak(redis, router_id: str) -> int | None:
+    """This router's count of consecutive unreachable runs, including this one;
+    None when it can't be counted (no Redis, or Redis failing)."""
+    if redis is None:
+        return None
+    try:
+        count = await redis.incr(_streak_key(router_id))
+        await redis.expire(_streak_key(router_id), UNREACHABLE_STREAK_TTL)
+        return int(count)
+    except Exception as exc:
+        logger.warning("reconcile_unreachable_streak_unavailable", router_id=router_id, error=str(exc))
+        return None
+
+
+async def _end_unreachable_streak(redis, router_id: str) -> int:
+    """Clear the streak after a run that reached the router; returns how long it was."""
+    if redis is None:
+        return 0
+    try:
+        count = await redis.get(_streak_key(router_id))
+        if count is not None:
+            await redis.delete(_streak_key(router_id))
+        return int(count or 0)
+    except Exception as exc:
+        logger.warning("reconcile_unreachable_streak_unavailable", router_id=router_id, error=str(exc))
+        return 0
+
+
+async def _record_reachability(db: AsyncSession, router: Router, status: str, event: dict, error: str | None, started: datetime) -> None:
+    # The provision-log list shows commands, not error_message, so the event
+    # goes in both.
+    db.add(RouterProvisionLog(
+        router_id=router.id, triggered_by=UNREACHABLE_TRIGGER, action="update_hotspot", status=status,
+        started_at=started, completed_at=datetime.now(timezone.utc),
+        error_message=await stored_text.router_error(db, router, error),
+        commands_executed=await stored_text.router_commands(db, router, [event]),
+    ))
+    await db.commit()
+
+
+async def _enforce_cookie_policy(db: AsyncSession, service: MikroTikAPIService, router: Router, stats: dict,
+                                 redis=None) -> None:
     """Push the short cookie lifetime if the router drifted from it. Any actual
     change (or failure) is recorded durably in router_provision_log — visible on
     the router's provision-log list — not just logged, because this writes live
-    config on routers nobody may be watching. A compliant router records nothing."""
+    config on routers nobody may be watching. A compliant router records nothing.
+
+    This is the run's first call to the router, so it is also where an
+    unreachable router shows: such a failure is recorded only once the streak
+    reaches UNREACHABLE_AFTER (see there), and the run that reaches it again
+    after that records the recovery."""
     router_id = str(router.id)
     started = datetime.now(timezone.utc)
     try:
         changed = await service.enforce_cookie_policy(router_id)
     except Exception as exc:
-        db.add(RouterProvisionLog(
-            router_id=router.id, triggered_by=COOKIE_POLICY_TRIGGER, action="update_hotspot", status="failed",
-            started_at=started, completed_at=datetime.now(timezone.utc),
-            error_message=await stored_text.router_error(db, router, exc),
-            commands_executed=[],
-        ))
-        await db.commit()
-        logger.warning("reconcile_cookie_policy_failed", router_id=router_id, router_name=router.name, error=str(exc))
+        if _unreachable(exc):
+            streak = await _bump_unreachable_streak(redis, router_id)
+        else:
+            # It answered, so any streak is over; this failure is its own.
+            await _end_unreachable_streak(redis, router_id)
+            streak = None
+        if streak is None:
+            db.add(RouterProvisionLog(
+                router_id=router.id, triggered_by=COOKIE_POLICY_TRIGGER, action="update_hotspot", status="failed",
+                started_at=started, completed_at=datetime.now(timezone.utc),
+                error_message=await stored_text.router_error(db, router, exc),
+                commands_executed=[],
+            ))
+            await db.commit()
+            logger.warning("reconcile_cookie_policy_failed", router_id=router_id, router_name=router.name, error=str(exc))
+        else:
+            if streak == UNREACHABLE_AFTER:
+                await _record_reachability(
+                    db, router, "failed",
+                    {"event": "unreachable", "failed_runs": streak, "error": str(exc)},
+                    f"Router unreachable: {streak} runs in a row could not reach it ({exc})", started,
+                )
+            logger.warning("reconcile_router_unreachable", router_id=router_id, router_name=router.name,
+                           failed_runs=streak, error=str(exc))
         raise
+    streak = await _end_unreachable_streak(redis, router_id)
+    if streak >= UNREACHABLE_AFTER:
+        await _record_reachability(db, router, "success", {"event": "reachable_again", "failed_runs": streak}, None, started)
+        logger.warning("reconcile_router_reachable_again", router_id=router_id, router_name=router.name, failed_runs=streak)
     if not changed:
         return
     commands = await stored_text.router_commands(db, router, [{"change": c} for c in changed])
@@ -196,10 +285,11 @@ async def _reconcile_router(
     stats: dict,
     dry_run: bool,
     voucher_overrides: dict[str, str] | None,
+    redis=None,
 ) -> ReconcilePlan:
     router_id = str(router.id)
     if not dry_run:
-        await _enforce_cookie_policy(db, service, router, stats)
+        await _enforce_cookie_policy(db, service, router, stats, redis)
 
     active = [u.model_dump() for u in await service.get_active_hotspot_users(router_id)]
     cookies = await service.get_hotspot_cookies(router_id)
@@ -312,6 +402,7 @@ async def reconcile_hotspot(ctx=None, *, dry_run: bool = False, router_ids: list
     }
     now = datetime.now(timezone.utc)
     service = MikroTikAPIService()
+    redis = (ctx or {}).get("redis")
 
     async with async_session_factory() as db:
         query = (
@@ -324,18 +415,23 @@ async def reconcile_hotspot(ctx=None, *, dry_run: bool = False, router_ids: list
         routers = (await db.execute(query)).scalars().all()
 
         for router in routers:
+            # A failed router's rollback expires every row this session holds,
+            # and reading an expired attribute outside an await raises
+            # MissingGreenlet, so each router is reloaded before it is read.
+            await db.refresh(router)
+            router_id = str(router.id)
             if not router_is_reachable(router):
                 stats["routers_skipped"] += 1
                 continue
             try:
-                await _reconcile_router(db, service, router, now, stats, dry_run, voucher_overrides)
+                await _reconcile_router(db, service, router, now, stats, dry_run, voucher_overrides, redis)
                 stats["routers_checked"] += 1
                 if not dry_run:
                     await db.commit()
             except Exception as exc:
                 await db.rollback()
                 stats["router_errors"] += 1
-                logger.warning("reconcile_router_failed", router_id=str(router.id), error=str(exc))
+                logger.warning("reconcile_router_failed", router_id=router_id, error=str(exc))
 
     logger.info("reconcile_hotspot_done", dry_run=dry_run, **stats)
     return stats
