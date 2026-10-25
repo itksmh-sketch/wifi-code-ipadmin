@@ -46,7 +46,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 TESTS = BACKEND / "tests"
 TEMPLATE = "flow_template_throwaway"
 SYSTEM_DATABASES = {"postgres", "template0", "template1"}
-PRODUCTION_HOSTS = ("34.122.11.114", "ip-admin.duckdns.org")
+PRODUCTION_HOSTS = ("35.223.244.216", "ip-admin.duckdns.org", "ip-admin-portal.duckdns.org", "34.122.11.114")
 # Unreachable on purpose: suites that don't ask for Redis must not depend on it.
 DEAD_REDIS = "redis://127.0.0.1:1"
 # Migration inputs that would seed rows a fresh environment doesn't have.

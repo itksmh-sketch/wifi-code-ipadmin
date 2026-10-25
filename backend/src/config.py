@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     # WireGuard VPN tunnel (remote router management)
     wg_server_public_key: str = ""
     wg_server_private_key: str = ""
-    wg_server_endpoint: str = "34.122.11.114:51820"  # public IP:port routers dial
+    wg_server_endpoint: str = "35.223.244.216:51820"  # public IP:port routers dial
     wg_tunnel_network: str = "10.100.0.0/24"          # private network for tunnel IPs
     wg_server_tunnel_ip: str = "10.100.0.1"           # server's tunnel IP (.1)
     wg_interface: str = "wg0"

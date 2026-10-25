@@ -38,7 +38,7 @@ _BASE_URL_ENV = "TEST_BASE_URL"
 _DEFAULT_BASE_URL = "http://localhost:8000"
 
 # Substrings that must never appear in the target URL.
-_PRODUCTION_HOSTS = ("34.122.11.114", "ip-admin.duckdns.org")
+_PRODUCTION_HOSTS = ("35.223.244.216", "ip-admin.duckdns.org", "ip-admin-portal.duckdns.org", "34.122.11.114")
 
 # The target must look like a local / disposable / CI host. localhost is allowed
 # here on purpose — it is NOT a sufficient guard on its own (that is exactly how

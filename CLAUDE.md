@@ -8,8 +8,11 @@ mobile-money/card payments.
 
 ## Running environment / safety
 
-- This repo may be operated on the **production VM** (`hotspot-server`, GCP `34.122.11.114`).
+- This repo may be operated on the **production VM** (`hotspot-server`, GCP static IP `35.223.244.216`;
+  `ip-admin.duckdns.org` is the HTTPS app, `ip-admin-portal.duckdns.org` the HTTP-only captive portal).
   It holds live operator data, secrets, and a production Postgres DB.
+- Public HTTP/HTTPS is terminated by **host nginx** (not a compose service). Reference copies
+  of its sites are in `scripts/nginx/`; edit the host file (`nginx -t`, reload), then the copy.
 - **Never** edit, commit, or print the contents of `.env`. It is environment-specific and is
   never committed. Each environment maintains its own.
 - **Never** touch encryption keys or secrets: `ENCRYPTION_KEY`, `PORTAL_TOKEN_SECRET`, the
@@ -89,7 +92,8 @@ cd backend
 ALLOW_INTEGRATION_TESTS=1 TEST_BASE_URL=http://<throwaway-host>:PORT python -m pytest tests/ -v
 ```
 - **On this box, `localhost:8000` IS production.** Never point `TEST_BASE_URL` at it (or at
-  `34.122.11.114` / `ip-admin.duckdns.org`) — only at a disposable/CI database.
+  `35.223.244.216` / `ip-admin.duckdns.org` / `ip-admin-portal.duckdns.org`) — only at a
+  disposable/CI database.
 - `tests/conftest.py` enforces this: without `ALLOW_INTEGRATION_TESTS=1` **and** a
   local/throwaway `TEST_BASE_URL`, pytest hard-exits at collection (returncode 2) before any
   test runs. A run against production requires standing up a separate instance first.
