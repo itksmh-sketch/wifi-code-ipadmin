@@ -1358,6 +1358,9 @@ class OperatorBillingEvent(Base):
             "trial_started", "trial_expiry_warning", "trial_expired",
             "invoice_issued", "invoice_paid", "invoice_overdue",
             "grace_period_started", "suspended", "reactivated", "waived",
+            # Added to the database type by migration 024; without it here a
+            # loaded row raises LookupError.
+            "payment_rejected",
             name="operator_billing_event_type",
             create_type=False,
         ),

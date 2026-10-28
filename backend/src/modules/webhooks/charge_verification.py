@@ -19,6 +19,13 @@ from typing import Any, Optional
 # from a flow we initiated.
 EXPECTED_CURRENCY = "GHS"
 
+# Paystack marks every transaction with the mode it ran in: "live" or "test".
+# A test-mode charge moves no money. While the platform credential holds test
+# keys its events pass the signature check, so a test card would otherwise
+# settle a real invoice. Only "live" is accepted; a missing or unknown value is
+# refused like everything else not explicitly accepted.
+EXPECTED_DOMAIN = "live"
+
 # Above this multiple of the invoice an overpayment is still accepted — refusing
 # would leave someone who overpaid suspended — but logged loudly as a likely
 # fat-finger rather than passing silently.
@@ -27,6 +34,7 @@ OVERPAYMENT_WARN_MULTIPLE = Decimal("2")
 
 class ChargeRejection(str, Enum):
     NOT_SUCCESS = "not_success"
+    NOT_LIVE = "not_live"
     MISSING_AMOUNT = "missing_amount"
     MALFORMED_AMOUNT = "malformed_amount"
     WRONG_CURRENCY = "wrong_currency"
@@ -41,6 +49,7 @@ class ChargeVerdict:
     charged_pesewas: Optional[int] = None
     expected_pesewas: Optional[int] = None
     currency: str = ""
+    domain: str = ""
     # True when accepted for more than the invoice — worth a loud log, not a refusal.
     overpaid: bool = False
     # True when the overpayment is large enough to look like a mistake.
@@ -86,6 +95,20 @@ def verify_charge(payload: dict, *, expected_pesewas: int) -> ChargeVerdict:
 
     data = payload.get("data") or {}
 
+    domain = str(data.get("domain") or "").strip().lower()
+    if domain != EXPECTED_DOMAIN:
+        return ChargeVerdict(
+            accepted=False,
+            rejection=ChargeRejection.NOT_LIVE,
+            reason=(
+                "Charge was made in Paystack test mode, which moves no money."
+                if domain == "test"
+                else f"Charge mode is {domain or 'unset'!r}, expected {EXPECTED_DOMAIN!r}."
+            ),
+            expected_pesewas=expected_pesewas,
+            domain=domain,
+        )
+
     currency = str(data.get("currency") or "").strip().upper()
     if currency != EXPECTED_CURRENCY:
         return ChargeVerdict(
@@ -94,6 +117,7 @@ def verify_charge(payload: dict, *, expected_pesewas: int) -> ChargeVerdict:
             reason=f"Charge currency is {currency or 'unset'!r}, expected {EXPECTED_CURRENCY}.",
             expected_pesewas=expected_pesewas,
             currency=currency,
+            domain=domain,
         )
 
     if "amount" not in data or data.get("amount") is None:
@@ -103,6 +127,7 @@ def verify_charge(payload: dict, *, expected_pesewas: int) -> ChargeVerdict:
             reason="Charge carries no amount.",
             expected_pesewas=expected_pesewas,
             currency=currency,
+            domain=domain,
         )
 
     charged = _coerce_pesewas(data.get("amount"))
@@ -113,6 +138,7 @@ def verify_charge(payload: dict, *, expected_pesewas: int) -> ChargeVerdict:
             reason=f"Charge amount {data.get('amount')!r} is not a whole number of pesewas.",
             expected_pesewas=expected_pesewas,
             currency=currency,
+            domain=domain,
         )
 
     if charged < expected_pesewas:
@@ -128,6 +154,7 @@ def verify_charge(payload: dict, *, expected_pesewas: int) -> ChargeVerdict:
             charged_pesewas=charged,
             expected_pesewas=expected_pesewas,
             currency=currency,
+            domain=domain,
         )
 
     overpaid = charged > expected_pesewas
@@ -141,6 +168,7 @@ def verify_charge(payload: dict, *, expected_pesewas: int) -> ChargeVerdict:
         charged_pesewas=charged,
         expected_pesewas=expected_pesewas,
         currency=currency,
+        domain=domain,
         overpaid=overpaid,
         overpaid_suspiciously=suspicious,
     )

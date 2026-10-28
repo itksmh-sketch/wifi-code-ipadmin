@@ -39,7 +39,8 @@ if FLOW_DB:  # imports that bind the engine only happen when the guard can pass
     from src.app import app
     from src.db.base import async_session_factory
     from src.db.models import (
-        AdminOtpCode, AdminUser, AuditLog, ISPOperator, OperatorInvoice, PlatformNotificationTemplate,
+        AdminOtpCode, AdminUser, AuditLog, ISPOperator, OperatorBillingEvent, OperatorInvoice,
+        PlatformNotificationTemplate,
         PlatformOwner, Reseller, ResellerWallet, Router, Site, Town,
     )
     from src.middleware import auth as auth_middleware
@@ -634,16 +635,17 @@ async def test_b1_enforcement_suspends_only_approved_operators(env):
     assert control.name in suspended_names
 
 
-def _charge(invoice) -> bytes:
+def _charge(invoice, domain="live") -> bytes:
     pesewas = int(Decimal(invoice.amount_ghs) * 100)
-    return json.dumps({"event": "charge.success", "data": {
-        "reference": f"INV-{invoice.id}", "status": "success", "amount": pesewas, "currency": "GHS",
-        "metadata": {"invoice_id": str(invoice.id)},
-    }}).encode()
+    data = {"reference": f"INV-{invoice.id}", "status": "success", "amount": pesewas, "currency": "GHS",
+            "metadata": {"invoice_id": str(invoice.id)}}
+    if domain is not None:  # None: the field is left out
+        data["domain"] = domain
+    return json.dumps({"event": "charge.success", "data": data}).encode()
 
 
-async def pay_by_webhook(client, invoice):
-    raw = _charge(invoice)
+async def pay_by_webhook(client, invoice, domain="live"):
+    raw = _charge(invoice, domain)
     sig = hmac.new(WEBHOOK_SECRET.encode(), raw, hashlib.sha512).hexdigest()
     return await client.post("http://testserver/api/v1/webhooks/platform-billing/paystack", content=raw,
                              headers={"x-paystack-signature": sig, "content-type": "application/json"})
@@ -673,6 +675,71 @@ async def test_b2_control_billing_suspension_is_still_lifted_by_payment(env):
     op = await fresh(ISPOperator, operator.id)
     assert (op.status, op.billing_status, op.suspension_reason) == ("approved", "active", None)
     assert [n["isp_name"] for n in env["notices"] if n["kind"] == "notify_reactivated"] == [operator.name]
+
+
+@pytest.mark.parametrize("domain", ["test", None])
+async def test_b4_a_test_mode_charge_never_pays_an_invoice(env, domain):
+    """Signed with the platform key (which today is a test key), right amount,
+    right currency, right reference — but made in Paystack test mode, or with
+    no mode at all. It is refused and recorded, and nothing about the invoice
+    or the operator moves."""
+    operator = await make_operator("suspended", suspension_reason="billing")
+    invoice = await make_invoice(operator, days_late=40, status="overdue")
+    env["notices"].clear()
+
+    res = await pay_by_webhook(env["client"], invoice, domain=domain)
+    # 200, not an error: the same payload would fail the same way on every retry.
+    assert res.status_code == 200, res.text
+    assert res.json() == {"message": "Payment rejected: not_live"}
+
+    inv = await fresh(OperatorInvoice, invoice.id)
+    assert (inv.status, inv.paid_at, inv.payment_reference) == ("overdue", None, None)
+    op = await fresh(ISPOperator, operator.id)
+    assert (op.status, op.billing_status, op.suspension_reason) == ("suspended", "past_due", "billing")
+    assert env["notices"] == []
+
+    async with async_session_factory() as db:
+        events = (await db.execute(
+            select(OperatorBillingEvent).where(OperatorBillingEvent.isp_operator_id == operator.id)
+        )).scalars().all()
+        paid_rows = (await db.execute(
+            select(AuditLog).where(AuditLog.target_id == str(invoice.id), AuditLog.action == "invoice.paid")
+        )).scalars().all()
+    assert [e.event_type for e in events] == ["payment_rejected"]
+    meta = events[0].event_metadata
+    assert meta["rejection"] == "not_live"
+    assert meta["domain"] == (domain or "")
+    assert meta["invoice_id"] == str(invoice.id)
+    assert meta["payment_reference"] == f"INV-{invoice.id}"
+    assert paid_rows == []
+
+    # The refusal leaves the invoice payable: the live charge that follows settles it.
+    assert (await pay_by_webhook(env["client"], invoice)).status_code == 200
+    assert (await fresh(OperatorInvoice, invoice.id)).status == "paid"
+    op = await fresh(ISPOperator, operator.id)
+    assert (op.status, op.billing_status, op.suspension_reason) == ("approved", "active", None)
+
+
+async def test_b4_billing_event_types_match_the_database(env):
+    # A value the database has but the model lacks is written fine and then
+    # raises LookupError on every load (payment_rejected did, until this test).
+    from sqlalchemy import text
+    async with async_session_factory() as db:
+        in_db = (await db.execute(
+            text("SELECT unnest(enum_range(NULL::operator_billing_event_type))::text")
+        )).scalars().all()
+    assert set(OperatorBillingEvent.__table__.c.event_type.type.enums) == set(in_db)
+
+
+async def test_b4_a_test_mode_replay_after_payment_changes_nothing(env):
+    operator = await make_operator("approved")
+    invoice = await make_invoice(operator, days_late=0)
+    assert (await pay_by_webhook(env["client"], invoice)).status_code == 200
+    paid = await fresh(OperatorInvoice, invoice.id)
+    res = await pay_by_webhook(env["client"], invoice, domain="test")
+    assert res.json() == {"message": "Already paid"}
+    again = await fresh(OperatorInvoice, invoice.id)
+    assert (again.status, again.paid_at, again.payment_reference) == ("paid", paid.paid_at, paid.payment_reference)
 
 
 # ── 6. notices and the audit view ─────────────────────────────────────────

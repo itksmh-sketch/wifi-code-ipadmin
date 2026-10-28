@@ -161,6 +161,7 @@ async def platform_billing_webhook(request: Request, db: AsyncSession = Depends(
                 "charged_pesewas": verdict.charged_pesewas,
                 "expected_pesewas": verdict.expected_pesewas,
                 "currency": verdict.currency,
+                "domain": verdict.domain,
             },
         ))
         await db.commit()
