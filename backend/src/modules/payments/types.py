@@ -24,6 +24,13 @@ class PaymentProviderName(str, Enum):
 # state alone rather than overwriting it with the placeholder result.
 PROVIDER_UNREACHABLE_STATE = "provider_unreachable"
 
+# The failure_reason the reconciliation job writes when it gives up on a
+# payment after two hours with no verdict from the provider. Ours, never a
+# provider's text: it marks the one kind of failed payment that a success
+# confirmed later may still turn into a sale (resolve_successful_payment), and
+# that the job keeps re-checking for LATE_RECHECK_WINDOW.
+TIMEOUT_FAILURE_REASON = "timeout"
+
 
 class PaymentStatus(str, Enum):
     PENDING = "pending"

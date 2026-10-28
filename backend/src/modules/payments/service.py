@@ -15,8 +15,10 @@ from src.modules.audit.redact import mask_code
 from src.modules.payments.providers.base import PaymentProvider
 from src.modules.payments.providers.registry import build_payment_provider
 from src.modules.payments.provider_resolver import resolve_active_payment_provider
+from src.modules.payments import operator_alerts
 from src.modules.payments.types import (
     PROVIDER_UNREACHABLE_STATE,
+    TIMEOUT_FAILURE_REASON,
     PaymentMethod,
     PaymentNextAction,
     PaymentStatus,
@@ -81,6 +83,7 @@ class PaymentService:
     @staticmethod
     async def _record_status_change(
         db: AsyncSession, tx: PaymentTransaction, old_status: str, trigger_source: str, voucher: Voucher | None = None,
+        *, late: bool = False,
     ) -> None:
         """The audit row for a payment whose status moved: by the system for a
         webhook, poll or the reconciliation job, or by whoever is signed in when
@@ -95,10 +98,13 @@ class PaymentService:
             detail["failure_reason"] = tx.failure_reason
         if voucher is not None:
             detail["code_suffix"] = mask_code(voucher.code)
+        if late:
+            detail["late"] = True
         await audit.record_system_fail_open(
             db, "payment.status_change", isp_operator_id=tx.isp_operator_id, target_type="payment", target_id=tx.id,
             summary=f"Payment {tx.internal_reference} {old_status} -> {tx.status}"
-                    + (f", voucher {mask_code(voucher.code)} issued" if voucher is not None else ""),
+                    + (f", voucher {mask_code(voucher.code)} issued" if voucher is not None else "")
+                    + (" (confirmed after it timed out)" if late else ""),
             changes={"status": {"before": old_status, "after": tx.status}}, detail=detail,
         )
 
@@ -255,7 +261,11 @@ class PaymentService:
         tx: PaymentTransaction,
         force: bool = False,
     ) -> PaymentTransaction:
-        if tx.status in {PaymentStatus.SUCCESS.value, PaymentStatus.FAILED.value}:
+        if tx.status == PaymentStatus.SUCCESS.value:
+            return tx
+        # A forced re-check (an operator's Re-check, a Flutterwave webhook) may
+        # still ask about a payment the reconciliation job timed out.
+        if tx.status == PaymentStatus.FAILED.value and not (force and tx.failure_reason == TIMEOUT_FAILURE_REASON):
             return tx
         if not tx.provider_reference:
             return tx
@@ -281,6 +291,8 @@ class PaymentService:
             tx.last_status_check_at = datetime.now(timezone.utc)
             await db.commit()
             return tx
+        if tx.status == PaymentStatus.FAILED.value:
+            return await self.apply_late_result(db, tx=tx, result=result, trigger_source="poll")
         return await self.apply_provider_result(db, tx=tx, result=result, trigger_source="poll")
 
     async def apply_webhook_update(
@@ -356,6 +368,30 @@ class PaymentService:
         await db.refresh(tx)
         return tx
 
+    async def apply_late_result(self, db: AsyncSession, *, tx: PaymentTransaction, result, trigger_source: str) -> PaymentTransaction:
+        """A provider's answer about a payment the reconciliation job timed out.
+        Only a verdict changes it: a success makes it a sale, a failure puts the
+        provider's reason in place of ours, which ends the re-checks. No verdict
+        (pending, unreachable) leaves it failed and only stamps the check, so it
+        is never revived to pending and the portal never shows it as live again."""
+        tx.last_status_check_at = datetime.now(timezone.utc)
+        if result.provider_state != PROVIDER_UNREACHABLE_STATE and result.status == PaymentStatus.SUCCESS:
+            if result.provider_reference:
+                tx.provider_reference = result.provider_reference
+            tx.payment_channel = result.payment_channel or tx.payment_channel
+            if result.provider_payload is not None:
+                tx.provider_payload = result.provider_payload
+            await db.commit()
+            return await self.resolve_successful_payment(db, internal_reference=tx.internal_reference, trigger_source=trigger_source)
+        if result.provider_state != PROVIDER_UNREACHABLE_STATE and result.status == PaymentStatus.FAILED:
+            tx.failure_reason = (
+                await stored_text.operator_payment_error(db, tx.isp_operator_id, result.failure_reason)
+                if result.failure_reason else "provider_failed"
+            )
+            tx.provider_state = result.provider_state
+        await db.commit()
+        return tx
+
     async def get_transaction_by_reference(self, db: AsyncSession, internal_reference: str) -> PaymentTransaction:
         result = await db.execute(select(PaymentTransaction).where(PaymentTransaction.internal_reference == internal_reference))
         tx = result.scalar_one_or_none()
@@ -370,7 +406,7 @@ class PaymentService:
         internal_reference: str,
         trigger_source: str,
     ) -> PaymentTransaction:
-        send_sms = False
+        send_sms = late = contradicted = False
         tx_ctx = db.begin() if not db.in_transaction() else None
         if tx_ctx:
             await tx_ctx.__aenter__()
@@ -387,49 +423,29 @@ class PaymentService:
             if tx.status == PaymentStatus.SUCCESS.value:
                 return tx
 
-            if tx.status == PaymentStatus.FAILED.value:
-                return tx
-
-            plan_result = await db.execute(select(Plan).where(Plan.id == tx.plan_id, Plan.isp_operator_id == tx.isp_operator_id))
-            plan = plan_result.scalar_one_or_none()
-            if not plan:
-                raise ValueError("Plan not found for payment transaction")
-
-            voucher = Voucher(
-                isp_operator_id=tx.isp_operator_id,
-                plan_id=tx.plan_id,
-                site_id=tx.site_id,
-                code=generate_voucher_code(),
-                username=generate_voucher_username(),
-                password=generate_voucher_password(),
-                status="unused",
-                device_policy="single",
-                max_devices=1,
-                expires_at=None,
-                batch_id=f"PAY-{tx.internal_reference[:8]}",
-                # Already sold and texted to the buyer: must never be printed.
-                source="online",
-            )
-            db.add(voucher)
-            await db.flush()
-
-            tx.voucher_id = voucher.id
-            old_status = tx.status
-            tx.status = PaymentStatus.SUCCESS.value
-            tx.completed_at = datetime.now(timezone.utc)
-            tx.failure_reason = None
-            tx.next_action = PaymentNextAction.NONE.value
-            tx.provider_state = "success"
-            tx.display_message = "Payment successful."
-            self._log_status_change(tx, old_status, tx.status, trigger_source)
-            await self._record_status_change(db, tx, old_status, trigger_source, voucher=voucher)
-
-            send_sms = bool(tx.phone_number)
+            if tx.status == PaymentStatus.FAILED.value and tx.failure_reason != TIMEOUT_FAILURE_REASON:
+                # The provider, or a person, already failed it: a success now
+                # contradicts that verdict. Nothing is issued; the operator is
+                # asked to check (below, once the row lock is released).
+                contradicted = True
+            else:
+                # Failed only by our two-hour timeout: the customer was charged
+                # after we gave up, so it becomes a sale.
+                late = tx.status == PaymentStatus.FAILED.value
+                await self._issue_voucher(db, tx, trigger_source, late=late)
+                send_sms = bool(tx.phone_number)
         finally:
             if tx_ctx:
                 await tx_ctx.__aexit__(None, None, None)
 
         await db.refresh(tx)
+        if contradicted:
+            logger.warning(
+                "payment_success_after_failure internal_reference=%s failure_reason=%s trigger=%s",
+                tx.internal_reference, tx.failure_reason, trigger_source,
+            )
+            await operator_alerts.notify_success_after_failure(tx.id)
+            return tx
         if send_sms:
             # Sent by the worker, not here: the provider call used to block this
             # request (the portal's payment-status poll) for up to 10 s. Only the
@@ -440,6 +456,8 @@ class PaymentService:
                 # the paid row (the onboarding step below commits it anyway).
                 await db.commit()
             await enqueue_voucher_sms(tx.id)
+        if late:
+            await operator_alerts.notify_late_success(tx.id)
         try:
             from src.modules.onboarding import mark_checklist
             # A diagnostic payment is a test run, not a sale — the same
@@ -450,6 +468,44 @@ class PaymentService:
         except Exception:
             pass
         return tx
+
+    async def _issue_voucher(self, db: AsyncSession, tx: PaymentTransaction, trigger_source: str, *, late: bool) -> Voucher:
+        """Under the caller's row lock: the voucher a paid transaction buys, and
+        the transaction marked paid."""
+        plan_result = await db.execute(select(Plan).where(Plan.id == tx.plan_id, Plan.isp_operator_id == tx.isp_operator_id))
+        plan = plan_result.scalar_one_or_none()
+        if not plan:
+            raise ValueError("Plan not found for payment transaction")
+
+        voucher = Voucher(
+            isp_operator_id=tx.isp_operator_id,
+            plan_id=tx.plan_id,
+            site_id=tx.site_id,
+            code=generate_voucher_code(),
+            username=generate_voucher_username(),
+            password=generate_voucher_password(),
+            status="unused",
+            device_policy="single",
+            max_devices=1,
+            expires_at=None,
+            batch_id=f"PAY-{tx.internal_reference[:8]}",
+            # Already sold and texted to the buyer: must never be printed.
+            source="online",
+        )
+        db.add(voucher)
+        await db.flush()
+
+        tx.voucher_id = voucher.id
+        old_status = tx.status
+        tx.status = PaymentStatus.SUCCESS.value
+        tx.completed_at = datetime.now(timezone.utc)
+        tx.failure_reason = None
+        tx.next_action = PaymentNextAction.NONE.value
+        tx.provider_state = "success"
+        tx.display_message = "Payment successful."
+        self._log_status_change(tx, old_status, tx.status, trigger_source)
+        await self._record_status_change(db, tx, old_status, trigger_source, voucher=voucher, late=late)
+        return voucher
 
     async def provider_for_transaction(self, db: AsyncSession, tx: PaymentTransaction) -> PaymentProvider:
         provider_key, credentials = await resolve_active_payment_provider(db, tx.isp_operator_id)
