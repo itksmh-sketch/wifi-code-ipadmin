@@ -81,6 +81,21 @@
       <input id="platform_trial_days" type="number" step="1" min="1" max="365" placeholder="14" autocomplete="off">
       <p class="help">Applies to operators approved from now on. Each operator's trial end date is fixed when they are approved, so changing this never moves an existing trial.</p>
 
+      <h3 style="margin-top:24px">Captive portal: wrong voucher codes</h3>
+      <p class="help">Counted per 15 minutes. Only codes that don't exist count; a correct code never does. Changes apply within a minute.</p>
+
+      <label for="portal_login_fail_limit_mac">Per device</label>
+      <input id="portal_login_fail_limit_mac" type="number" step="1" min="1" max="10000" placeholder="5" autocomplete="off">
+      <p class="help">Wrong codes one phone or laptop may try before it has to wait. A device that doesn't send its MAC address shares one allowance per connection.</p>
+
+      <label for="portal_login_fail_limit_ip">Per hotspot connection</label>
+      <input id="portal_login_fail_limit_ip" type="number" step="1" min="1" max="10000" placeholder="30" autocomplete="off">
+      <p class="help">Wrong codes from one public IP address (everyone at a site shares one) before code logins there pause. The operator is emailed when it happens.</p>
+
+      <label for="portal_login_fail_alert_operator">Guessing alert, per operator</label>
+      <input id="portal_login_fail_alert_operator" type="number" step="1" min="1" max="10000" placeholder="50" autocomplete="off">
+      <p class="help">Wrong codes across all of one operator's hotspots that raise a "guessing suspected" alert to the operator and the platform owner. Nothing is blocked by it.</p>
+
       <div class="spacer"></div>
       <div class="actions">
         <button class="btn primary" type="submit" id="save-btn">Save changes</button>
@@ -215,7 +230,8 @@
 
 <script src="/platform/statics/setup-guard.js?v=10"></script>
 <script>
-const KEYS = ['wg_server_endpoint', 'platform_app_url', 'webhook_base_url', 'platform_support_email', 'platform_trial_days', 'platform_name'];
+const KEYS = ['wg_server_endpoint', 'platform_app_url', 'webhook_base_url', 'platform_support_email', 'platform_trial_days', 'platform_name',
+              'portal_login_fail_limit_mac', 'portal_login_fail_limit_ip', 'portal_login_fail_alert_operator'];
 
 const token = localStorage.getItem('platform_access_token');
 // Stop here when signed out: every API call below would fail and flash an

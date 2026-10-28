@@ -29,7 +29,20 @@ PLATFORM_SETTING_KEYS = {
     # The name operators see in notification emails/SMS. Unset falls back to
     # the email sender name, which is what the From: line already says.
     "platform_name": "sendgrid_from_name",
+    # Captive portal wrong-code limits per 15 minutes (src.portal.login_limits):
+    # per device (MAC), per client IP (a site's public address), and the
+    # operator-wide count that raises the "guessing suspected" alert.
+    "portal_login_fail_limit_mac": "portal_login_fail_limit_mac",
+    "portal_login_fail_limit_ip": "portal_login_fail_limit_ip",
+    "portal_login_fail_alert_operator": "portal_login_fail_alert_operator",
 }
+
+# Bounds for the three above: at least 1, and no more than a number that would
+# make the limit meaningless.
+PORTAL_LOGIN_LIMIT_KEYS = (
+    "portal_login_fail_limit_mac", "portal_login_fail_limit_ip", "portal_login_fail_alert_operator",
+)
+PORTAL_LOGIN_LIMIT_MAX = 10_000
 
 PLATFORM_NAME_MAX_LENGTH = 30
 _PLATFORM_NAME_FALLBACK = "IpAdmin"

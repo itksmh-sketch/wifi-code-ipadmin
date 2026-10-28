@@ -36,7 +36,7 @@ from src.db.models import (
 )
 from src.modules import audit
 from src.modules.audit.redact import mask_code
-from src.modules.vouchers.engine import generate_unique_codes, generate_voucher_password
+from src.modules.vouchers.engine import generate_numeric_codes, generate_unique_codes, generate_voucher_password
 
 COMMISSION_TYPES = ("percent", "fixed")
 MAX_ALLOCATION = 1000
@@ -157,14 +157,20 @@ async def allocate(
     db.add(allocation)
     await db.flush()
 
-    # A code and a username per voucher, from one pool, as generate_vouchers does.
-    strings = await generate_unique_codes(db, quantity * 2)
+    # Numeric codes (sized by the operator's live numeric codes, under an
+    # advisory lock held to commit); usernames stay the router's alphanumeric
+    # ones, never typed by anyone.
+    try:
+        codes = await generate_numeric_codes(db, operator.id, quantity)
+    except ValueError as exc:
+        _bad(str(exc), 409)
+    usernames = await generate_unique_codes(db, quantity)
     batch_id = f"RES-{str(allocation.id)[:8]}"
     vouchers = []
     for i in range(quantity):
         voucher = Voucher(
             isp_operator_id=operator.id, plan_id=plan.id, site_id=plan.site_id or reseller.site_id,
-            code=strings[2 * i], username=strings[2 * i + 1], password=generate_voucher_password(),
+            code=codes[i], username=usernames[i], password=generate_voucher_password(),
             status="unused", device_policy="single", max_devices=1,
             # The plan's clock starts at first use (Accounting-Start); the
             # sell-by is separate.

@@ -123,6 +123,10 @@
                     try {
                         if (siteId) sessionStorage.setItem("portal.site_id", siteId);
                         if (originalUrl) sessionStorage.setItem("portal.original_url", originalUrl);
+                        // success.html sends it with the bought code, so that
+                        // device's wrong-code allowance is its own, not the
+                        // no-MAC one it would share with the whole site.
+                        if (mac) sessionStorage.setItem("portal.mac", mac);
                     } catch (e) {}
 
                     loginForm.addEventListener("submit", function(event) {

@@ -27,6 +27,8 @@ from src.modules.payments.dependencies import get_payment_service
 from src.modules.payments.service import PaymentService
 from src.modules.payments.types import PaymentMethod, PaymentStatus
 from src.modules.platform.operator_status import hotspot_service_ended
+from src.modules.vouchers.engine import code_key, damm_valid, is_numeric_code_key
+from src.portal import login_limits
 from src.utils.portal_token import decode_portal_preview_token, decode_portal_router_token
 from src.schemas import (
     BrandingResponse,
@@ -479,29 +481,41 @@ EXPIRED_DETAIL = "Code has expired"
 USED_UP_DETAIL = "Code has been fully used"
 DISABLED_DETAIL = "Code has been disabled by admin"
 VOUCHER_REFUSED_DETAIL = "Access denied: voucher may be expired, exhausted, or disabled"
+# A numeric reseller code whose Damm check digit is wrong: a typo, caught
+# before any lookup, so it costs the customer none of their wrong-code allowance.
+CHECK_DIGITS_DETAIL = "That code doesn't look right. Check the digits and try again."
+
+
+class _UnknownCode(HTTPException):
+    """No such code for this operator: the one refusal the failure limits count."""
+
+    def __init__(self):
+        super().__init__(status_code=400, detail=INVALID_CODE_DETAIL)
 
 
 def _refuse(detail: str):
     raise HTTPException(status_code=400, detail=detail)
 
 
-async def _voucher_for_login(db: AsyncSession, code: str, operator_id) -> Voucher:
+async def _voucher_for_login(db: AsyncSession, key: str, operator_id) -> Voucher:
     """The voucher RADIUS would accept on a router of operator_id, else a 400
-    saying why not. The same conditions as freeradius/sql.conf
-    authorize_check_query, on the database clock, so the portal never hands
-    out a password RADIUS then rejects. tests/test_portal_authenticate_flow.py
-    runs that query on the same rows to keep the two in step."""
+    saying why not. ``key`` is the typed code through engine.code_key, matched
+    on vouchers.code_key, so dashes, spaces and case don't matter. The same
+    conditions as freeradius/sql.conf authorize_check_query, on the database
+    clock, so the portal never hands out a password RADIUS then rejects.
+    tests/test_portal_authenticate_flow.py runs that query on the same rows to
+    keep the two in step."""
     row = (
         await db.execute(
             select(Voucher, Plan, ISPOperator.hotspot_service_ends_at, func.now())
             .join(Plan, Plan.id == Voucher.plan_id)
             .join(ISPOperator, ISPOperator.id == Voucher.isp_operator_id)
             # Another operator's code is as unknown here as a mistyped one.
-            .where(Voucher.code == code, Voucher.isp_operator_id == operator_id)
+            .where(Voucher.code_key == key, Voucher.isp_operator_id == operator_id)
         )
     ).one_or_none()
     if row is None:
-        _refuse(INVALID_CODE_DETAIL)
+        raise _UnknownCode()
     voucher, plan, service_ends_at, now = row
     # Operator-wide or bad data: nothing the customer can do about it.
     if hotspot_service_ended(service_ends_at, now):
@@ -545,13 +559,27 @@ async def portal_authenticate(
     rt: str | None = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
-    if not code:
+    key = code_key(code)
+    if not key:
         raise HTTPException(status_code=400, detail="Please enter a voucher code")
+    if is_numeric_code_key(key) and not damm_valid(key):
+        raise HTTPException(status_code=400, detail=CHECK_DIGITS_DETAIL)
 
-    operator_id, _ = await _resolve_operator(db, rt, gateway)
+    operator_id, site_id = await _resolve_operator(db, rt, gateway)
 
-    code = code.strip().upper()
-    voucher = await _voucher_for_login(db, code, operator_id)
+    # Wrong-code limits (src/portal/login_limits.py): checked before the
+    # lookup, counted only when the code doesn't exist.
+    attempt = login_limits.Attempt(
+        operator_id=str(operator_id), ip=request.client.host if request.client else "",
+        mac=login_limits.normalize_mac(mac), site_id=login_limits.site_or_none(site_id),
+    )
+    limits = await login_limits.current_limits()
+    await login_limits.check(attempt, limits)
+    try:
+        voucher = await _voucher_for_login(db, key, operator_id)
+    except _UnknownCode:
+        await login_limits.record_failure(attempt, limits)
+        raise
 
     return PortalAuthenticateResponse(
         success=True,

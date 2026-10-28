@@ -1,6 +1,6 @@
 import uuid
 import datetime
-from sqlalchemy import CheckConstraint, Column, Date, String, Text, Integer, Float, Boolean, DateTime, ForeignKey, BigInteger, Numeric, UniqueConstraint, Index, func, text
+from sqlalchemy import CheckConstraint, Column, Computed, Date, String, Text, Integer, Float, Boolean, DateTime, ForeignKey, BigInteger, Numeric, UniqueConstraint, Index, func, text
 from sqlalchemy.dialects.postgresql import UUID, INET, MACADDR, ENUM, JSONB
 from sqlalchemy.orm import relationship
 from src.db.base import Base
@@ -693,6 +693,12 @@ class Voucher(Base):
     plan_id = Column(UUID(as_uuid=True), ForeignKey("plans.id"), nullable=False)
     site_id = Column(UUID(as_uuid=True), ForeignKey("sites.id"), nullable=True)
     code = Column(String(255), unique=True, nullable=False)
+    # The code as the captive portal matches it (migration 061): ASCII letters
+    # and digits only, upper-cased, so a code works with or without its dashes
+    # and in any case. Computed by Postgres from ``code``; never written here.
+    # engine.code_key() is the same expression in Python. Unique platform-wide
+    # through the ux_vouchers_code_key index.
+    code_key = Column(String(255), Computed("upper(regexp_replace(code, '[^A-Za-z0-9]', '', 'g'))", persisted=True))
     username = Column(String(255), unique=True, nullable=False)
     password = Column(Text, nullable=False)
     status = Column(ENUM("unused", "active", "exhausted", "expired", "disabled", name="voucher_status", create_type=False), nullable=False, server_default="'unused'")
@@ -1360,3 +1366,29 @@ class OperatorBillingEvent(Base):
     description = Column(Text, nullable=False)
     event_metadata = Column("metadata", JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PortalLoginFailureStat(Base):
+    """Wrong voucher codes typed at the captive portal, per operator, per UTC
+    day, per client IP (migration 062). Kept so the portal's failure limits
+    (platform settings portal_login_fail_limit_*) can be tuned from what real
+    sites do. A "window" is the limiter's fixed 15 minutes; a device is a MAC,
+    or the no-MAC bucket of that IP. Written by src.portal.login_limits only.
+    """
+    __tablename__ = "portal_login_failure_stats"
+
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id", ondelete="CASCADE"), primary_key=True)
+    day = Column(Date, primary_key=True)
+    client_ip = Column(INET, primary_key=True)
+    # The site of the router the customer came through, when the portal
+    # could tell (the signed router token); the latest one seen that day.
+    site_id = Column(UUID(as_uuid=True), ForeignKey("sites.id", ondelete="SET NULL"), nullable=True)
+    failures = Column(Integer, nullable=False, server_default="0")
+    peak_ip_window = Column(Integer, nullable=False, server_default="0")
+    peak_device_window = Column(Integer, nullable=False, server_default="0")
+    peak_operator_window = Column(Integer, nullable=False, server_default="0")
+    # How many times a window reached the limit (once per window at most).
+    device_limit_reached = Column(Integer, nullable=False, server_default="0")
+    ip_limit_reached = Column(Integer, nullable=False, server_default="0")
+    first_failure_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_failure_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

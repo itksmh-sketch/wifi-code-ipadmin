@@ -15,6 +15,7 @@ from src.modules.vouchers.engine import (
     MAX_CODE_LENGTH,
     MAX_COLLISION_ROUNDS,
     MIN_CODE_LENGTH,
+    code_key,
     generate_unique_codes,
     generate_voucher_code,
     max_codes_per_batch,
@@ -164,8 +165,8 @@ class StubDB:
         candidates = self._candidates_from(stmt)
         hits = self._policy(candidates, self.queries)
         self.taken |= hits
-        # The real query returns (code, username) pairs; a hit on either column.
-        return _Result([(h, h) for h in hits])
+        # The real query returns (code, username, code_key) rows; a hit on any column.
+        return _Result([(h, h, code_key(h)) for h in hits])
 
     @staticmethod
     def _candidates_from(stmt):

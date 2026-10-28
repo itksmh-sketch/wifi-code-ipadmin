@@ -44,6 +44,9 @@
         // to resolve the operator for VPN-only routers (no matchable ip_address).
         var rt = params.get("rt") || "";
         try { rt = rt || sessionStorage.getItem("portal.rt") || ""; } catch(e) {}
+        // Stored by login.html; /portal/authenticate counts wrong codes per device.
+        var mac = "";
+        try { mac = sessionStorage.getItem("portal.mac") || ""; } catch(e) {}
         function qs(id){ return document.getElementById(id); }
         // Plan names are operator-entered text, and this page also loads on the
         // platform's main domain: escape before it goes into innerHTML.
@@ -216,6 +219,7 @@
             fd.append("url", originalUrl);
             if(gateway) fd.append("gateway", gateway);
             if(rt) fd.append("rt", rt);
+            if(mac) fd.append("mac", mac);
             fetch("/portal/authenticate", { method:"POST", body: fd, headers: { "Accept":"application/json" } })
                 .then(function(response){
                     return response.json().catch(function(){ return {}; }).then(function(body){

@@ -1842,7 +1842,8 @@ async def get_platform_settings(
     """Return all platform-level settings as a flat key/value object.
 
     Keys: wg_server_endpoint, platform_app_url, webhook_base_url,
-    platform_support_email, platform_trial_days, platform_name. Values come
+    platform_support_email, platform_trial_days, platform_name and the three
+    portal_login_fail_* limits. Values come
     from the platform_settings table, falling back to the .env/config default.
     """
     from src.modules.platform.settings_service import get_all_settings
@@ -1857,7 +1858,8 @@ async def update_platform_settings(
 ):
     """Update one or more platform settings. Only known safe keys are allowed."""
     from src.modules.platform.settings_service import (
-        PLATFORM_NAME_MAX_LENGTH, PLATFORM_SETTING_KEYS, get_all_settings, set_setting,
+        PLATFORM_NAME_MAX_LENGTH, PLATFORM_SETTING_KEYS, PORTAL_LOGIN_LIMIT_KEYS, PORTAL_LOGIN_LIMIT_MAX,
+        get_all_settings, set_setting,
     )
     from src.modules.applications.service import TRIAL_DAYS_MAX
 
@@ -1901,8 +1903,20 @@ async def update_platform_settings(
                 detail=f"Platform name is required and must be at most {PLATFORM_NAME_MAX_LENGTH} characters.",
             )
         cleaned["platform_name"] = name
+    # The portal limiter reads these per request; a blank or a non-number
+    # would silently fall back to the config default, so both are refused.
+    for key in PORTAL_LOGIN_LIMIT_KEYS:
+        if key in cleaned:
+            raw = cleaned[key].strip()
+            if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= PORTAL_LOGIN_LIMIT_MAX:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Wrong-code limits must be whole numbers between 1 and {PORTAL_LOGIN_LIMIT_MAX}.",
+                )
+            cleaned[key] = str(int(raw))
     # None of these keys is a secret (an endpoint, URLs, the support address,
-    # the trial length and the platform name), so a row shows the values.
+    # the trial length, the platform name and the portal limits), so a row
+    # shows the values.
     before = await get_all_settings(db)
     for key, value in cleaned.items():
         await set_setting(db, key, value)

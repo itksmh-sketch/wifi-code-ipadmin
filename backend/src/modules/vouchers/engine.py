@@ -1,10 +1,11 @@
+import re
 import string
 import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, text
 from src.db.models import Voucher, Plan, Site, Session, Router
 from src.schemas import VoucherStatus, VoucherGenerate
 from src.modules import audit
@@ -94,6 +95,126 @@ def max_codes_per_batch(length: int) -> int:
     return int(len(CODE_ALPHABET) ** length * MAX_BATCH_SPACE_FRACTION)
 
 
+# ── code_key and the numeric reseller codes (migrations 061/062) ──────────
+
+_NOT_KEY = re.compile(r"[^A-Za-z0-9]")
+
+
+def code_key(text: str | None) -> str:
+    """The code as the captive portal matches it: ASCII letters and digits
+    only, upper-cased, so "abcd efgh-jklm" and "ABCDEFGHJKLM" are one code.
+    The same expression as the vouchers.code_key generated column; a test
+    runs both on the same inputs."""
+    return _NOT_KEY.sub("", text or "").upper()
+
+
+# Damm's order-10 quasigroup: one check digit that catches every single-digit
+# mistake and every swap of two neighbouring digits.
+_DAMM = (
+    (0, 3, 1, 7, 5, 9, 8, 6, 4, 2), (7, 0, 9, 2, 1, 5, 4, 8, 6, 3), (4, 2, 0, 6, 8, 7, 1, 3, 5, 9),
+    (1, 7, 5, 0, 9, 8, 3, 4, 2, 6), (6, 1, 2, 3, 0, 4, 5, 9, 7, 8), (3, 6, 7, 4, 2, 0, 9, 5, 8, 1),
+    (5, 8, 6, 9, 7, 2, 0, 1, 3, 4), (8, 9, 4, 5, 3, 6, 2, 0, 1, 7), (9, 4, 3, 8, 6, 1, 7, 2, 0, 5),
+    (2, 5, 8, 1, 4, 3, 6, 7, 9, 0),
+)
+
+
+def _damm_interim(digits: str) -> int:
+    interim = 0
+    for ch in digits:
+        interim = _DAMM[interim][ord(ch) - 48]
+    return interim
+
+
+def damm_check_digit(digits: str) -> str:
+    """The digit to append to ``digits`` (ASCII 0-9 only)."""
+    if not (digits.isascii() and digits.isdigit()):
+        raise ValueError("Damm check digit needs ASCII digits")
+    return str(_damm_interim(digits))
+
+
+def damm_valid(digits: str) -> bool:
+    """Whether ``digits`` ends in its own Damm check digit."""
+    return digits.isascii() and digits.isdigit() and _damm_interim(digits) == 0
+
+
+# Reseller codes are digits: easier to read out over the phone and to type on
+# a phone keypad. N-1 random digits and a Damm check digit. 12 digits while an
+# operator has up to 10,000 live numeric codes, one more digit per tenfold
+# after that, so a guesser who computes the check digit hits a live code with
+# probability at most 10,000 / 10^11 = 1e-7 per try, at every size. The
+# captive portal's failure limits (src.portal.login_limits) bound the tries.
+NUMERIC_CODE_MIN_LENGTH = 12
+NUMERIC_CODE_MAX_LENGTH = 16
+NUMERIC_LIVE_CODES_AT_MIN_LENGTH = 10_000
+LIVE_STATUSES = ("unused", "active")
+
+
+def numeric_code_length(live_codes: int) -> int:
+    """Digits (check digit included) for a batch, given the operator's live
+    numeric codes counting the batch itself. Raises past the 16-digit cap."""
+    length, cap = NUMERIC_CODE_MIN_LENGTH, NUMERIC_LIVE_CODES_AT_MIN_LENGTH
+    while live_codes > cap:
+        length, cap = length + 1, cap * 10
+    if length > NUMERIC_CODE_MAX_LENGTH:
+        raise ValueError(f"{live_codes} live numeric codes is past the {NUMERIC_CODE_MAX_LENGTH}-digit cap")
+    return length
+
+
+def is_numeric_code_key(key: str) -> bool:
+    """A key shaped like a numeric reseller code: 12 to 16 ASCII digits. Only
+    numeric codes are all digits (generate_unique_codes never makes one)."""
+    return key.isascii() and key.isdigit() and NUMERIC_CODE_MIN_LENGTH <= len(key) <= NUMERIC_CODE_MAX_LENGTH
+
+
+def generate_numeric_code(length: int) -> str:
+    """``length`` digits, the last a Damm check digit, in dash-separated groups
+    of 4 like every other code. Leading zeros are fine: it is text."""
+    if not NUMERIC_CODE_MIN_LENGTH <= length <= NUMERIC_CODE_MAX_LENGTH:
+        raise ValueError(f"Numeric code length must be {NUMERIC_CODE_MIN_LENGTH} to {NUMERIC_CODE_MAX_LENGTH}")
+    body = "".join(str(secrets.randbelow(10)) for _ in range(length - 1))
+    digits = body + damm_check_digit(body)
+    return "-".join(digits[i:i + CODE_GROUP_SIZE] for i in range(0, length, CODE_GROUP_SIZE))
+
+
+async def live_numeric_codes(db: AsyncSession, operator_id: uuid.UUID) -> int:
+    """The operator's numeric codes still able to log in (unused or active)."""
+    return (
+        await db.execute(
+            select(func.count()).select_from(Voucher).where(
+                Voucher.isp_operator_id == operator_id,
+                Voucher.status.in_(LIVE_STATUSES),
+                Voucher.code_key.op("~")("^[0-9]+$"),
+            )
+        )
+    ).scalar_one()
+
+
+async def generate_numeric_codes(db: AsyncSession, operator_id: uuid.UUID, count: int) -> List[str]:
+    """``count`` new numeric codes for the operator, sized by numeric_code_length.
+
+    Takes a transaction-scoped advisory lock on the operator first, so two
+    allocations can't both count 9,999 live codes and both choose 12 digits;
+    the second waits for the first to commit. The caller's transaction holds
+    it until commit or rollback.
+    """
+    if count < 1:
+        raise ValueError("Generate at least one code")
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended('numeric_codes:' || :op, 0))"),
+        {"op": str(operator_id)},
+    )
+    length = numeric_code_length(await live_numeric_codes(db, operator_id) + count)
+    pool: set = set()
+    for _ in range(MAX_COLLISION_ROUNDS):
+        if len(pool) >= count:
+            break
+        candidates = {generate_numeric_code(length) for _ in range(count - len(pool))} - pool
+        pool |= candidates - await _taken_strings(db, candidates)
+    if len(pool) < count:
+        raise ValueError(f"Could not find {count} unused {length}-digit codes after {MAX_COLLISION_ROUNDS} attempts")
+    return list(pool)[:count]
+
+
 async def _taken_strings(db: AsyncSession, candidates: set) -> set:
     """Return the candidates already in use as either a code or a username.
 
@@ -107,17 +228,22 @@ async def _taken_strings(db: AsyncSession, candidates: set) -> set:
     """
     if not candidates:
         return set()
+    # code_key is unique too (migration 061): a candidate whose key an existing
+    # code already has is taken, even if it differs in dashes or case.
+    by_key = {code_key(c): c for c in candidates}
     rows = (
         await db.execute(
-            select(Voucher.code, Voucher.username).where(
-                or_(Voucher.code.in_(candidates), Voucher.username.in_(candidates))
+            select(Voucher.code, Voucher.username, Voucher.code_key).where(
+                or_(Voucher.code.in_(candidates), Voucher.username.in_(candidates), Voucher.code_key.in_(by_key))
             )
         )
     ).all()
     taken = set()
-    for code, username in rows:
+    for code, username, key in rows:
         taken.add(code)
         taken.add(username)
+        if key in by_key:
+            taken.add(by_key[key])
     return taken
 
 
@@ -148,7 +274,13 @@ async def generate_unique_codes(
         # `pool` drops ones already accepted in an earlier round. Neither is visible
         # to the DB yet -- the batch is not flushed until commit -- so in-batch
         # collisions have to be caught here.
-        candidates = {generate_voucher_code(length) for _ in range(count - len(pool))} - pool
+        # All-digit keys are kept for numeric reseller codes, so the portal can
+        # check a numeric code's Damm digit before looking it up. A random
+        # 8-24 symbol code is all digits about once in 3e4 at 8, never in
+        # practice at 16; dropping one costs nothing.
+        candidates = {
+            c for c in (generate_voucher_code(length) for _ in range(count - len(pool))) if not code_key(c).isdigit()
+        } - pool
         pool |= candidates - await _taken_strings(db, candidates)
 
     if len(pool) < count:

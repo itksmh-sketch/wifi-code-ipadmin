@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     trial_days: int = 14
     grace_period_days: int = 14
 
+    # Captive portal wrong-code limits, per fixed 15-minute window. Defaults
+    # only: the live values are platform settings (migration 062 seeds them),
+    # read through src.portal.login_limits.
+    portal_login_fail_limit_mac: int = 5
+    portal_login_fail_limit_ip: int = 30
+    portal_login_fail_alert_operator: int = 50
+
     # Audit trail retention (jobs/audit_retention.py): rows older than this
     # many months are purged nightly, a batch per transaction.
     audit_retention_months: int = 24
