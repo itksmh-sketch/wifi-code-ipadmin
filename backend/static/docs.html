@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#1e1b4b">
+<title>Docs — IpAdmin</title>
+<meta name="description" content="Step-by-step guides for IpAdmin operators: connect a MikroTik router, create plans, take mobile money, print vouchers and manage your team.">
+<link rel="canonical" href="{{ app_url }}/guides">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="IpAdmin">
+<meta property="og:title" content="Docs — IpAdmin">
+<meta property="og:description" content="Step-by-step guides for IpAdmin operators: connect a MikroTik router, create plans, take mobile money, print vouchers and manage your team.">
+<meta property="og:url" content="{{ app_url }}/guides">
+<meta property="og:image" content="{{ app_url }}/platform-ui/apple-touch-icon.png">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="/platform-ui/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="/platform-ui/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/platform-ui/apple-touch-icon.png">
+<link rel="stylesheet" href="/platform-ui/tokens.css">
+<link rel="stylesheet" href="/platform-ui/landing.css?v=1">
+<script src="/platform-ui/landing.js?v=1" defer></script>
+</head>
+<body>
+<a class="lp-skip" href="#main">Skip to content</a>
+
+<header class="lp-header">
+  <div class="lp-wrap lp-header-row">
+    <a class="lp-brand" href="/" aria-label="IpAdmin home">
+      <span class="lp-brand-mark" aria-hidden="true"></span>IpAdmin
+    </a>
+    <nav class="lp-nav" aria-label="Main">
+      <a href="/#features">Features</a>
+      <a href="/#how">How it works</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/guides" aria-current="page">Docs</a>
+      <a href="/#contact">Contact</a>
+    </nav>
+    <div class="lp-header-actions">
+      <details class="lp-pop">
+        <summary class="lp-btn lp-btn--ghost">Sign in <svg class="lp-icon lp-icon--sm lp-chevron" aria-hidden="true"><use href="/platform-ui/icons.svg?v=2#chevron-down"/></svg></summary>
+        <div class="lp-pop-panel">
+          <a href="/admin/login">
+            <svg class="lp-icon" aria-hidden="true"><use href="/platform-ui/icons.svg?v=2#building"/></svg>
+            <span><span class="lp-pop-title">Operator dashboard</span><span class="lp-pop-text">ISP owners and their staff</span></span>
+          </a>
+        </div>
+      </details>
+      <a class="lp-btn lp-btn--primary lp-hide-xs" href="/apply">Start free trial</a>
+      <details class="lp-pop lp-menu">
+        <summary class="lp-btn lp-btn--ghost" aria-label="Menu"><svg class="lp-icon" aria-hidden="true"><use href="/platform-ui/icons.svg?v=2#menu"/></svg></summary>
+        <div class="lp-pop-panel">
+          <a href="/#features"><span class="lp-pop-title">Features</span></a>
+          <a href="/#how"><span class="lp-pop-title">How it works</span></a>
+          <a href="/#pricing"><span class="lp-pop-title">Pricing</span></a>
+          <a href="/guides"><span class="lp-pop-title">Docs</span></a>
+          <a href="/#contact"><span class="lp-pop-title">Contact</span></a>
+          <a href="/apply"><span class="lp-pop-title">Start free trial</span></a>
+        </div>
+      </details>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <div class="lp-docs-hero">
+    <div class="lp-wrap">
+      <span class="lp-kicker">Documentation</span>
+      <h1>Guides and tutorials</h1>
+      <p>Everything you need to go from a new account to your first voucher sale, plus day-to-day guides for you and your staff.</p>
+    </div>
+  </div>
+
+  <div class="lp-wrap lp-docs">
+    <nav class="lp-toc" aria-label="Guides">
+      <p class="lp-toc-title">Getting started</p>
+      <ol>
+        <li><a href="#apply">Apply for an account</a></li>
+        <li><a href="#first-sign-in">First sign-in</a></li>
+        <li><a href="#pin">Set your security PIN</a></li>
+      </ol>
+      <p class="lp-toc-title">Your network</p>
+      <ol>
+        <li><a href="#towns-sites">Towns and sites</a></li>
+        <li><a href="#add-router">Connect a MikroTik router</a></li>
+      </ol>
+      <p class="lp-toc-title">Selling</p>
+      <ol>
+        <li><a href="#plans">Create plans</a></li>
+        <li><a href="#payments">Take mobile money</a></li>
+        <li><a href="#sms">Send vouchers by SMS</a></li>
+        <li><a href="#branding">Brand your login page</a></li>
+        <li><a href="#vouchers">Generate and print vouchers</a></li>
+        <li><a href="#test-sale">Make a test sale</a></li>
+      </ol>
+      <p class="lp-toc-title">Running the business</p>
+      <ol>
+        <li><a href="#monitor">Sessions and analytics</a></li>
+        <li><a href="#users">Team members and roles</a></li>
+        <li><a href="#billing">Your subscription</a></li>
+        <li><a href="#resellers">Resellers</a></li>
+        <li><a href="#troubleshooting">Troubleshooting</a></li>
+      </ol>
+    </nav>
+
+    <div class="lp-article">
+
+      <section class="lp-doc" id="apply">
+        <div class="lp-doc-meta"><span class="lp-tag">Getting started</span>2 min</div>
+        <h2>Apply for an account</h2>
+        <p>Every operator account is reviewed by our team, so you start with an application.</p>
+        <ol class="lp-howto">
+          <li>Open the <a href="/apply">application form</a> and enter your business and contact details.</li>
+          <li>Submit it. We review every application, usually within 1–2 business days.</li>
+          <li>Once you're approved, you'll get your sign-in details and your {{ trial_days }}-day free trial starts.</li>
+        </ol>
+      </section>
+
+      <section class="lp-doc" id="first-sign-in">
+        <div class="lp-doc-meta"><span class="lp-tag">Getting started</span>3 min</div>
+        <h2>First sign-in and account setup</h2>
+        <p>The first time you sign in, a short setup secures your account before you reach the dashboard.</p>
+        <ol class="lp-howto">
+          <li>Go to <a href="/admin/login">Operator sign in</a> and use the email and temporary password we sent you by email and SMS.</li>
+          <li><strong>Verify your phone.</strong> Enter your mobile number and tap <em>Send code</em>.</li>
+          <li><strong>Enter the code.</strong> Type in the 6-digit code from the SMS.</li>
+          <li><strong>Choose your password and a security question.</strong> Replace the temporary password with one that meets the rules on screen, then pick a question and answer it. The answer isn't case-sensitive. Tap <em>Finish setup</em>.</li>
+        </ol>
+        <div class="lp-note">
+          <svg class="lp-icon" aria-hidden="true"><use href="/platform-ui/icons.svg?v=2#check"/></svg>
+          <span>The <span class="lp-path">Billing</span> page has a <em>Getting Started</em> checklist. It shows which of the setup steps in these guides you have done.</span>
+        </div>
+      </section>
+
+      <section class="lp-doc" id="pin">
+        <div class="lp-doc-meta"><span class="lp-tag">Getting started</span>1 min</div>
+        <h2>Set your security PIN</h2>
+        <p>Sensitive actions, like changing payment settings or managing users, ask for a PIN as well as your password.</p>
+        <ol class="lp-howto">
+          <li>Open <span class="lp-path">Security</span> in the sidebar.</li>
+          <li>Under <em>Security PIN</em>, choose <em>Set PIN</em>, then enter and confirm your new PIN.</li>
+        </ol>
+        <p>You can also change your password, your verified phone number and your security question on the same page.</p>
+      </section>
+
+      <section class="lp-doc" id="towns-sites">
+        <div class="lp-doc-meta"><span class="lp-tag">Your network</span>2 min</div>
+        <h2>Organise towns and sites</h2>
+        <p>Every router belongs to a site, and every site belongs to a town. Set these up first.</p>
+        <ol class="lp-howto">
+          <li>Open <span class="lp-path">Towns &amp; Sites</span> and choose <em>Add Town</em>. Give it a name and region.</li>
+          <li>Inside the town, choose <em>Create Site</em> for each location, such as a hostel, a shop or a campus block. Add its address.</li>
+        </ol>
+      </section>
+
+      <section class="lp-doc" id="add-router">
+        <div class="lp-doc-meta"><span class="lp-tag">Your network</span>10 min</div>
+        <h2>Connect a MikroTik router</h2>
+        <p>Routers connect to IpAdmin over a private WireGuard VPN tunnel. That's the only connection method, and it works even when your router is behind NAT with no public IP. You need RouterOS 7, the first version with WireGuard. <span class="lp-general">General MikroTik guidance</span></p>
+        <p>Open <span class="lp-path">Routers</span> and choose <em>+ Add Router</em>. The wizard has four steps.</p>
+
+        <h3>1. Basic info</h3>
+        <p>Enter a <strong>Router name</strong> and choose the <strong>Site</strong> it belongs to. The <strong>NAS identifier</strong> fills itself in from the name as you type, and the <strong>NAS shared secret</strong> comes pre-filled with a random value. You can change either, but you don't need to.</p>
+
+        <h3>2. Connect via VPN</h3>
+        <ol class="lp-howto">
+          <li>The wizard generates the router's tunnel settings and shows a block of <em>MikroTik commands</em>. Copy them all.</li>
+          <li>On the router, open a <strong>New Terminal</strong> in WinBox or WebFig and paste the commands. <span class="lp-general">General MikroTik guidance</span></li>
+          <li>Wait. The tunnel usually comes up within about 2 minutes, and the page checks every 5 seconds. When it shows <em>VPN connected</em>, choose <em>Next</em>.</li>
+        </ol>
+
+        <h3>3. Credentials and hotspot</h3>
+        <ol class="lp-howto">
+          <li>Enter the <strong>RouterOS username</strong>, <strong>password</strong> and <strong>API port</strong>, then choose <em>Verify connection</em>. RouterOS uses port 8728, or 8729 with SSL, unless someone changed it. <span class="lp-general">General MikroTik guidance</span></li>
+          <li>When the interfaces load, pick the <strong>Hotspot interface</strong> your customers connect to. Then set the <strong>Captive portal DNS name</strong>, and a <strong>Config template</strong> if you have one.</li>
+        </ol>
+
+        <h3>4. Provision</h3>
+        <p>Check the summary and start provisioning. It starts straight away, and the log updates every 2 seconds. When it finishes, choose <em>View router</em> to see its health and active sessions.</p>
+
+        <div class="lp-note lp-note--warn">
+          <svg class="lp-icon" aria-hidden="true"><use href="/platform-ui/icons.svg?v=2#alert-circle"/></svg>
+          <span>Paste the commands exactly as shown, and don't share them. They contain the private key for this router's tunnel.</span>
+        </div>
+      </section>
+
+      <section class="lp-doc" id="plans">
+        <div class="lp-doc-meta"><span class="lp-tag">Selling</span>3 min</div>
+        <h2>Create plans</h2>
+        <p>A plan is what your customers buy: an amount of time, data or both, at a price and speed you choose.</p>
+        <ol class="lp-howto">
+          <li>Open <span class="lp-path">Plans</span> and choose <em>Add Plan</em>.</li>
+          <li>Give it a name customers will understand, such as “Daily 2 GB”, and choose a type.</li>
+          <li>Set the <strong>Price (GHS)</strong>, the limits that apply to the type, and the <strong>Download</strong> and <strong>Upload Speed</strong> in kbps.</li>
+        </ol>
+        <div class="lp-table-wrap">
+          <table class="lp-table">
+            <thead><tr><th>Type</th><th>Ends when</th><th>Set</th></tr></thead>
+            <tbody>
+              <tr><td>Time-Based</td><td>The time runs out</td><td>Duration (minutes)</td></tr>
+              <tr><td>Data-Based</td><td>The data is used up</td><td>Data Limit (MB)</td></tr>
+              <tr><td>Hybrid</td><td>Whichever comes first</td><td>Both</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>A voucher's time starts the first time a customer signs in with it, not when it's printed or sold. The countdown keeps running if they disconnect and reconnect.</p>
+      </section>
+
+      <section class="lp-doc" id="payments">
+        <div class="lp-doc-meta"><span class="lp-tag">Selling</span>5 min</div>
+        <h2>Take mobile money</h2>
+        <p>Customers pay into <strong>your own</strong> Paystack or Flutterwave account. You'll need a business account with one of them first.</p>
+        <ol class="lp-howto">
+          <li>Open <span class="lp-path">Payments</span> and choose your provider. You'll be asked for your PIN.</li>
+          <li>Copy your keys from the provider's dashboard and paste them in.
+            <ul>
+              <li><strong>Paystack:</strong> Public key, Secret key and Webhook secret.</li>
+              <li><strong>Flutterwave:</strong> Public key (FLWPUBK-…), Secret key (FLWSECK-…) and Webhook secret hash.</li>
+            </ul>
+          </li>
+          <li>Choose <em>Save &amp; activate</em>. Then choose <em>Test connection</em> to check that the keys work.</li>
+          <li>Copy the <strong>Webhook URL</strong> the page shows you, and paste it into the webhook settings in your provider's dashboard. That's how we find out a payment went through and release the voucher.</li>
+        </ol>
+        <div class="lp-note lp-note--warn">
+          <svg class="lp-icon" aria-hidden="true"><use href="/platform-ui/icons.svg?v=2#alert-circle"/></svg>
+          <span>Without a working webhook, a payment still completes while the customer waits on the payment page, which checks with your provider every few seconds. If they leave that page, a background check settles the payment 15 to 25 minutes later and texts them the voucher. Set up the webhook so every voucher arrives straight away.</span>
+        </div>
+      </section>
+
+      <section class="lp-doc" id="sms">
+        <div class="lp-doc-meta"><span class="lp-tag">Selling</span>3 min</div>
+        <h2>Send vouchers by SMS</h2>
+        <p>After a mobile money purchase, the buyer gets their voucher code by text message.</p>
+        <ol class="lp-howto">
+          <li>Open <span class="lp-path">SMS</span> and choose a provider.
+            <ul>
+              <li><strong>Arkesel (platform gateway):</strong> nothing to enter. Choose <em>Use this SMS provider</em>. Each SMS segment is added to your monthly invoice at the rate shown on the page.</li>
+              <li><strong>Your own Arkesel account:</strong> enter your API key and Sender ID, choose <em>Save &amp; activate</em>, then <em>Test connection</em>.</li>
+              <li><strong>Your own Hubtel account:</strong> enter your Client ID, Client secret and Sender ID, then choose <em>Save &amp; activate</em>. Hubtel has no <em>Test connection</em> button, so send yourself a test purchase.</li>
+            </ul>
+          </li>
+          <li>You can also edit the text of the voucher SMS on the same page.</li>
+        </ol>
+        <p>A Sender ID is the name shown as the sender. Most SMS providers in Ghana need it registered before you can use it. <span class="lp-general">General guidance</span></p>
+      </section>
+
+      <section class="lp-doc" id="branding">
+        <div class="lp-doc-meta"><span class="lp-tag">Selling</span>3 min</div>
+        <h2>Brand your login page</h2>
+        <p>The login page is what customers see when they join your Wi-Fi. Make it look like your business.</p>
+        <ol class="lp-howto">
+          <li>Open <span class="lp-path">Branding</span>.</li>
+          <li>Set your <strong>Display name</strong> and write a short <strong>Welcome message</strong>.</li>
+          <li>Add a <strong>Contact phone</strong> and <strong>Contact email</strong>, so customers can reach you if something goes wrong.</li>
+          <li>Pick a <strong>Template</strong>. The phone preview shows your changes as you make them.</li>
+          <li>Choose <em>Save changes</em>. Until you do, customers still see the old version.</li>
+          <li>Upload a <strong>Logo</strong> (PNG, JPG or WebP, up to 2 MB). The logo is saved as soon as it uploads, without <em>Save changes</em>.</li>
+        </ol>
+      </section>
+
+      <section class="lp-doc" id="vouchers">
+        <div class="lp-doc-meta"><span class="lp-tag">Selling</span>3 min</div>
+        <h2>Generate and print vouchers</h2>
+        <p>Pre-printed vouchers are for cash sales at a counter, or for handing out yourself.</p>
+        <ol class="lp-howto">
+          <li>Open <span class="lp-path">Vouchers</span> and choose <em>Generate Batch</em>.</li>
+          <li>Choose the <strong>Plan</strong>, the <strong>Quantity</strong> and the <strong>Code Length</strong>.</li>
+          <li>Choose a <strong>Device Policy</strong> (<em>Single Device</em> or <em>Multi Device</em>). Note: the policy is saved on the voucher but isn't enforced at sign-in yet. How many devices can use one voucher at the same time currently depends on your router's hotspot settings.</li>
+          <li>To print, choose <em>Print vouchers</em>, then pick a <strong>Plan</strong> and a <strong>Quantity</strong>. It prints that plan's oldest unsold vouchers that haven't been printed before, on A4 sheets.</li>
+          <li>When the sheets have come out, choose <em>Yes — confirm printed</em>, so those vouchers aren't offered for printing again.</li>
+        </ol>
+        <p>Each voucher shows a status: <strong>Unused</strong>, <strong>Active</strong> (in use), <strong>Exhausted</strong> (data used up), <strong>Expired</strong> (time ran out) or <strong>Disabled</strong>. To stop a lost or stolen voucher, use <em>Disable</em>. <em>Reactivate</em> undoes that.</p>
+      </section>
+
+      <section class="lp-doc" id="test-sale">
+        <div class="lp-doc-meta"><span class="lp-tag">Selling</span>5 min <span class="lp-general">General guidance</span></div>
+        <h2>Make a test sale</h2>
+        <p>Before you open to customers, go through a purchase yourself.</p>
+        <ol class="lp-howto">
+          <li>Connect a phone to the hotspot Wi-Fi. Your branded login page should open. If it doesn't, open any <code>http://</code> website.</li>
+          <li>Enter a printed voucher code and check that you get online.</li>
+          <li>On another phone, choose a plan, pay with mobile money and approve the prompt on the handset.</li>
+          <li>Check that the voucher arrives by SMS and works, and that the sale shows in <span class="lp-path">Billing</span> → <em>Transactions</em> and in <span class="lp-path">Analytics</span>.</li>
+        </ol>
+      </section>
+
+      <section class="lp-doc" id="monitor">
+        <div class="lp-doc-meta"><span class="lp-tag">Running the business</span>2 min</div>
+        <h2>Sessions and analytics</h2>
+        <ul>
+          <li><span class="lp-path">Dashboard</span> gives you a quick overview when you sign in.</li>
+          <li><span class="lp-path">Analytics</span> shows revenue and voucher redemptions for the last 30 days, this week and this month. It also shows your top package, active sessions, which routers are online or offline, and unredeemed stock.</li>
+          <li><span class="lp-path">Sessions</span> lists who is connected, with their device, IP address and data used.</li>
+          <li><span class="lp-path">Routers</span> shows each router's live reachability and last contact time. From there you can open diagnostics or reboot a router.</li>
+        </ul>
+      </section>
+
+      <section class="lp-doc" id="users">
+        <div class="lp-doc-meta"><span class="lp-tag">Running the business</span>3 min</div>
+        <h2>Team members and roles</h2>
+        <p>The account owner can add admins and staff from <span class="lp-path">Users</span> → <em>Add user</em>. The new user's temporary password is sent to their phone by SMS, and they do the same first-sign-in setup you did.</p>
+        <div class="lp-table-wrap">
+          <table class="lp-table">
+            <thead><tr><th>Role</th><th>Can do</th></tr></thead>
+            <tbody>
+              <tr><td>Owner (superadmin)</td><td>The account created when your application is approved. Everything, including payment and SMS credentials, paying invoices, managing users and the audit log.</td></tr>
+              <tr><td>Admin</td><td>Everything except payment and SMS credentials, paying invoices, managing users and the audit log.</td></tr>
+              <tr><td>Staff</td><td>Day-to-day work: viewing, printing and disabling vouchers, and disconnecting users. Staff can't generate vouchers or change settings.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>To stop someone signing in, turn off their sign-in from the Users page. The owner can see who changed what, and when, in <span class="lp-path">Audit log</span>.</p>
+      </section>
+
+      <section class="lp-doc" id="billing">
+        <div class="lp-doc-meta"><span class="lp-tag">Running the business</span>2 min</div>
+        <h2>Your subscription</h2>
+        <p>IpAdmin costs GHS {{ fee }} a month after your {{ trial_days }}-day free trial.</p>
+        <ul>
+          <li><span class="lp-path">Billing</span> shows your billing status and your invoices.</li>
+          <li>To pay an invoice, choose <em>Pay Now</em> and pay by mobile money or card.</li>
+          <li>The <em>SMS Usage</em> tab shows messages sent through the platform's SMS gateway. That usage is added to your invoice.</li>
+          <li>Keep your invoices paid. An account with unpaid invoices can be suspended.</li>
+        </ul>
+      </section>
+
+      <section class="lp-doc" id="resellers">
+        <div class="lp-doc-meta"><span class="lp-tag">Running the business</span>4 min <span class="lp-soon">Coming soon</span></div>
+        <h2>Resellers</h2>
+        <div class="lp-note">
+          <svg class="lp-icon" aria-hidden="true"><use href="/platform-ui/icons.svg?v=2#clock"/></svg>
+          <span><strong>Coming soon to your dashboard.</strong> Reseller management is being built into IpAdmin, and the screens for it are on the way. This guide explains how it will work, so you can plan ahead.</span>
+        </div>
+        <p>Resellers are agents who sell your vouchers for you, such as shops near your hotspot. You add them yourself and give them codes to sell. They sell the codes for cash and pay you what they owe, less their commission.</p>
+
+        <h3>Set up</h3>
+        <ol class="lp-howto">
+          <li><strong>Choose your defaults.</strong> Set the commission resellers earn, either a percentage of the plan price or a fixed amount per code. You can also set how many days they have to sell a code.</li>
+          <li><strong>Add a reseller</strong> with their name, email address, phone number and a password for them to sign in with. You can give a reseller their own commission instead of your default.</li>
+        </ol>
+
+        <h3>Give them codes</h3>
+        <ol class="lp-howto">
+          <li>Choose a plan and how many codes to give. Each code's price is fixed when you hand it over, so a later price change doesn't affect codes already given out.</li>
+          <li>If you like, set a sell-by date. A code that isn't used by then expires and earns no commission.</li>
+        </ol>
+        <p>Reseller codes are numbers with a check digit, so most typing mistakes are caught straight away.</p>
+
+        <h3>When a code is used</h3>
+        <p>A reseller earns commission only when a customer first signs in with one of their codes, at the rate that applies at that moment. The reseller then owes you the code's price minus that commission.</p>
+
+        <h3>Get paid</h3>
+        <ul>
+          <li>Each reseller has a running account: codes used, commission earned, what they owe you and what they've paid.</li>
+          <li>When a reseller hands over money, record the payment. This needs your PIN.</li>
+          <li>Recorded payments can't be edited or deleted. If one was recorded by mistake, reverse it in full and record the right amount.</li>
+        </ul>
+
+        <h3>Take codes back, or stop a reseller</h3>
+        <ul>
+          <li>You can take back a reseller's unused codes. They stop working straight away, for good.</li>
+          <li>Disabling a reseller stops them signing in and getting new codes. Codes they already hold keep working, so take those back first if you need to.</li>
+        </ul>
+
+        <p>The owner and admins can manage resellers and give out codes. Recording or reversing a payment also needs the PIN. Staff can't manage resellers. Every change is recorded in the audit log.</p>
+      </section>
+
+      <section class="lp-doc" id="troubleshooting">
+        <div class="lp-doc-meta"><span class="lp-tag">Help</span></div>
+        <h2>Troubleshooting</h2>
+        <h3>The VPN never connects (step 2) <span class="lp-general">General MikroTik guidance</span></h3>
+        <ul>
+          <li>Check that the router has internet access and runs RouterOS 7.</li>
+          <li>Make sure all of the commands were pasted, with none cut off. Then wait a couple of minutes.</li>
+        </ul>
+        <h3>Interfaces won't load (step 3) <span class="lp-general">General MikroTik guidance</span></h3>
+        <ul>
+          <li>Check the RouterOS username and password, and that the API service is turned on in <code>IP → Services</code> on the port you entered.</li>
+        </ul>
+        <h3>A customer paid but got no voucher</h3>
+        <ul>
+          <li>Look the payment up in <span class="lp-path">Billing</span> → <em>Transactions</em>. A pending payment is checked with your provider automatically, within 25 minutes of the purchase.</li>
+          <li>Check that the webhook URL from the <span class="lp-path">Payments</span> page is saved in your Paystack or Flutterwave dashboard, so the next ones arrive straight away.</li>
+        </ul>
+        <div class="lp-note">
+          <svg class="lp-icon" aria-hidden="true"><use href="/platform-ui/icons.svg?v=2#mail"/></svg>
+          <span>Still stuck? Email <a href="mailto:{{ support_email }}">{{ support_email }}</a> or WhatsApp <a href="https://wa.me/233508450355">050 845 0355</a>, tell us your business name and describe what you see.</span>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</main>
+
+<footer class="lp-footer">
+  <div class="lp-wrap lp-footer-row">
+    <span>© IpAdmin. Hotspot billing for ISPs in Ghana.</span>
+    <nav class="lp-footer-links" aria-label="Footer">
+      <a href="/">Home</a>
+      <a href="/apply">Apply</a>
+      <a href="/admin/login">Operator sign in</a>
+    </nav>
+  </div>
+</footer>
+</body>
+</html>
