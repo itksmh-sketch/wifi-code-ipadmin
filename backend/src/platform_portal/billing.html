@@ -164,11 +164,9 @@
       </div>
 
       <div class="notice warn" style="margin-bottom:18px">
-        <strong>Live keys are refused until webhook verification ships.</strong> The platform-billing
-        webhook does not yet check the charged amount or currency, so an underpayment would settle an
-        invoice in full. Saving a <code>pk_live_</code>/<code>sk_live_</code> key is rejected by the
-        server, not just discouraged here. Test-mode keys (<code>pk_test_</code>/<code>sk_test_</code>)
-        work normally.
+        <strong>Only live-mode payments settle an invoice.</strong> Test keys
+        (<code>pk_test_</code>/<code>sk_test_</code>) can be saved to check the connection, but a
+        test-mode payment is refused and never marks an invoice paid.
       </div>
 
       <div id="state-detail" class="notice" style="display:none;margin-bottom:18px"></div>
@@ -189,10 +187,10 @@
 
       <form id="form" novalidate>
         <label>Paystack Public Key</label>
-        <input id="public_key" type="text" autocomplete="off" spellcheck="false" placeholder="pk_test_…">
+        <input id="public_key" type="text" autocomplete="off" spellcheck="false" placeholder="pk_live_…">
 
         <label>Paystack Secret Key</label>
-        <input id="secret_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk_test_…">
+        <input id="secret_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk_live_…">
 
         <label>Webhook Secret <span class="label-note">(optional)</span></label>
         <input id="webhook_secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="Leave blank to clear">

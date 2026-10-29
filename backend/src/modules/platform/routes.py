@@ -2115,9 +2115,10 @@ async def update_provider_catalog_entry(
 # The platform's own keys — how operator subscriptions are collected. Distinct
 # from /payment-credentials, which is an operator's keys for selling vouchers.
 #
-# Storage and UI only, for now: initiate_invoice_payment and the platform-billing
-# webhook still read settings directly. Switching them to this table is Phase 4,
-# deliberately after the webhook gains amount/currency verification in Phase 3.
+# initiate_invoice_payment and the platform-billing webhook both read the keys
+# through payment_credentials_service.resolve_paystack_keys: this table first,
+# the PLATFORM_BILLING_PAYSTACK_* env vars as the fallback. Test and live keys
+# both save; only a live-mode charge settles an invoice (charge_verification).
 
 def _last4(value: str | None) -> str | None:
     return value[-4:] if value else None
