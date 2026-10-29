@@ -9,10 +9,11 @@ Paystack-only by design. The table is multi-provider-capable, but nothing in the
 platform-billing path speaks anything but Paystack yet, so the resolver is
 deliberately concrete rather than dispatching through the PaymentProvider ABC.
 
-NOTE: nothing consumes `resolve_paystack_keys` yet. `initiate_invoice_payment`
-and the platform-billing webhook still read `settings` directly; switching them
-over is Phase 4, deliberately after the webhook's amount/currency verification
-lands in Phase 3.
+`resolve_paystack_keys` is the one source of the platform's keys: invoice payment
+(`initiate_invoice_payment`), the platform-billing webhook's signature check, the
+platform owner's credential view and connection test, and the scrubbing of key
+values from billing error messages all go through it, so they can never end up on
+different keys.
 """
 from __future__ import annotations
 
