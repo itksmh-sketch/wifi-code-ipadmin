@@ -1296,6 +1296,8 @@ class OperatorInvoice(Base):
     issued_at = Column(DateTime(timezone=True), nullable=True)
     due_at = Column(DateTime(timezone=True), nullable=True)
     paid_at = Column(DateTime(timezone=True), nullable=True)
+    # While unpaid: the Paystack reference of the open checkout (see
+    # billing.service.initiate_invoice_payment). Once paid: the one that settled it.
     payment_reference = Column(String(255), nullable=True)
     paystack_payment_url = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

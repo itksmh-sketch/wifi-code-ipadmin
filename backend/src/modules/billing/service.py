@@ -1,4 +1,5 @@
 ﻿from __future__ import annotations
+import secrets
 import uuid
 from datetime import datetime, timezone, timedelta, date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -259,12 +260,54 @@ async def get_outstanding_invoice(db: AsyncSession, operator_id: uuid.UUID) -> O
     return result.scalar_one_or_none()
 
 
+# Paystack states in which a checkout already opened for an invoice can still be
+# completed. Reusing it, rather than opening another, means an operator can
+# never have two live checkouts for one invoice (and so pay it twice).
+_REUSABLE_PAYSTACK_STATES = frozenset({"abandoned", "ongoing", "pending", "processing", "queued"})
+
+
+async def _existing_checkout_state(client: httpx.AsyncClient, secret_key: str, reference: str,
+                                   expected_pesewas: int) -> str:
+    """What to do with the checkout already stored on an invoice.
+
+    "reuse": it can still be paid (or Paystack could not be asked: reusing
+    never opens a second charge). "paid": the money went through and the
+    webhook has not landed yet. "new": it is finished without paying, for a
+    different amount, or unknown to these keys (opened under test keys).
+    """
+    try:
+        resp = await client.get(f"/transaction/verify/{reference}",
+                                headers={"Authorization": f"Bearer {secret_key}"})
+        data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return "reuse"
+    if resp.status_code == 401:
+        raise ValueError(f"Paystack error: {data.get('message', 'unauthorized')}")
+    if resp.status_code >= 500:
+        return "reuse"
+    if not data.get("status"):
+        return "new"
+    tx = data.get("data") or {}
+    state = str(tx.get("status") or "").lower()
+    if state == "success":
+        return "paid"
+    if state in _REUSABLE_PAYSTACK_STATES and tx.get("amount") == expected_pesewas:
+        return "reuse"
+    return "new"
+
+
 async def initiate_invoice_payment(
     db: AsyncSession,
     invoice: OperatorInvoice,
     operator: ISPOperator,
 ) -> str:
-    """Returns the Paystack authorization_url."""
+    """Returns the Paystack authorization_url.
+
+    Paystack refuses a reference it has seen before, so the first checkout
+    for an invoice uses INV-{id} and is stored with its reference; a later
+    attempt returns that same checkout while it can still be paid, and only
+    opens a new one (INV-{id}-{suffix}) once it cannot.
+    """
     # Resolved from platform_payment_credentials, falling back to .env — the same
     # source the webhook verifies signatures with, so initiation and verification
     # can never end up on different keys.
@@ -285,25 +328,37 @@ async def initiate_invoice_payment(
         )
 
     amount_pesewas = ghs_to_pesewas(invoice.amount_ghs)
-    reference = f"INV-{invoice.id}"
     # /api/v1 prefix included: the billing router is mounted under it, so the
     # bare "/billing/payment-callback" this used to send returned 404 and every
     # payer landed on an error page after paying.
     app_url = (await get_setting(db, "platform_app_url")).rstrip("/")
     callback_url = f"{app_url}/api/v1/billing/payment-callback"
 
-    payload = {
-        "email": operator.contact_email,
-        "amount": amount_pesewas,
-        "reference": reference,
-        "callback_url": callback_url,
-        "metadata": {
-            "invoice_id": str(invoice.id),
-            "operator_id": str(operator.id),
-        },
-    }
-
     async with httpx.AsyncClient(timeout=15, base_url="https://api.paystack.co") as client:
+        reference = f"INV-{invoice.id}"
+        if invoice.paystack_payment_url:
+            # A checkout stored before references were kept used INV-{id}.
+            previous = invoice.payment_reference or reference
+            state = await _existing_checkout_state(client, keys.secret_key, previous, amount_pesewas)
+            if state == "reuse":
+                return invoice.paystack_payment_url
+            if state == "paid":
+                raise ValueError(
+                    f"A payment for invoice {invoice.invoice_number} has gone through and is being "
+                    "confirmed. Refresh this page in a minute."
+                )
+            reference = f"INV-{invoice.id}-{secrets.token_hex(4)}"
+
+        payload = {
+            "email": operator.contact_email,
+            "amount": amount_pesewas,
+            "reference": reference,
+            "callback_url": callback_url,
+            "metadata": {
+                "invoice_id": str(invoice.id),
+                "operator_id": str(operator.id),
+            },
+        }
         resp = await client.post(
             "/transaction/initialize",
             json=payload,
@@ -316,8 +371,11 @@ async def initiate_invoice_payment(
 
     auth_url: str = data["data"]["authorization_url"]
 
-    # Store the URL on the invoice
+    # The checkout and its reference, so the next attempt can find it. Until
+    # the invoice is paid, payment_reference is the open checkout's reference;
+    # mark_invoice_paid then records the one that settled it.
     invoice.paystack_payment_url = auth_url
+    invoice.payment_reference = reference
     await db.commit()
 
     return auth_url

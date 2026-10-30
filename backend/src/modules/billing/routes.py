@@ -124,7 +124,9 @@ async def pay_invoice(
     ).scalar_one_or_none()
 
     detail = {"invoice_number": invoice.invoice_number, "amount_ghs": invoice.amount_ghs,
-              "invoice_status": invoice.status, "reference": f"INV-{invoice.id}"}
+              "invoice_status": invoice.status,
+              "reference": invoice.payment_reference or f"INV-{invoice.id}"}
+    previous_url = invoice.paystack_payment_url
     try:
         redirect_url = await service.initiate_invoice_payment(db, invoice, operator)
     except Exception as exc:
@@ -142,11 +144,14 @@ async def pay_invoice(
             raise HTTPException(400, error)
         raise
 
-    # The checkout link itself is not stored in the row.
+    # The checkout link itself is not stored in the row. The same link coming
+    # back means the open checkout was handed out again, not a new one.
+    reused = previous_url is not None and redirect_url == previous_url
     await audit.record_detached(
         "billing.invoice_pay", target_type="invoice", target_id=invoice_id,
         summary=f"Started paying invoice {detail['invoice_number']} (GHS {detail['amount_ghs']})",
-        detail={**detail, "outcome": "checkout_opened"},
+        detail={**detail, "outcome": "checkout_reused" if reused else "checkout_opened",
+                "reference": invoice.payment_reference or detail["reference"]},
     )
     return PayInvoiceResponse(redirect_url=redirect_url, invoice_id=invoice.id)
 

@@ -1,46 +1,24 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { apiCall } from '../App';
+import { createPinGate } from './pinGate';
 
 // Wraps a call that may be PIN-gated. On a 403 carrying X-Pin-Required it
 // parks the call, shows <PinPrompt>, and re-runs it once the PIN clears — so
-// the admin finishes what they started instead of losing it to a prompt. Any
-// other error propagates untouched to the caller's own handling.
+// the admin finishes what they started instead of losing it to a prompt.
+// run() settles with the call that went through: after a prompt, with the
+// replay's result or error; undefined if the prompt was cancelled. Any other
+// error propagates untouched to the caller's own handling. The logic lives in
+// pinGate.js, where it is tested.
 //
 //   const gate = usePinGate();
-//   await gate.run(() => apiCall(...));
+//   const res = await gate.run(() => apiCall(...));
 //   {gate.reason && <PinPrompt reason={gate.reason} onCancel={gate.cancel}
 //                              onUnlocked={gate.unlocked} />}
 export function usePinGate() {
     const [reason, setReason] = useState(null);
-    const [pending, setPending] = useState(null);
-
-    const run = useCallback(async (fn) => {
-        try {
-            return await fn();
-        } catch (err) {
-            if (err && err.pinRequired) {
-                // Stored behind an arrow: useState treats a bare function as
-                // a lazy initialiser and would call it immediately.
-                setPending(() => fn);
-                setReason(err.pinRequired);
-                return undefined;
-            }
-            throw err;
-        }
-    }, []);
-
-    const cancel = useCallback(() => { setReason(null); setPending(null); }, []);
-
-    const unlocked = useCallback(async () => {
-        const fn = pending;
-        setReason(null);
-        setPending(null);
-        // Back through run(), so a retry that is refused again (a PIN that
-        // locked between the two calls) re-prompts rather than throwing.
-        if (fn) await run(fn);
-    }, [pending, run]);
-
-    return { reason, run, cancel, unlocked };
+    // One gate per component. setReason is stable, so it never needs rebuilding.
+    const [gate] = useState(() => createPinGate(setReason));
+    return { reason, run: gate.run, cancel: gate.cancel, unlocked: gate.unlocked };
 }
 
 // The prompt a PIN-gated page raises over itself when the API answers 403 with

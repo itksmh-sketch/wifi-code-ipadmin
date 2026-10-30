@@ -635,17 +635,18 @@ async def test_b1_enforcement_suspends_only_approved_operators(env):
     assert control.name in suspended_names
 
 
-def _charge(invoice, domain="live") -> bytes:
+def _charge(invoice, domain="live", reference=None, metadata=True) -> bytes:
     pesewas = int(Decimal(invoice.amount_ghs) * 100)
-    data = {"reference": f"INV-{invoice.id}", "status": "success", "amount": pesewas, "currency": "GHS",
-            "metadata": {"invoice_id": str(invoice.id)}}
+    data = {"reference": reference or f"INV-{invoice.id}", "status": "success", "amount": pesewas, "currency": "GHS"}
+    if metadata:
+        data["metadata"] = {"invoice_id": str(invoice.id)}
     if domain is not None:  # None: the field is left out
         data["domain"] = domain
     return json.dumps({"event": "charge.success", "data": data}).encode()
 
 
-async def pay_by_webhook(client, invoice, domain="live"):
-    raw = _charge(invoice, domain)
+async def pay_by_webhook(client, invoice, domain="live", reference=None, metadata=True):
+    raw = _charge(invoice, domain, reference, metadata)
     sig = hmac.new(WEBHOOK_SECRET.encode(), raw, hashlib.sha512).hexdigest()
     return await client.post("http://testserver/api/v1/webhooks/platform-billing/paystack", content=raw,
                              headers={"x-paystack-signature": sig, "content-type": "application/json"})
@@ -740,6 +741,34 @@ async def test_b4_a_test_mode_replay_after_payment_changes_nothing(env):
     assert res.json() == {"message": "Already paid"}
     again = await fresh(OperatorInvoice, invoice.id)
     assert (again.status, again.paid_at, again.payment_reference) == ("paid", paid.paid_at, paid.payment_reference)
+
+
+@pytest.mark.parametrize("stored,metadata", [(True, True), (True, False), (False, False)])
+async def test_b5_a_later_attempts_reference_settles_its_invoice(env, stored, metadata):
+    """A second checkout carries INV-{id}-{suffix}. It is found by metadata, by
+    the stored reference, or (neither) by the uuid after INV-."""
+    operator = await make_operator("approved")
+    invoice = await make_invoice(operator, days_late=0)
+    ref = f"INV-{invoice.id}-0a1b2c3d"
+    if stored:
+        async with async_session_factory() as db:
+            row = await db.get(OperatorInvoice, invoice.id)
+            row.payment_reference = ref
+            await db.commit()
+    res = await pay_by_webhook(env["client"], invoice, reference=ref, metadata=metadata)
+    assert res.status_code == 200 and res.json() == {"message": "OK"}, res.text
+    paid = await fresh(OperatorInvoice, invoice.id)
+    assert (paid.status, paid.payment_reference) == ("paid", ref)
+
+
+async def test_b5_a_suffix_cannot_point_a_charge_at_another_invoice(env):
+    # The uuid is read from the reference's own first 36 characters: a
+    # reference naming no real invoice settles nothing.
+    operator = await make_operator("approved")
+    invoice = await make_invoice(operator, days_late=0)
+    res = await pay_by_webhook(env["client"], invoice, reference=f"INV-{uuid.uuid4()}-{invoice.id}", metadata=False)
+    assert res.json() == {"message": "Invoice not found"}
+    assert (await fresh(OperatorInvoice, invoice.id)).status == "issued"
 
 
 # ── 6. notices and the audit view ─────────────────────────────────────────

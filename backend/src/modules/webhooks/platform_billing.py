@@ -58,12 +58,13 @@ async def _find_invoice(db: AsyncSession, payload: dict, reference: str) -> Oper
         if found is not None:
             return found
 
-    # 2. The reference format initiate_invoice_payment writes: INV-{invoice uuid}.
+    # 2. The reference format initiate_invoice_payment writes: INV-{invoice uuid},
+    #    with a -{suffix} on a later attempt. The 36 characters after INV- are the uuid.
     if reference.startswith("INV-"):
         try:
             found = (
                 await db.execute(
-                    select(OperatorInvoice).where(OperatorInvoice.id == uuid.UUID(reference[4:]))
+                    select(OperatorInvoice).where(OperatorInvoice.id == uuid.UUID(reference[4:40]))
                 )
             ).scalar_one_or_none()
         except (ValueError, AttributeError, TypeError):

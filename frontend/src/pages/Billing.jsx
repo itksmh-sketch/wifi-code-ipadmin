@@ -32,9 +32,9 @@ export default function Billing() {
         setPayLoading(true);
         setError('');
         try {
-            // PIN-gated: gate.run parks the call on a 403 and replays it once
-            // the PIN clears, so paying still lands on the same invoice. A
-            // parked call returns undefined — don't treat that as a failure.
+            // PIN-gated: on a 403 gate.run waits for the PIN, replays the call
+            // and resolves with the replay's answer, so the redirect below
+            // happens either way. undefined means the PIN prompt was cancelled.
             const res = await gate.run(() =>
                 apiCall(`/billing/invoices/${invoiceId}/pay`, { method: 'POST' }));
             if (res === undefined) return;

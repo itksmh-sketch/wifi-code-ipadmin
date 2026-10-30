@@ -968,6 +968,76 @@ async def test_invoice_pay_rows(env, tenant, monkeypatch):
         assert_clean(row, "secret-session-link")
 
 
+async def test_invoice_pay_again_reuses_the_open_checkout_then_replaces_a_dead_one(env, tenant, monkeypatch):
+    """The real service against a fake Paystack: a second Pay Now while the
+    checkout is open hands it out again (no new transaction, which Paystack
+    would refuse as a duplicate reference); once it has failed, a new one is
+    opened under a new reference. The row says which, and names the reference."""
+    import httpx
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from src.db.models import OperatorInvoice
+    from src.modules.billing import service as billing_service
+    from src.modules.platform import payment_credentials_service, settings_service
+
+    now = datetime.now(timezone.utc)
+    async with async_session_factory() as db:
+        invoice = OperatorInvoice(isp_operator_id=tenant["operator"].id, invoice_number=f"INV-T-{uuid.uuid4().hex[:6]}",
+                                  period_start=now - timedelta(days=30), period_end=now, amount_ghs=Decimal("50.00"),
+                                  status="issued", issued_at=now)
+        db.add(invoice)
+        await db.commit()
+        iid = str(invoice.id)
+    first_ref = f"INV-{iid}"
+
+    verify_status = {"value": "abandoned"}
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path.startswith("/transaction/verify/"):
+            return httpx.Response(200, json={"status": True, "data": {"status": verify_status["value"], "amount": 5000}})
+        n = sum(1 for c in calls if c == "/transaction/initialize")
+        return httpx.Response(200, json={"status": True, "data": {"authorization_url": f"https://checkout.paystack.com/c{n}"}})
+
+    async def keys(db):
+        return SimpleNamespace(**PLATFORM_KEYS, is_configured=True)
+
+    async def setting(db, key):
+        return "https://ip-admin.example.test"
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(payment_credentials_service, "resolve_paystack_keys", keys)
+    monkeypatch.setattr(settings_service, "get_setting", setting)
+    monkeypatch.setattr(billing_service.httpx, "AsyncClient",
+                        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
+
+    async def pay():
+        res = await env["client"].post(f"/billing/invoices/{iid}/pay", headers=tenant["h"])
+        assert res.status_code == 200, res.text
+        return res.json()["redirect_url"]
+
+    assert await pay() == "https://checkout.paystack.com/c1"
+    assert await pay() == "https://checkout.paystack.com/c1"   # still open: the same checkout
+    verify_status["value"] = "failed"
+    assert await pay() == "https://checkout.paystack.com/c2"   # dead: a new one
+    assert calls.count("/transaction/initialize") == 2
+
+    async with async_session_factory() as db:
+        stored = await db.get(OperatorInvoice, invoice.id)
+    assert stored.paystack_payment_url == "https://checkout.paystack.com/c2"
+    assert stored.payment_reference.startswith(f"{first_ref}-") and stored.status == "issued"
+
+    opened, reused, replaced = await rows(tenant["operator"], "billing.invoice_pay", iid)
+    assert (opened.detail["outcome"], opened.detail["reference"]) == ("checkout_opened", first_ref)
+    assert (reused.detail["outcome"], reused.detail["reference"]) == ("checkout_reused", first_ref)
+    assert (replaced.detail["outcome"], replaced.detail["reference"]) == ("checkout_opened", stored.payment_reference)
+    for row in (opened, reused, replaced):
+        assert_actor(row, tenant)
+        assert_clean(row, "checkout.paystack.com")
+
+
 # ── Stored error text outside audit_log: provision logs, setup status, CoA,
 #    payment failure reasons, platform provider errors ─────────────────────
 
