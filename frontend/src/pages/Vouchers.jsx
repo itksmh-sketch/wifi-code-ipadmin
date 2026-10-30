@@ -31,7 +31,7 @@ export default function Vouchers() {
     const [plans, setPlans] = useState([]);
     const [filters, setFilters] = useState({ status: '', plan_id: '', batch_id: '', source: 'manual' });
     const [showForm, setShowForm] = useState(false);
-    const [form, setForm] = useState({ plan_id: '', quantity: 10, device_policy: 'single', code_length: 16 });
+    const [form, setForm] = useState({ plan_id: '', quantity: 10, code_length: 16 });
     const [loading, setLoading] = useState(true);
     const [generatedVouchers, setGeneratedVouchers] = useState(null);
 
@@ -75,7 +75,8 @@ export default function Vouchers() {
         const body = {
             plan_id: form.plan_id,
             quantity: parseInt(form.quantity),
-            device_policy: form.device_policy,
+            // No device policy: nothing enforces it at sign-in yet, so the
+            // choice is hidden and the API's default (single) is stored.
             code_length: parseInt(form.code_length),
         };
         try {
@@ -180,13 +181,6 @@ export default function Vouchers() {
                             <small style={{ color: '#6b7280' }}>
                                 Letters and digits only, printed in groups of 4 &mdash; e.g. {sampleCode(form.code_length)}
                             </small>
-                        </div>
-                        <div className="form-group">
-                            <label>Device Policy</label>
-                            <select value={form.device_policy} onChange={e => setForm({...form, device_policy: e.target.value})}>
-                                <option value="single">Single Device</option>
-                                <option value="multi">Multi Device</option>
-                            </select>
                         </div>
                         <div className="gap-2">
                             <button className="btn btn-primary" onClick={generateVouchers}>Generate</button>
