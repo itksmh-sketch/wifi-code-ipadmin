@@ -180,9 +180,16 @@ async def add_line_item(
 
 
 def record_invoice_issued(db: AsyncSession, invoice: OperatorInvoice, *, via: str) -> None:
-    """The row for an invoice the billing jobs issued, once its lines are all
-    on it (the monthly run adds SMS usage after the subscription line). By the
-    system; in the operator's trail. Caller commits."""
+    """The audit row and billing event for an invoice the billing jobs issued,
+    once its lines are all on it (the monthly run adds SMS usage after the
+    subscription line), so both carry the final total. By the system; in the
+    operator's trail. Caller commits."""
+    db.add(OperatorBillingEvent(
+        isp_operator_id=invoice.isp_operator_id,
+        event_type="invoice_issued",
+        description=f"Invoice {invoice.invoice_number} issued for GHS {invoice.amount_ghs}.",
+        event_metadata={"invoice_number": invoice.invoice_number, "amount_ghs": str(invoice.amount_ghs)},
+    ))
     audit.record_system(
         db, "invoice.issue", isp_operator_id=invoice.isp_operator_id, target_type="operator_invoice",
         target_id=invoice.id, summary=f"Issued invoice {invoice.invoice_number} for GHS {invoice.amount_ghs}",
@@ -191,12 +198,36 @@ def record_invoice_issued(db: AsyncSession, invoice: OperatorInvoice, *, via: st
     )
 
 
+def _record(db: AsyncSession, by_system: bool, action: str, **kwargs) -> None:
+    """A webhook's or job's row is the system's; a payment the platform owner
+    records by hand is theirs (the request's actor)."""
+    if by_system:
+        audit.record_system(db, action, **kwargs)
+    else:
+        audit.record(db, action, **kwargs)
+
+
 def _operator_status_row(db: AsyncSession, operator: ISPOperator, before: dict, action: str, summary: str,
-                         detail: dict | None = None) -> None:
+                         detail: dict | None = None, *, by_system: bool = True) -> None:
     changes = OPERATOR_STATUS.diff(before, OPERATOR_STATUS.snapshot(operator))
     if changes:
-        audit.record_system(db, action, isp_operator_id=operator.id, target_type="isp_operator", target_id=operator.id,
-                     summary=summary, changes=changes, detail=detail)
+        _record(db, by_system, action, isp_operator_id=operator.id, target_type="isp_operator",
+                target_id=operator.id, summary=summary, changes=changes, detail=detail)
+
+
+def first_invoice_date(trial_ends_at: datetime) -> date:
+    """The day monthly billing starts after a trial: the 1st of the month after
+    the one the trial ends in. Never the trial's own month, so an operator is
+    never invoiced at trial end and then again on the 1st."""
+    day = trial_ends_at.astimezone(timezone.utc).date()
+    return date(day.year + 1, 1, 1) if day.month == 12 else date(day.year, day.month + 1, 1)
+
+
+def trial_covers_period(operator: ISPOperator, period_start: date) -> bool:
+    """Whether the month starting period_start is still before billing starts
+    for this operator (their trial ran into it). An operator who never had a
+    trial is billed from their first month."""
+    return operator.trial_ends_at is not None and first_invoice_date(operator.trial_ends_at) > period_start
 
 
 async def create_invoice(
@@ -224,26 +255,20 @@ async def create_invoice(
     db.add(invoice)
     await db.flush()
 
-    await add_line_item(
-        db,
-        invoice,
-        kind="subscription",
-        description=f"Monthly subscription — {period_start:%d %b %Y} to {period_end:%d %b %Y}",
-        quantity=Decimal("1"),
-        unit_price_ghs=Decimal(operator.monthly_fee_ghs),
-        sort_order=0,
-    )
-
-    event = OperatorBillingEvent(
-        isp_operator_id=operator.id,
-        event_type="invoice_issued",
-        # Reads the recomputed total, not the operator's fee, so the event can
-        # never disagree with the invoice once there is more than one line.
-        description=f"Invoice {invoice_number} issued for GHS {invoice.amount_ghs}.",
-        event_metadata={"invoice_number": invoice_number, "amount_ghs": str(invoice.amount_ghs)},
-    )
-    db.add(event)
-    await db.flush()
+    # An operator on a GHS 0 fee is invoiced only for SMS usage: no
+    # subscription line at all rather than one for nothing.
+    if Decimal(operator.monthly_fee_ghs) > 0:
+        await add_line_item(
+            db,
+            invoice,
+            kind="subscription",
+            description=f"Monthly subscription — {period_start:%d %b %Y} to {period_end:%d %b %Y}",
+            quantity=Decimal("1"),
+            unit_price_ghs=Decimal(operator.monthly_fee_ghs),
+            sort_order=0,
+        )
+    # The invoice_issued event is written by record_invoice_issued, once every
+    # line is on, so it can never disagree with the invoice's total.
     return invoice
 
 
@@ -386,23 +411,31 @@ async def mark_invoice_paid(
     invoice: OperatorInvoice,
     payment_reference: str,
     amount_charged_ghs: Decimal | None = None,
+    *,
+    paid_at: datetime | None = None,
+    detail: dict | None = None,
+    by_system: bool = True,
 ) -> OperatorInvoice:
+    """`paid_at` defaults to now (a Paystack charge settles as it lands); a
+    payment recorded by hand passes the day the money came in. `detail` adds
+    to the audit row and the event (how a manual payment came in)."""
     now = datetime.now(timezone.utc)
-    audit.record_system(
-        db, "invoice.paid", isp_operator_id=invoice.isp_operator_id, target_type="operator_invoice",
+    _record(
+        db, by_system, "invoice.paid", isp_operator_id=invoice.isp_operator_id, target_type="operator_invoice",
         target_id=invoice.id, summary=f"Invoice {invoice.invoice_number} paid",
         changes={"status": {"before": invoice.status, "after": "paid"}},
         detail={"invoice_number": invoice.invoice_number, "payment_reference": payment_reference,
-                "invoice_amount_ghs": invoice.amount_ghs, "amount_charged_ghs": amount_charged_ghs},
+                "invoice_amount_ghs": invoice.amount_ghs, "amount_charged_ghs": amount_charged_ghs, **(detail or {})},
     )
     invoice.status = "paid"
-    invoice.paid_at = now
+    invoice.paid_at = paid_at or now
     invoice.payment_reference = payment_reference
 
     # What was actually charged is recorded even when it exceeds the invoice.
     # Overpayment is accepted rather than credited — there is no credit balance —
     # so the event metadata is the only record that the excess happened.
-    metadata = {"invoice_number": invoice.invoice_number, "payment_reference": payment_reference}
+    metadata = {"invoice_number": invoice.invoice_number, "payment_reference": payment_reference,
+                **{k: str(v) for k, v in (detail or {}).items() if v is not None}}
     if amount_charged_ghs is not None:
         metadata["amount_charged_ghs"] = str(amount_charged_ghs)
         metadata["invoice_amount_ghs"] = str(invoice.amount_ghs)
@@ -418,7 +451,7 @@ async def mark_invoice_paid(
     return invoice
 
 
-async def normalise_billing_status(db: AsyncSession, operator: ISPOperator) -> bool:
+async def normalise_billing_status(db: AsyncSession, operator: ISPOperator, *, by_system: bool = True) -> bool:
     """Put a paid-up operator back to billing_status 'active'. Caller commits.
 
     Runs on *any* successful payment, independent of suspension. Previously this
@@ -439,7 +472,7 @@ async def normalise_billing_status(db: AsyncSession, operator: ISPOperator) -> b
     before = OPERATOR_STATUS.snapshot(operator)
     operator.billing_status = "active"
     _operator_status_row(db, operator, before, "operator.billing_status_change",
-                         f"{operator.name} is paid up: billing back to active")
+                         f"{operator.name} is paid up: billing back to active", by_system=by_system)
     await db.flush()
     return True
 
@@ -465,7 +498,7 @@ def is_billing_suspension(operator: ISPOperator) -> bool:
     return operator.status == "suspended" and operator.suspension_reason == "billing"
 
 
-async def reactivate_operator(db: AsyncSession, operator: ISPOperator) -> ISPOperator:
+async def reactivate_operator(db: AsyncSession, operator: ISPOperator, *, by_system: bool = True) -> ISPOperator:
     """Lift a *billing* suspension. Callers must gate on is_billing_suspension()."""
     before = OPERATOR_STATUS.snapshot(operator)
     operator.status = "approved"
@@ -482,6 +515,39 @@ async def reactivate_operator(db: AsyncSession, operator: ISPOperator) -> ISPOpe
     )
     db.add(event)
     _operator_status_row(db, operator, before, "operator.reactivate",
-                         f"{operator.name} reactivated: the overdue invoice was paid", detail={"reason": "billing"})
+                         f"{operator.name} reactivated: the overdue invoice was paid", detail={"reason": "billing"},
+                         by_system=by_system)
     await db.flush()
     return operator
+
+
+async def settle_invoice(
+    db: AsyncSession,
+    invoice: OperatorInvoice,
+    operator: ISPOperator,
+    *,
+    payment_reference: str,
+    amount_charged_ghs: Decimal | None = None,
+    paid_at: datetime | None = None,
+    detail: dict | None = None,
+    by_system: bool = True,
+) -> bool:
+    """Everything a payment does, whichever way it came in (the Paystack
+    webhook, or a payment the platform owner recorded by hand): the invoice
+    is paid, billing goes back to active, and a *billing* suspension is lifted.
+    The caller holds the operator's row lock and commits.
+
+    Returns whether a billing suspension was lifted (the caller sends the
+    reactivation notice after committing)."""
+    # Only a billing suspension may be lifted by paying. A suspension the
+    # platform owner imposed — or one whose cause was never recorded — stands.
+    was_billing_suspended = is_billing_suspension(operator)
+    await mark_invoice_paid(db, invoice, payment_reference, amount_charged_ghs=amount_charged_ghs,
+                            paid_at=paid_at, detail=detail, by_system=by_system)
+    # Independent of suspension: an operator who paid inside the grace period is
+    # past_due but not suspended, and would otherwise stay past_due forever and
+    # never be invoiced again. (A cancelled or paused operator is left alone.)
+    await normalise_billing_status(db, operator, by_system=by_system)
+    if was_billing_suspended:
+        await reactivate_operator(db, operator, by_system=by_system)
+    return was_billing_suspended

@@ -80,12 +80,6 @@ LEGACY_CASES = {
         dict(contact_name="Kwame Mensah", isp_name="Aflao Community Networks",
              rejection_reason="Coverage overlaps an existing operator.", support_email="support@x.com"),
     ),
-    "trial_expiry_warning": (
-        legacy.trial_expiry_warning,
-        dict(isp_name="Aflao", trial_end_date="30 September 2026", days_remaining=3,
-             monthly_fee_ghs=Decimal("250.00"), billing_url="https://x/billing"),
-    ),
-    "trial_expired": (legacy.trial_expired, dict(isp_name="Aflao", billing_url="https://x/billing")),
     "invoice_issued": (
         legacy.invoice_issued,
         dict(isp_name="Aflao", invoice_number="INV-2026-0042", amount_ghs=Decimal("250.00"),
@@ -110,9 +104,25 @@ NO_LEGACY_TEXT = {
 }
 
 
+# Reworded on purpose by migration 064 (no "read-only" account, billing from
+# the 1st after the trial): the legacy text is what they no longer say.
+# tests/test_migration_064_templates.py pins them instead.
+REWORDED = {"trial_expiry_warning", "trial_expired"}
+
+
 def test_legacy_cases_cover_every_event():
-    assert set(LEGACY_CASES) == set(catalog.EVENTS) - NO_LEGACY_TEXT
-    assert NO_LEGACY_TEXT <= set(catalog.EVENTS)
+    assert set(LEGACY_CASES) == set(catalog.EVENTS) - NO_LEGACY_TEXT - REWORDED
+    assert NO_LEGACY_TEXT <= set(catalog.EVENTS) and REWORDED <= set(catalog.EVENTS)
+
+
+def test_reworded_defaults_no_longer_claim_read_only_or_payment_at_trial_end():
+    for event in REWORDED:
+        for channel in (EMAIL, SMS):
+            d = catalog.DEFAULTS[(event, channel)]
+            text = " ".join(filter(None, (d.subject, d.body_text, d.body_html))).lower()
+            assert "read-only" not in text and "read only" not in text, (event, channel)
+            assert "pay your invoice" not in text and "pay now" not in text, (event, channel)
+            assert "{first_invoice_date}" in d.body_text, (event, channel)
 
 
 @pytest.mark.parametrize("event", sorted(LEGACY_CASES))

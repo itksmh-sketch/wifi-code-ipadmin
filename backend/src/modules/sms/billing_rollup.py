@@ -41,13 +41,40 @@ from collections import defaultdict
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import OperatorInvoice, SMSUsageRecord
 from src.modules.billing.service import add_line_item
 
-__all__ = ["roll_up_sms_usage"]
+__all__ = ["roll_up_sms_usage", "unbilled_sms_total"]
+
+
+def _unbilled(operator_id: uuid.UUID, period_start: date) -> tuple:
+    """The records an invoice for the period starting period_start would take:
+    the one definition both functions below use."""
+    period_start_dt = datetime(period_start.year, period_start.month, period_start.day, tzinfo=timezone.utc)
+    return (
+        SMSUsageRecord.isp_operator_id == operator_id,
+        SMSUsageRecord.invoice_line_item_id.is_(None),
+        SMSUsageRecord.sent_at < period_start_dt,
+        # A send made during internal testing is never billed. Flagged
+        # rows stay unclaimed forever by design — that is the intended
+        # end state for them, not a backlog for the stale-unbilled
+        # report in jobs/sms_reconciliation to chase.
+        SMSUsageRecord.is_diagnostic.is_(False),
+    )
+
+
+async def unbilled_sms_total(db: AsyncSession, *, operator_id: uuid.UUID, period_start: date) -> Decimal:
+    """What roll_up_sms_usage would add to an invoice for this period, in GHS.
+    generate_monthly_invoices asks first for an operator on a GHS 0 fee, who is
+    invoiced only once this reaches GHS 1."""
+    total = (
+        await db.execute(select(func.coalesce(func.sum(SMSUsageRecord.amount_ghs), 0))
+                         .where(*_unbilled(operator_id, period_start)))
+    ).scalar()
+    return Decimal(total or 0)
 
 
 async def roll_up_sms_usage(
@@ -61,21 +88,8 @@ async def roll_up_sms_usage(
     `invoice`, one line item per distinct rate. Returns how many records were
     folded in — 0 is the common case, since most operators never use the
     platform gateway."""
-    period_start_dt = datetime(period_start.year, period_start.month, period_start.day, tzinfo=timezone.utc)
-
     rows = (
-        await db.execute(
-            select(SMSUsageRecord).where(
-                SMSUsageRecord.isp_operator_id == operator_id,
-                SMSUsageRecord.invoice_line_item_id.is_(None),
-                SMSUsageRecord.sent_at < period_start_dt,
-                # A send made during internal testing is never billed. Flagged
-                # rows stay unclaimed forever by design — that is the intended
-                # end state for them, not a backlog for the stale-unbilled
-                # report in jobs/sms_reconciliation to chase.
-                SMSUsageRecord.is_diagnostic.is_(False),
-            )
-        )
+        await db.execute(select(SMSUsageRecord).where(*_unbilled(operator_id, period_start)))
     ).scalars().all()
     if not rows:
         return 0

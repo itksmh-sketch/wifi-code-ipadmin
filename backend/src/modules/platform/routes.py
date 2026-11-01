@@ -60,7 +60,8 @@ from src.modules.admin_accounts.security_questions import SECURITY_QUESTIONS
 from src.modules.admin_accounts.provisioning import admin_email_taken, provision_operator_admin
 from src.modules.sms.types import SMSSendResult
 from src.utils.phone import mask_phone
-from src.schemas import DefaultMonthlyFeeUpdate, LoginRequest, PlatformAccessDisable, PlatformAccessEnable, PlatformAdminCreate, PlatformAdminDisable, PlatformAdminPasswordReset, PlatformHotspotServiceEnd, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, PlatformNotificationSMSCredentialResponse, PlatformNotificationSMSCredentialUpdate, PlatformSMSCredentialResponse, PlatformSMSCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse, TransactionDiagnosticUpdate
+from src.schemas import DefaultMonthlyFeeUpdate, LoginRequest, PlatformInvoicePaymentCreate, PlatformInvoicePaymentReverse, PlatformAccessDisable, PlatformAccessEnable, PlatformAdminCreate, PlatformAdminDisable, PlatformAdminPasswordReset, PlatformHotspotServiceEnd, PlatformOperatorBillingUpdate, PlatformOperatorCreate, PlatformOperatorStatusUpdate, PlatformPaymentCredentialResponse, PlatformPaymentCredentialUpdate, PlatformNotificationSMSCredentialResponse, PlatformNotificationSMSCredentialUpdate, PlatformSMSCredentialResponse, PlatformSMSCredentialUpdate, ProviderCatalogEntryResponse, ProviderCatalogUpdate, RefreshRequest, TokenResponse, TransactionDiagnosticUpdate
+from src.modules.billing import manual_payments
 from src.modules.billing.service import DEFAULT_MONTHLY_FEE_KEY, get_default_monthly_fee
 from src.modules.payments.filters import REAL_TRANSACTIONS_ONLY
 from src.utils.encryption import encrypt_secret
@@ -1530,6 +1531,7 @@ async def platform_billing_invoices(
             .offset((page - 1) * page_size)
         )
     ).all()
+    entries = await manual_payments.payments_by_invoice(db, [inv.id for inv, _, _ in rows])
 
     return {
         "invoices": [
@@ -1546,6 +1548,12 @@ async def platform_billing_invoices(
                 "issued_at": inv.issued_at.isoformat() if inv.issued_at else None,
                 "due_at": inv.due_at.isoformat() if inv.due_at else None,
                 "paid_at": inv.paid_at.isoformat() if inv.paid_at else None,
+                # Payments recorded by hand and their reversals, oldest first.
+                "payments": entries.get(inv.id, []),
+                # The recorded payment that settled it, when one did: the one
+                # a Reverse button acts on.
+                "settled_by_payment_id": (inv.payment_reference or "").removeprefix("manual:")
+                if inv.status == "paid" and (inv.payment_reference or "").startswith("manual:") else None,
             }
             for inv, name, slug in rows
         ],
@@ -1830,6 +1838,74 @@ async def waive_invoice(
     db.add(event)
     await db.commit()
     return {"message": "Invoice waived", "invoice_id": str(invoice.id)}
+
+
+@router.post("/operators/{operator_id}/invoices/{invoice_id}/payments", dependencies=[Depends(audit.audited)])
+async def record_invoice_payment(
+    operator_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    body: PlatformInvoicePaymentCreate,
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Record money received outside Paystack (mobile money, bank, cash) for an
+    invoice's full amount. Settles the invoice as a Paystack payment would,
+    lifting a billing suspension. The operator in the path must be the
+    invoice's: anything else is "not found"."""
+    try:
+        recorded = await manual_payments.record_payment(
+            db, owner_id=owner.id, operator_id=operator_id, invoice_id=invoice_id,
+            amount_ghs=body.amount_ghs, method=body.method, reference=body.reference,
+            received_on=body.received_on, note=body.note,
+        )
+    except manual_payments.ManualPaymentError as exc:
+        await db.rollback()
+        raise HTTPException(exc.status_code, exc.message)
+    await db.commit()
+
+    operator = recorded.operator
+    if recorded.reactivated:
+        try:
+            await notify.notify_reactivated(
+                email=operator.contact_email, phone=operator.contact_phone or "", isp_name=operator.name,
+                next_invoice_date=_first_of_next_month().strftime("%B %d, %Y"),
+            )
+        except Exception as exc:
+            logger.error("record_invoice_payment notify_error operator=%s error=%s", operator.slug, exc)
+    return {
+        "message": "Payment recorded",
+        "payment_id": str(recorded.payment.id),
+        "invoice_id": str(recorded.invoice.id),
+        "invoice_status": recorded.invoice.status,
+        "reactivated": recorded.reactivated,
+    }
+
+
+@router.post("/invoice-payments/{payment_id}/reversal", dependencies=[Depends(audit.audited)])
+async def reverse_invoice_payment(
+    payment_id: uuid.UUID,
+    body: PlatformInvoicePaymentReverse,
+    db: AsyncSession = Depends(get_db),
+    owner: PlatformOwner = Depends(get_platform_owner_context),
+):
+    """Reverse a payment recorded by hand (never edited or deleted). The
+    invoice is unpaid again; a reversal can't itself be reversed."""
+    try:
+        reversal, invoice = await manual_payments.reverse_payment(
+            db, owner_id=owner.id, payment_id=payment_id, reason=body.reason,
+        )
+    except manual_payments.ManualPaymentError as exc:
+        await db.rollback()
+        raise HTTPException(exc.status_code, exc.message)
+    await db.commit()
+    return {"message": "Payment reversed", "reversal_id": str(reversal.id), "invoice_id": str(invoice.id),
+            "invoice_status": invoice.status}
+
+
+def _first_of_next_month(now: datetime | None = None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    return datetime(now.year + 1, 1, 1, tzinfo=timezone.utc) if now.month == 12 else \
+        datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
 
 
 # --- Platform settings (platform owner only) ---

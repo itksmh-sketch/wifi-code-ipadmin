@@ -1,6 +1,17 @@
 """
 Job: invoice_generation — runs daily at 00:00 UTC.
 Generates monthly invoices for active operators who don't have one for the current period.
+
+- Billing starts on the 1st of the month after a trial ends: a month the trial
+  ran into is never invoiced (service.trial_covers_period). The trial's end
+  issues no invoice either (jobs/trial_expiry), so there is one invoice per
+  month and never two within days of each other.
+- Every invoice takes the operator's unbilled platform SMS usage from before
+  the period (sms.billing_rollup), so usage during the trial lands on the first
+  monthly invoice.
+- An operator on a GHS 0 fee gets an SMS-only invoice once that unbilled usage
+  reaches GHS 1 (Paystack's minimum charge); below that it carries forward to
+  the next month untouched.
 """
 from __future__ import annotations
 import logging
@@ -13,9 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.base import async_session_factory
 from src.db.models import ISPOperator, OperatorInvoice
-from src.modules.billing.service import PAYSTACK_MINIMUM_GHS, create_invoice, record_invoice_issued
+from src.modules.billing.service import (
+    PAYSTACK_MINIMUM_GHS, create_invoice, record_invoice_issued, trial_covers_period,
+)
 from src.modules.notifications import dispatcher as notify
-from src.modules.sms.billing_rollup import roll_up_sms_usage
+from src.modules.sms.billing_rollup import roll_up_sms_usage, unbilled_sms_total
 
 logger = structlog.get_logger(__name__)
 
@@ -23,8 +36,6 @@ logger = structlog.get_logger(__name__)
 async def _invoice_exists_for_period(
     db: AsyncSession, operator_id, period_start, period_end
 ) -> bool:
-    from sqlalchemy import cast
-    from sqlalchemy.dialects.postgresql import DATE
     result = await db.execute(
         select(OperatorInvoice).where(
             OperatorInvoice.isp_operator_id == operator_id,
@@ -36,9 +47,9 @@ async def _invoice_exists_for_period(
     return result.scalar_one_or_none() is not None
 
 
-async def generate_monthly_invoices(ctx=None):
-    """Daily job at 00:00 UTC."""
-    now = datetime.now(timezone.utc)
+async def generate_monthly_invoices(ctx=None, *, now: datetime | None = None):
+    """Daily job at 00:00 UTC. `now` is for tests: the run as of that moment."""
+    now = now or datetime.now(timezone.utc)
     logger.info("invoice_generation_job_started", now=str(now))
 
     today = now.date()
@@ -48,40 +59,31 @@ async def generate_monthly_invoices(ctx=None):
 
     async with async_session_factory() as db:
         try:
+            # Every active operator: those on a fee, and those on GHS 0 who may
+            # owe for SMS. A fee between 0 and GHS 1 can't exist (the
+            # isp_operators CHECK), so "not on a fee" means exactly 0.
             operators = (
-                await db.execute(
-                    select(ISPOperator).where(
-                        ISPOperator.billing_status == "active",
-                        # Billable and payable must be the same threshold. Anything
-                        # below Paystack's floor — zero, or GHS 0.50 — produces an
-                        # invoice that cannot be charged, runs through the grace
-                        # period and suspends the operator. Comped and sub-minimum
-                        # operators are skipped, not billed.
-                        ISPOperator.monthly_fee_ghs >= PAYSTACK_MINIMUM_GHS,
-                    )
-                )
+                await db.execute(select(ISPOperator).where(ISPOperator.billing_status == "active"))
             ).scalars().all()
-
-            skipped = (
-                await db.execute(
-                    select(ISPOperator.slug).where(
-                        ISPOperator.billing_status == "active",
-                        ISPOperator.monthly_fee_ghs < PAYSTACK_MINIMUM_GHS,
-                    )
-                )
-            ).scalars().all()
-            if skipped:
-                logger.info(
-                    "invoice_generation_skipped_unpayable_fee",
-                    operators=list(skipped),
-                    count=len(skipped),
-                )
 
             generated = 0
+            carried_forward = []
             for op in operators:
                 try:
+                    if trial_covers_period(op, period_start):
+                        continue
                     if await _invoice_exists_for_period(db, op.id, period_start, period_end):
                         continue
+
+                    if op.monthly_fee_ghs < PAYSTACK_MINIMUM_GHS:
+                        # Billable and payable are the same threshold: below
+                        # Paystack's floor an invoice can't be charged, would run
+                        # through the grace period and suspend the operator.
+                        sms_owed = await unbilled_sms_total(db, operator_id=op.id, period_start=period_start)
+                        if sms_owed < PAYSTACK_MINIMUM_GHS:
+                            if sms_owed > 0:
+                                carried_forward.append({"operator": op.slug, "sms_ghs": str(sms_owed)})
+                            continue
 
                     invoice = await create_invoice(db, op, period_start, period_end)
                     # Before the notify call, so the notified amount includes
@@ -111,6 +113,9 @@ async def generate_monthly_invoices(ctx=None):
                 except Exception as exc:
                     logger.error("invoice_generation_operator_error operator=%s error=%s", op.slug, exc)
 
+            if carried_forward:
+                logger.info("invoice_generation_sms_carried_forward", operators=carried_forward,
+                            count=len(carried_forward))
             await db.commit()
             logger.info("invoice_generation_job_completed", generated=generated)
         except Exception as exc:

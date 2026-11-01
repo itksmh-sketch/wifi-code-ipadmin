@@ -1,9 +1,56 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { apiCall, usePermissions } from '../App';
 import TransactionsTab from '../components/TransactionsTab';
 import SmsUsageTab from '../components/SmsUsageTab';
 import PageHeader from '../components/PageHeader';
 import PinPrompt, { usePinGate } from '../components/PinPrompt';
+
+const LINE_KIND = { subscription: 'Subscription', sms_usage: 'SMS usage', adjustment: 'Adjustment' };
+
+const fmtDate = (s) => (s ? new Date(s).toLocaleDateString() : '—');
+
+// How far through the trial the operator is, 0-100, from the trial as they
+// actually have it (start and end), not an assumed length.
+function trialProgress(status) {
+    const length = status.trial_length_days;
+    if (!length) return 0;
+    const used = length - (status.trial_days_remaining ?? 0);
+    return Math.min(100, Math.max(0, (used / length) * 100));
+}
+
+function LineItems({ invoice }) {
+    const lines = invoice.line_items || [];
+    if (!lines.length) return <p style={{ margin: 0, color: '#64748b' }}>No line items.</p>;
+    return (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+                <tr style={{ color: '#64748b', textAlign: 'left' }}>
+                    <th style={{ padding: '4px 8px', fontWeight: 500 }}>Item</th>
+                    <th style={{ padding: '4px 8px', fontWeight: 500 }}>Description</th>
+                    <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Qty</th>
+                    <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Unit (GHS)</th>
+                    <th style={{ padding: '4px 8px', fontWeight: 500, textAlign: 'right' }}>Amount (GHS)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {lines.map((line, i) => (
+                    <tr key={i}>
+                        <td style={{ padding: '4px 8px' }}>{LINE_KIND[line.kind] || line.kind}</td>
+                        <td style={{ padding: '4px 8px' }}>{line.description}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right' }}>{Number(line.quantity)}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right' }}>{Number(line.unit_price_ghs)}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right' }}>{Number(line.amount_ghs).toFixed(2)}</td>
+                    </tr>
+                ))}
+                <tr style={{ fontWeight: 600 }}>
+                    <td colSpan={4} style={{ padding: '4px 8px', textAlign: 'right', borderTop: '1px solid #e2e8f0' }}>Total</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right', borderTop: '1px solid #e2e8f0' }}>{Number(invoice.amount_ghs).toFixed(2)}</td>
+                </tr>
+            </tbody>
+        </table>
+    );
+}
 
 const TABS = [
     ['invoices', 'Invoices'],
@@ -18,6 +65,7 @@ export default function Billing() {
     const [payLoading, setPayLoading] = useState(false);
     const [error, setError] = useState('');
     const [tab, setTab] = useState('invoices');
+    const [open, setOpen] = useState({});
     const gate = usePinGate();
     // Paying an invoice is a superadmin action ('secrets'); admins see the bills.
     const { can } = usePermissions();
@@ -69,11 +117,18 @@ export default function Billing() {
                         <div style={{ marginBottom: 8 }}>
                             <div style={{ fontSize: 14, color: '#475569', marginBottom: 4 }}>
                                 Trial ends in <strong>{status.trial_days_remaining} day{status.trial_days_remaining !== 1 ? 's' : ''}</strong>
-                                {status.trial_ends_at && ` (${new Date(status.trial_ends_at).toLocaleDateString()})`}
+                                {status.trial_ends_at && ` (${fmtDate(status.trial_ends_at)})`}
+                                {status.trial_length_days && ` of ${status.trial_length_days}`}
                             </div>
                             <div style={{ background: '#e2e8f0', borderRadius: 4, height: 8, width: '100%' }}>
-                                <div style={{ background: '#6366f1', borderRadius: 4, height: 8, width: `${Math.max(0, 100 - (status.trial_days_remaining / 14) * 100)}%` }} />
+                                <div style={{ background: '#6366f1', borderRadius: 4, height: 8, width: `${trialProgress(status)}%` }} />
                             </div>
+                            {status.first_invoice_date && (
+                                <div style={{ fontSize: 13, color: '#64748b', marginTop: 6 }}>
+                                    Your account stays fully active when the trial ends. Monthly billing starts on{' '}
+                                    <strong>{new Date(`${status.first_invoice_date}T00:00:00`).toLocaleDateString()}</strong>, with your first invoice.
+                                </div>
+                            )}
                         </div>
                     )}
                     {status.has_outstanding_invoice && (
@@ -143,8 +198,15 @@ export default function Billing() {
                     </thead>
                     <tbody>
                         {invoices.map(inv => (
-                            <tr key={inv.id}>
-                                <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}>{inv.invoice_number}</td>
+                            <React.Fragment key={inv.id}>
+                            <tr>
+                                <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}>
+                                    <button type="button" onClick={() => setOpen(o => ({ ...o, [inv.id]: !o[inv.id] }))}
+                                        aria-expanded={!!open[inv.id]} title="Show line items"
+                                        style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: '#2563eb', fontSize: 14 }}>
+                                        {open[inv.id] ? '▾' : '▸'} {inv.invoice_number}
+                                    </button>
+                                </td>
                                 <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}>
                                     {inv.period_start ? new Date(inv.period_start).toLocaleDateString() : '—'} – {inv.period_end ? new Date(inv.period_end).toLocaleDateString() : '—'}
                                 </td>
@@ -155,8 +217,14 @@ export default function Billing() {
                                     </span>
                                 </td>
                                 <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}>{inv.due_at ? new Date(inv.due_at).toLocaleDateString() : '—'}</td>
-                                <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}>{inv.paid_at ? new Date(inv.paid_at).toLocaleDateString() : '—'}</td>
                                 <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9' }}>
+                                    {fmtDate(inv.paid_at)}
+                                    {inv.receipt && <div style={{ fontSize: 12, color: '#64748b' }}>{inv.receipt.method}</div>}
+                                </td>
+                                <td style={{ padding: '8px 12px', borderBottom: '1px solid #f1f5f9', whiteSpace: 'nowrap' }}>
+                                    <Link to={`/billing/invoices/${inv.id}`} style={{ fontSize: 13, marginRight: 10 }}>
+                                        {inv.status === 'paid' ? 'Receipt' : 'View / print'}
+                                    </Link>
                                     {can('secrets') && ['issued', 'overdue'].includes(inv.status) && (
                                         <button onClick={() => handlePay(inv.id)} disabled={payLoading}
                                             style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 4, padding: '4px 12px', cursor: 'pointer', fontSize: 13 }}>
@@ -165,6 +233,14 @@ export default function Billing() {
                                     )}
                                 </td>
                             </tr>
+                            {open[inv.id] && (
+                                <tr>
+                                    <td colSpan={7} style={{ padding: '8px 12px 14px 28px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                                        <LineItems invoice={inv} />
+                                    </td>
+                                </tr>
+                            )}
+                            </React.Fragment>
                         ))}
                     </tbody>
                 </table>

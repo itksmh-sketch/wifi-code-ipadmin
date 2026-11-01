@@ -17,13 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.db.base import get_db
 from src.db.models import ISPOperator, OperatorBillingEvent, OperatorInvoice
-from src.modules.billing.service import (
-    ghs_to_pesewas,
-    is_billing_suspension,
-    mark_invoice_paid,
-    normalise_billing_status,
-    reactivate_operator,
-)
+from src.modules.billing.service import ghs_to_pesewas, settle_invoice
 from src.modules.platform.payment_credentials_service import resolve_paystack_keys
 from src.modules.webhooks.charge_verification import ChargeRejection, verify_charge
 from src.modules.notifications import dispatcher as notify
@@ -133,6 +127,12 @@ async def platform_billing_webhook(request: Request, db: AsyncSession = Depends(
         logger.error("platform_billing_webhook operator_missing invoice=%s", invoice.invoice_number)
         return {"message": "Operator not found"}
 
+    # Read again under the lock: a payment the platform owner records by hand
+    # takes the same lock, and may have paid this invoice while we waited.
+    await db.refresh(invoice)
+    if invoice.status == "paid":
+        return {"message": "Already paid"}
+
     verdict = verify_charge(payload, expected_pesewas=ghs_to_pesewas(invoice.amount_ghs))
 
     if not verdict.accepted:
@@ -175,19 +175,10 @@ async def platform_billing_webhook(request: Request, db: AsyncSession = Depends(
             verdict.overpaid_suspiciously,
         )
 
-    # Only a billing suspension may be lifted by paying. A suspension the
-    # platform owner imposed — or one whose cause was never recorded — stands.
-    was_billing_suspended = is_billing_suspension(operator)
-
-    await mark_invoice_paid(db, invoice, reference, amount_charged_ghs=verdict.charged_ghs)
-    # Independent of suspension: an operator who paid inside the grace period is
-    # past_due but not suspended, and would otherwise stay past_due forever and
-    # never be invoiced again. (A cancelled or paused operator is left alone.)
-    await normalise_billing_status(db, operator)
-
-    if was_billing_suspended:
-        await reactivate_operator(db, operator)
-    elif operator.status == "suspended":
+    was_billing_suspended = await settle_invoice(
+        db, invoice, operator, payment_reference=reference, amount_charged_ghs=verdict.charged_ghs,
+    )
+    if not was_billing_suspended and operator.status == "suspended":
         logger.warning(
             "platform_billing_webhook_not_reactivated invoice=%s operator=%s reason=%s "
             "(payment recorded; suspension was not billing-caused)",

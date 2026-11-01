@@ -1,6 +1,6 @@
-from pydantic import BaseModel, BeforeValidator, Field, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
 from typing import Annotated, Literal, Optional
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 # Single definition of the payable floor, shared with the billing jobs.
 from src.modules.billing.service import PAYSTACK_MINIMUM_GHS
@@ -547,6 +547,25 @@ class PlatformOperatorBillingUpdate(BaseModel):
     monthly_fee_ghs: Optional[Decimal] = Field(default=None, ge=0)
     _check_fee = field_validator("monthly_fee_ghs")(validate_monthly_fee)
     extend_trial_days: Optional[int] = Field(default=None, ge=1, le=365)
+
+
+class PlatformInvoicePaymentCreate(BaseModel):
+    """Body for POST /platform/operators/{id}/invoices/{id}/payments: money the
+    platform owner received outside Paystack. amount_ghs must be the invoice's
+    full amount (checked in billing.manual_payments, which owns every rule)."""
+    model_config = ConfigDict(extra="forbid")
+
+    amount_ghs: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
+    method: str
+    reference: Optional[str] = None
+    received_on: date
+    note: Optional[str] = None
+
+
+class PlatformInvoicePaymentReverse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str
 
 
 class PlatformAdminCreate(BaseModel):

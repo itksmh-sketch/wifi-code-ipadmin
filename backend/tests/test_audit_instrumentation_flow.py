@@ -2197,11 +2197,11 @@ async def test_trial_end_and_invoice_rows(env, quiet_billing_notices):
     await handle_trial_expiry()
     [trial] = await rows_of("operator.trial_end", ended.id)
     assert trial.changes == {"billing_status": {"before": "trial", "after": "active"}}
-    assert trial.detail["invoiced"] is True
+    # No invoice at trial end: billing starts on the 1st of the next month.
+    assert "invoiced" not in trial.detail and trial.detail["first_invoice_date"]
     async with async_session_factory() as db:
-        [issued] = (await db.execute(select(AuditLog).where(AuditLog.action == "invoice.issue",
-                                                             AuditLog.isp_operator_id == ended.id))).scalars().all()
-    assert issued.detail["via"] == "trial_end" and issued.detail["amount_ghs"] in ("50.00", 50.0)
+        assert (await db.execute(select(AuditLog).where(AuditLog.action == "invoice.issue",
+                                                         AuditLog.isp_operator_id == ended.id))).scalars().all() == []
 
     monthly = await billed_operator(billing_status="active")
     await generate_monthly_invoices()
@@ -2210,8 +2210,7 @@ async def test_trial_end_and_invoice_rows(env, quiet_billing_notices):
         [month] = (await db.execute(select(AuditLog).where(AuditLog.action == "invoice.issue",
                                                             AuditLog.isp_operator_id == monthly.id))).scalars().all()
     assert month.detail["via"] == "monthly"
-    for row in (trial, issued):
-        assert_system_row(row, ended.id)
+    assert_system_row(trial, ended.id)
     assert_system_row(month, monthly.id)
 
 

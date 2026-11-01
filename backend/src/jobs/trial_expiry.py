@@ -1,12 +1,14 @@
 ﻿"""
 Job: trial_expiry â€” runs daily at 06:00 UTC.
 - Sends warning 3 days before trial ends (idempotent: checks billing_events).
-- Transitions expired trials to 'active' and generates first invoice.
+- Transitions expired trials to 'active'. No invoice here: billing starts on
+  the 1st of the following month, when generate_monthly_invoices issues the
+  first one (with any SMS used during the trial). Invoicing here as well put
+  two invoices days apart on an operator whose trial ended late in a month.
 """
 from __future__ import annotations
 import logging
-from calendar import monthrange
-from datetime import datetime, timezone, timedelta, date
+from datetime import datetime, timezone, timedelta
 
 import structlog
 from sqlalchemy import select
@@ -17,7 +19,7 @@ from src.db.base import async_session_factory
 from src.db.models import ISPOperator, OperatorBillingEvent, OperatorInvoice
 from src.modules import audit
 from src.modules.audit.fields import OPERATOR_STATUS
-from src.modules.billing.service import PAYSTACK_MINIMUM_GHS, create_invoice, record_invoice_issued
+from src.modules.billing.service import first_invoice_date
 from src.modules.notifications import dispatcher as notify
 
 logger = structlog.get_logger(__name__)
@@ -36,10 +38,10 @@ async def _already_sent(db: AsyncSession, operator_id, event_type: str) -> bool:
     return result.scalar_one_or_none() is not None
 
 
-async def handle_trial_expiry(ctx=None):
-    """Daily job at 06:00 UTC."""
+async def handle_trial_expiry(ctx=None, *, now: datetime | None = None):
+    """Daily job at 06:00 UTC. `now` is for tests: the run as of that moment."""
     settings = get_settings()
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     logger.info("trial_expiry_job_started", now=str(now))
 
     async with async_session_factory() as db:
@@ -75,69 +77,43 @@ async def handle_trial_expiry(ctx=None):
                                     trial_end_date=op.trial_ends_at.strftime("%B %d, %Y"),
                                     days_remaining=days_left,
                                     monthly_fee_ghs=op.monthly_fee_ghs,
+                                    first_invoice_date=first_invoice_date(op.trial_ends_at).strftime("%B %d, %Y"),
                                 )
                             except Exception as exc:
                                 logger.error("trial_warning_notify_error operator=%s error=%s", op.slug, exc)
 
                     elif op.trial_ends_at <= now:
-                        # Trial expired â€” transition to active and issue first invoice
+                        # Trial over: billing goes active. The first invoice
+                        # comes on first_invoice_date, from the monthly run.
                         before = OPERATOR_STATUS.snapshot(op)
                         op.billing_status = "active"
-                        payable = op.monthly_fee_ghs >= PAYSTACK_MINIMUM_GHS
+                        billing_starts = first_invoice_date(op.trial_ends_at)
                         audit.record_system(
                             db, "operator.trial_end", isp_operator_id=op.id, target_type="isp_operator",
                             target_id=op.id, summary=f"Trial ended for {op.name}",
                             changes=OPERATOR_STATUS.diff(before, OPERATOR_STATUS.snapshot(op)),
-                            detail={"trial_ends_at": op.trial_ends_at, "invoiced": payable},
+                            detail={"trial_ends_at": op.trial_ends_at, "first_invoice_date": billing_starts},
                         )
 
                         event = OperatorBillingEvent(
                             isp_operator_id=op.id,
                             event_type="trial_expired",
-                            description=f"Trial expired for {op.name}.",
-                            event_metadata={},
+                            description=f"Trial expired for {op.name}. Billing starts {billing_starts:%d %b %Y}.",
+                            event_metadata={"first_invoice_date": billing_starts.isoformat()},
                         )
                         db.add(event)
-
-                        # Same guard as generate_monthly_invoices: an invoice below
-                        # Paystack's floor can never be paid, so it would just run
-                        # through the grace period and suspend the operator. The
-                        # trial still ends — they are simply not invoiced.
-                        if op.monthly_fee_ghs < PAYSTACK_MINIMUM_GHS:
-                            logger.info(
-                                "trial_expiry_skipped_unpayable_fee",
-                                operator=op.slug,
-                                monthly_fee_ghs=str(op.monthly_fee_ghs),
-                            )
-                            try:
-                                await notify.notify_trial_expired(
-                                    email=op.contact_email,
-                                    phone=op.contact_phone or "",
-                                    isp_name=op.name,
-                                )
-                            except Exception as exc:
-                                logger.error("trial_expired_notify_error operator=%s error=%s", op.slug, exc)
-                            continue
-
-                        # First invoice: current calendar month
-                        today = now.date()
-                        period_start = today.replace(day=1)
-                        last_day = monthrange(today.year, today.month)[1]
-                        period_end = today.replace(day=last_day)
-
-                        invoice = await create_invoice(db, op, period_start, period_end)
-                        record_invoice_issued(db, invoice, via="trial_end")
 
                         try:
                             await notify.notify_trial_expired(
                                 email=op.contact_email,
                                 phone=op.contact_phone or "",
                                 isp_name=op.name,
+                                first_invoice_date=billing_starts.strftime("%B %d, %Y"),
                             )
                         except Exception as exc:
                             logger.error("trial_expired_notify_error operator=%s error=%s", op.slug, exc)
 
-                        logger.info("trial_expired operator=%s invoice=%s", op.slug, invoice.invoice_number)
+                        logger.info("trial_expired operator=%s first_invoice_date=%s", op.slug, billing_starts)
 
                 except Exception as exc:
                     logger.error("trial_expiry_operator_error operator=%s error=%s", op.slug, exc)

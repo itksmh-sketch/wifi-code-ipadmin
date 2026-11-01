@@ -79,6 +79,7 @@ PLACEHOLDER_HELP: dict[str, str] = {
     "payment_url": "Link to pay the invoice",
     "suspension_date": "The date the account will be suspended",
     "next_invoice_date": "The date of the next invoice",
+    "first_invoice_date": "The date monthly billing starts: the 1st of the month after the trial ends",
     "access_scope": "Whose sign-in changed: one admin's email, or all of the operator's users and resellers",
 }
 
@@ -134,14 +135,17 @@ EVENTS: dict[str, EventDef] = {
         description="Sent while an operator's free trial is still running.",
         placeholders=(
             "isp_name", "trial_end_date", "days_remaining",
-            "monthly_fee_ghs", "billing_url", "platform_name",
+            "monthly_fee_ghs", "first_invoice_date", "billing_url", "platform_name",
         ),
     ),
     "trial_expired": EventDef(
         event="trial_expired",
         label="Trial ended",
-        description="Sent when the free trial ends and the account goes read-only.",
-        placeholders=("isp_name", "billing_url", "platform_name"),
+        description=(
+            "Sent when the free trial ends. The account stays fully active; "
+            "monthly billing starts on the 1st of the following month."
+        ),
+        placeholders=("isp_name", "first_invoice_date", "billing_url", "platform_name"),
     ),
     "invoice_issued": EventDef(
         event="invoice_issued",
@@ -316,45 +320,47 @@ _default(
         "<p>Your <strong>{platform_name}</strong> free trial ends on <strong>{trial_end_date}</strong> "
         "({days_remaining} days remaining).</p>"
         "<p>Monthly fee: <strong>GHS {monthly_fee_ghs}</strong></p>"
-        "<p>After the trial, your account will switch to read-only mode until you pay your first invoice.</p>"
-        "<p><a href='{billing_url}' style='background:#2563eb;color:#fff;padding:10px 20px;text-decoration:none;border-radius:4px'>Pay Now</a></p>"
+        "<p>Your account stays fully active when the trial ends. Monthly billing starts on "
+        "<strong>{first_invoice_date}</strong>; nothing is due before then.</p>"
+        "<p><a href='{billing_url}' style='background:#2563eb;color:#fff;padding:10px 20px;text-decoration:none;border-radius:4px'>View billing</a></p>"
     ),
     body_text=(
         "Your {platform_name} trial for {isp_name} ends on {trial_end_date} ({days_remaining} days remaining).\n"
         "Monthly fee: GHS {monthly_fee_ghs}\n"
-        "Pay at: {billing_url}\n"
-        "After the trial, your account enters read-only mode until payment."
+        "Your account stays fully active. Monthly billing starts on {first_invoice_date}; nothing is due before then.\n"
+        "Billing: {billing_url}"
     ),
 )
 _default(
     "trial_expiry_warning", SMS,
     body_text=(
-        "Your {platform_name} trial ends in {days_remaining} days. "
-        "Monthly fee: GHS {monthly_fee_ghs}. Pay at: {billing_url} to keep full access."
+        "Your {platform_name} trial ends in {days_remaining} days; your account stays active. "
+        "Monthly fee: GHS {monthly_fee_ghs}, billed from {first_invoice_date}. Billing: {billing_url}"
     ),
 )
 
 _default(
     "trial_expired", EMAIL,
-    subject="Your trial has ended — action required",
+    subject="Your trial has ended — {isp_name}",
     body_html=(
         "<h2>Your trial has ended, {isp_name}</h2>"
         "<p>Your <strong>{platform_name}</strong> free trial has ended. "
-        "Your account is now in <strong>read-only mode</strong>.</p>"
-        "<p>Pay your invoice to restore full access:</p>"
-        "<p><a href='{billing_url}' style='background:#2563eb;color:#fff;padding:10px 20px;text-decoration:none;border-radius:4px'>Pay Invoice</a></p>"
+        "Your account stays fully active.</p>"
+        "<p>Monthly billing starts on <strong>{first_invoice_date}</strong>, with your first invoice.</p>"
+        "<p><a href='{billing_url}' style='background:#2563eb;color:#fff;padding:10px 20px;text-decoration:none;border-radius:4px'>View billing</a></p>"
     ),
     body_text=(
         "Your {platform_name} trial for {isp_name} has ended.\n"
-        "Your account is now in read-only mode.\n"
-        "Pay your invoice to restore access: {billing_url}"
+        "Your account stays fully active.\n"
+        "Monthly billing starts on {first_invoice_date}, with your first invoice.\n"
+        "Billing: {billing_url}"
     ),
 )
 _default(
     "trial_expired", SMS,
     body_text=(
-        "Your {platform_name} trial has ended. Account is now read-only. "
-        "Pay your invoice to restore access: {billing_url}"
+        "Your {platform_name} trial has ended; your account stays fully active. "
+        "Monthly billing starts on {first_invoice_date}. Billing: {billing_url}"
     ),
 )
 
@@ -633,6 +639,7 @@ SAMPLE_VALUES: dict[str, str] = {
     "payment_url": "https://ip-admin.duckdns.org/admin/billing",
     "suspension_date": "21 October 2026",
     "next_invoice_date": "1 November 2026",
+    "first_invoice_date": "1 October 2026",
     "access_scope": "all dashboard users and resellers",
 }
 

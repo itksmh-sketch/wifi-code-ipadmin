@@ -113,9 +113,10 @@ async def send_all_six(env) -> dict[str, dict]:
     )
     await dispatcher.notify_trial_expiry_warning(
         email="a@throwaway.test", phone="", isp_name="A ISP", trial_end_date="1 Jan", days_remaining=3,
-        monthly_fee_ghs=Decimal("50.00"),
+        monthly_fee_ghs=Decimal("50.00"), first_invoice_date="February 01, 2027",
     )
-    await dispatcher.notify_trial_expired(email="a@throwaway.test", phone="", isp_name="A ISP")
+    await dispatcher.notify_trial_expired(email="a@throwaway.test", phone="", isp_name="A ISP",
+                                          first_invoice_date="February 01, 2027")
     await dispatcher.notify_suspended(email="a@throwaway.test", phone="", isp_name="A ISP")
 
     invoiced = await make_operator()
@@ -156,7 +157,8 @@ async def test_all_six_links_come_from_the_database_setting(env):
 async def test_a_changed_setting_is_used_on_the_next_send(env):
     """No caching: the settings page takes effect at once."""
     await set_app_url("https://changed.throwaway.test")
-    await dispatcher.notify_trial_expired(email="a@throwaway.test", phone="", isp_name="A ISP")
+    await dispatcher.notify_trial_expired(email="a@throwaway.test", phone="", isp_name="A ISP",
+                                          first_invoice_date="February 01, 2027")
     assert env["rendered"][-1][1]["billing_url"] == "https://changed.throwaway.test/admin/billing"
 
 

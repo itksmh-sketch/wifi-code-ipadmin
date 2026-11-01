@@ -15,6 +15,7 @@ import PaymentCredentials from './pages/PaymentCredentials';
 import SMSCredentials from './pages/SMSCredentials';
 import Branding from './pages/Branding';
 import Billing from './pages/Billing';
+import InvoicePrint from './pages/InvoicePrint';
 import Security from './pages/Security';
 import Users from './pages/Users';
 import AuditLog from './pages/AuditLog';
@@ -198,6 +199,7 @@ function AdminShell() {
                         <Route path="/sms-credentials" element={<RequirePerm perm={['secrets', 'config']}><SMSCredentials /></RequirePerm>} />
                         <Route path="/branding" element={<RequirePerm perm="config"><Branding /></RequirePerm>} />
                         <Route path="/billing" element={<RequirePerm perm="billing.read"><Billing /></RequirePerm>} />
+                        <Route path="/billing/invoices/:invoiceId" element={<RequirePerm perm="billing.read"><InvoicePrint /></RequirePerm>} />
                         <Route path="/users" element={<RequirePerm perm="users"><Users /></RequirePerm>} />
                         <Route path="/audit" element={<RequirePerm perm="audit"><AuditLog /></RequirePerm>} />
                         <Route path="/security" element={<Security />} />

@@ -129,6 +129,9 @@ AUDITED = {
     ("POST", "/api/v1/platform/auth/logout"),
     ("PUT", "/api/v1/platform/billing/default-fee"),
     ("PUT", "/api/v1/platform/invoices/{invoice_id}/waive"),
+    # Payments the platform owner records by hand, and their reversal (064).
+    ("POST", "/api/v1/platform/operators/{operator_id}/invoices/{invoice_id}/payments"),
+    ("POST", "/api/v1/platform/invoice-payments/{payment_id}/reversal"),
     ("PATCH", "/api/v1/platform/me"),
     ("POST", "/api/v1/platform/me/password"),
     ("POST", "/api/v1/platform/me/phone"),

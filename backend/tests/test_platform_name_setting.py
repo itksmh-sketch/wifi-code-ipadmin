@@ -126,7 +126,7 @@ async def test_notifications_carry_the_configured_name(monkeypatch):
         email="a@b.test", phone="1", contact_name="K", isp_name="I",
         admin_email="a@b.test", temp_password="x", trial_days=14,
     )
-    await dispatcher.notify_trial_expired(email="a@b.test", phone="1", isp_name="I")
+    await dispatcher.notify_trial_expired(email="a@b.test", phone="1", isp_name="I", first_invoice_date="1 Jan")
     await dispatcher.notify_suspended(email="a@b.test", phone="1", isp_name="I")
 
     assert rendered and {v["platform_name"] for v in rendered} == {"Kasoa WiFi Hub"}

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.db.base import get_db
 from src.db.models import (
@@ -25,8 +26,10 @@ from src.middleware.auth import TenantContext, get_admin_tenant_context, require
 from src.middleware.permissions import BILLING_READ, READ, SECRETS, require_perm
 from src.modules import audit
 from src.modules.audit.redact import scrub
-from src.modules.billing import service
-from src.modules.billing.schemas import BillingStatusResponse, InvoiceResponse, PayInvoiceResponse
+from src.modules.billing import manual_payments, service
+from src.modules.billing.schemas import (
+    BillingStatusResponse, InvoiceDetailResponse, InvoiceParty, InvoiceResponse, PayInvoiceResponse,
+)
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
@@ -50,6 +53,15 @@ async def billing_status(
 
     outstanding = await service.get_outstanding_invoice(db, operator.id)
 
+    # Trials start when the operator is created (approval, or the platform's
+    # create with trial days), and an extension moves only the end.
+    trial_length_days = None
+    first_invoice = None
+    if operator.trial_ends_at:
+        seconds = (operator.trial_ends_at - operator.created_at).total_seconds()
+        trial_length_days = max(1, round(seconds / 86400))
+        first_invoice = service.first_invoice_date(operator.trial_ends_at)
+
     return BillingStatusResponse(
         billing_status=operator.billing_status,
         trial_ends_at=operator.trial_ends_at,
@@ -59,7 +71,20 @@ async def billing_status(
         account_status=operator.status,
         is_suspended=operator.status == "suspended",
         suspension_reason=operator.suspension_reason,
+        trial_started_at=operator.created_at if operator.trial_ends_at else None,
+        trial_length_days=trial_length_days,
+        first_invoice_date=first_invoice,
     )
+
+
+async def _with_receipts(db: AsyncSession, invoices: list[OperatorInvoice]) -> list[dict]:
+    entries = await manual_payments.payments_by_invoice(db, [inv.id for inv in invoices])
+    out = []
+    for inv in invoices:
+        row = InvoiceResponse.model_validate(inv).model_dump()
+        row["receipt"] = manual_payments.receipt_for(inv, entries.get(inv.id))
+        out.append(row)
+    return out
 
 
 @router.get("/invoices", response_model=List[InvoiceResponse], dependencies=[Depends(require_perm(BILLING_READ))])
@@ -69,21 +94,29 @@ async def list_invoices(
 ):
     result = await db.execute(
         select(OperatorInvoice)
+        .options(selectinload(OperatorInvoice.line_items))
         .where(OperatorInvoice.isp_operator_id == tenant.isp_operator_id)
         .order_by(OperatorInvoice.created_at.desc())
     )
-    return result.scalars().all()
+    return await _with_receipts(db, list(result.scalars().all()))
 
 
-@router.get("/invoices/{invoice_id}", response_model=InvoiceResponse, dependencies=[Depends(require_perm(BILLING_READ))])
+@router.get("/invoices/{invoice_id}", response_model=InvoiceDetailResponse,
+            dependencies=[Depends(require_perm(BILLING_READ))])
 async def get_invoice(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(get_admin_tenant_context),
 ):
+    """One invoice, with what its printed copy (invoice, and receipt once
+    paid) shows: the lines, who it is billed to and who issued it."""
+    from src.modules.platform.settings_service import get_platform_name, get_setting
+
     invoice = (
         await db.execute(
-            select(OperatorInvoice).where(
+            select(OperatorInvoice)
+            .options(selectinload(OperatorInvoice.line_items))
+            .where(
                 OperatorInvoice.id == invoice_id,
                 OperatorInvoice.isp_operator_id == tenant.isp_operator_id,
             )
@@ -91,7 +124,13 @@ async def get_invoice(
     ).scalar_one_or_none()
     if not invoice:
         raise HTTPException(404, "Invoice not found")
-    return invoice
+    operator = await db.get(ISPOperator, tenant.isp_operator_id)
+    [row] = await _with_receipts(db, [invoice])
+    return {
+        **row,
+        "bill_to": InvoiceParty(name=operator.name, email=operator.contact_email, phone=operator.contact_phone),
+        "issuer": InvoiceParty(name=await get_platform_name(), email=await get_setting(db, "platform_support_email")),
+    }
 
 
 # The one genuinely money-moving endpoint an operator admin can reach: it

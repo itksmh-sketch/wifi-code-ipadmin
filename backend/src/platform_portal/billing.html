@@ -20,6 +20,10 @@
     .fee-err{width:100%;margin-top:2px}
     .fee-value{font-size:var(--fs-lg);font-weight:700}
     td .amt-owed{color:var(--danger-text);font-weight:600}
+    /* Payments recorded by hand, under an invoice's status. */
+    .inv-pay{font-size:var(--fs-xs);color:var(--muted);margin-top:2px}
+    .inv-pay.reversed{text-decoration:line-through}
+    .inv-actions{display:flex;gap:var(--sp-2);flex-wrap:wrap;justify-content:flex-end}
   </style>
 </head>
 <body>
@@ -149,7 +153,9 @@
     </div>
     <p class="help">
       Invoices are generated automatically by the monthly billing job — there is no manual trigger, as
-      invoice numbering is not safe against a manual run racing the cron.
+      invoice numbering is not safe against a manual run racing the cron. Money received outside
+      Paystack (mobile money, bank transfer, cash) is recorded with <em>Record payment</em>; a wrong
+      entry is reversed, never edited.
     </p>
   </div>
 
@@ -234,6 +240,58 @@
       <button class="btn" id="waive-cancel">Cancel</button>
       <button class="btn danger" id="waive-confirm">Waive invoice</button>
     </div>
+  </div>
+</div>
+
+<!-- Record a payment received outside Paystack -->
+<div class="modal-backdrop" id="pay-overlay">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="pay-title">
+    <div class="modal-title" id="pay-title">Record payment</div>
+    <p class="text-muted" id="pay-sub" style="margin:0 0 4px"></p>
+    <p style="margin:0;font-size:13px">
+      For the invoice's <strong>full amount</strong> only. The invoice is marked paid and, if the
+      operator was suspended for non-payment, they are reactivated.
+    </p>
+    <form id="pay-form" novalidate>
+      <label for="pay-method">Method</label>
+      <select id="pay-method">
+        <option value="momo">Mobile money</option>
+        <option value="bank">Bank transfer</option>
+        <option value="cash">Cash</option>
+      </select>
+      <label for="pay-reference">Reference <span class="label-note" id="pay-ref-note">(transaction ID)</span></label>
+      <input id="pay-reference" type="text" maxlength="120" autocomplete="off" spellcheck="false">
+      <label for="pay-date">Date received</label>
+      <input id="pay-date" type="date">
+      <label for="pay-note">Note <span class="label-note">(optional)</span></label>
+      <textarea id="pay-note" maxlength="500"></textarea>
+      <div id="pay-err" class="notice bad" style="display:none;margin-top:12px"></div>
+      <div class="modal-actions">
+        <button class="btn" type="button" id="pay-cancel">Cancel</button>
+        <button class="btn primary" type="submit" id="pay-confirm">Record payment</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Reverse a recorded payment -->
+<div class="modal-backdrop" id="rev-overlay">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="rev-title">
+    <div class="modal-title" id="rev-title">Reverse payment</div>
+    <p class="text-muted" id="rev-sub" style="margin:0 0 4px"></p>
+    <p style="margin:0;font-size:13px">
+      The invoice goes back to unpaid and the billing job chases it as usual. The payment stays on
+      record with this reversal next to it. A reversal can't be undone: record the payment again instead.
+    </p>
+    <form id="rev-form" novalidate>
+      <label for="rev-reason">Reason</label>
+      <textarea id="rev-reason" maxlength="500" required></textarea>
+      <div id="rev-err" class="notice bad" style="display:none;margin-top:12px"></div>
+      <div class="modal-actions">
+        <button class="btn" type="button" id="rev-cancel">Cancel</button>
+        <button class="btn danger" type="submit" id="rev-confirm">Reverse payment</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -633,6 +691,16 @@ function renderInvoices() {
   empty.style.display = 'none';
   tbody.innerHTML = invoices.map(inv => {
     const waivable = inv.status !== 'paid' && inv.status !== 'waived';
+    const payable = inv.status === 'issued' || inv.status === 'overdue';
+    const ref = `data-inv-id="${esc(inv.id)}" data-inv-num="${esc(inv.invoice_number)}"`;
+    const actions = [];
+    if (payable) {
+      actions.push(`<button class="btn sm primary" type="button" data-record ${ref} data-op-id="${esc(inv.operator_id)}" data-amount="${esc(Number(inv.amount_ghs).toFixed(2))}">Record payment</button>`);
+    }
+    if (inv.settled_by_payment_id) {
+      actions.push(`<button class="btn sm" type="button" data-reverse ${ref} data-payment-id="${esc(inv.settled_by_payment_id)}">Reverse payment</button>`);
+    }
+    if (waivable) actions.push(`<button class="btn sm danger" type="button" data-waive ${ref}>Waive</button>`);
     return `<tr>
       <td class="num">${esc(inv.invoice_number)}</td>
       <td>
@@ -641,13 +709,23 @@ function renderInvoices() {
       </td>
       <td>${fmtDay(inv.period_start)} – ${fmtDay(inv.period_end)}</td>
       <td class="num qty">${esc(fmtMoney(inv.amount_ghs))}</td>
-      <td>${invStatusBadge(inv.status)}</td>
+      <td>${invStatusBadge(inv.status)}${paymentLines(inv)}</td>
       <td>${fmtDay(inv.due_at)}</td>
       <td>${fmtDay(inv.paid_at)}</td>
-      <td>${waivable
-        ? `<button class="btn sm danger" type="button" data-waive data-inv-id="${esc(inv.id)}" data-inv-num="${esc(inv.invoice_number)}">Waive</button>`
-        : ''}</td>
+      <td><div class="inv-actions">${actions.join('')}</div></td>
     </tr>`;
+  }).join('');
+}
+
+// Each payment recorded by hand, and each reversal, oldest first. A reversed
+// payment is struck through; its reversal says why.
+function paymentLines(inv) {
+  return (inv.payments || []).map(p => {
+    if (p.kind === 'reversal') {
+      return `<div class="inv-pay">Reversed ${esc(fmtDay(p.received_on))}: ${esc(p.note || '')}</div>`;
+    }
+    const ref = p.reference ? ` · ${esc(p.reference)}` : '';
+    return `<div class="inv-pay${p.reversed ? ' reversed' : ''}">${esc(p.method_label)}${ref} · ${esc(fmtDay(p.received_on))}</div>`;
   }).join('');
 }
 
@@ -729,6 +807,148 @@ document.getElementById('inv-tbody').addEventListener('click', ev => {
   const btn = ev.target.closest('button[data-waive]');
   if (!btn) return;
   openWaive(btn.getAttribute('data-inv-id'), btn.getAttribute('data-inv-num'), btn);
+});
+
+// ── Record payment / reverse payment ───────────────────────────────────────
+// One dialog open at a time; the opener gets focus back on close.
+let pendingPay = null;
+let pendingReverse = null;
+let payOpener = null;
+
+function todayIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function syncRefNote() {
+  const cash = document.getElementById('pay-method').value === 'cash';
+  document.getElementById('pay-ref-note').textContent = cash ? '(optional — e.g. a receipt number)' : '(transaction ID)';
+}
+function openPay(btn) {
+  pendingPay = {
+    invoiceId: btn.getAttribute('data-inv-id'),
+    operatorId: btn.getAttribute('data-op-id'),
+    amount: btn.getAttribute('data-amount'),
+  };
+  payOpener = btn;
+  document.getElementById('pay-sub').textContent =
+    `Invoice ${btn.getAttribute('data-inv-num')} · ${fmtMoney(pendingPay.amount)}`;
+  document.getElementById('pay-form').reset();
+  const date = document.getElementById('pay-date');
+  date.value = todayIso();
+  date.max = todayIso();
+  syncRefNote();
+  sectionError('pay-err', '');
+  document.getElementById('pay-overlay').classList.add('show');
+  document.getElementById('pay-method').focus();
+}
+function closePay() {
+  pendingPay = null;
+  document.getElementById('pay-overlay').classList.remove('show');
+  const btn = document.getElementById('pay-confirm');
+  btn.disabled = false;
+  btn.textContent = 'Record payment';
+  if (payOpener && document.contains(payOpener)) payOpener.focus();
+  payOpener = null;
+}
+function openReverse(btn) {
+  pendingReverse = btn.getAttribute('data-payment-id');
+  payOpener = btn;
+  document.getElementById('rev-sub').textContent = `Invoice ${btn.getAttribute('data-inv-num')}`;
+  document.getElementById('rev-form').reset();
+  sectionError('rev-err', '');
+  document.getElementById('rev-overlay').classList.add('show');
+  document.getElementById('rev-reason').focus();
+}
+function closeReverse() {
+  pendingReverse = null;
+  document.getElementById('rev-overlay').classList.remove('show');
+  const btn = document.getElementById('rev-confirm');
+  btn.disabled = false;
+  btn.textContent = 'Reverse payment';
+  if (payOpener && document.contains(payOpener)) payOpener.focus();
+  payOpener = null;
+}
+
+document.getElementById('inv-tbody').addEventListener('click', ev => {
+  const record = ev.target.closest('button[data-record]');
+  if (record) return openPay(record);
+  const reverse = ev.target.closest('button[data-reverse]');
+  if (reverse) openReverse(reverse);
+});
+document.getElementById('pay-method').addEventListener('change', syncRefNote);
+document.getElementById('pay-cancel').addEventListener('click', closePay);
+document.getElementById('rev-cancel').addEventListener('click', closeReverse);
+document.getElementById('pay-overlay').addEventListener('click', ev => { if (ev.target.id === 'pay-overlay') closePay(); });
+document.getElementById('rev-overlay').addEventListener('click', ev => { if (ev.target.id === 'rev-overlay') closeReverse(); });
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Escape') return;
+  if (document.getElementById('pay-overlay').classList.contains('show')) closePay();
+  if (document.getElementById('rev-overlay').classList.contains('show')) closeReverse();
+});
+
+document.getElementById('pay-form').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  if (!pendingPay) return;
+  const method = document.getElementById('pay-method').value;
+  const reference = document.getElementById('pay-reference').value.trim();
+  const receivedOn = document.getElementById('pay-date').value;
+  if (method !== 'cash' && !reference) return sectionError('pay-err', 'Enter the transaction reference.');
+  if (!receivedOn) return sectionError('pay-err', 'Enter the date the money was received.');
+  const btn = document.getElementById('pay-confirm');
+  btn.disabled = true;
+  btn.textContent = 'Recording…';
+  const { invoiceId, operatorId, amount } = pendingPay;
+  try {
+    const res = await api(`/api/v1/platform/operators/${operatorId}/invoices/${invoiceId}/payments`, {
+      method: 'POST',
+      body: JSON.stringify({
+        amount_ghs: amount, method, reference: reference || null, received_on: receivedOn,
+        note: document.getElementById('pay-note').value.trim() || null,
+      }),
+    });
+    if (!res.ok) {
+      sectionError('pay-err', await readError(res, 'Could not record the payment.'));
+      btn.disabled = false;
+      btn.textContent = 'Record payment';
+      return;
+    }
+    const data = await res.json();
+    closePay();
+    showToast(data.reactivated ? 'Payment recorded — operator reactivated' : 'Payment recorded');
+    await Promise.all([loadInvoices(), loadOperators(), loadSummary()]);
+  } catch (e) {
+    sectionError('pay-err', 'Network error — the payment was not recorded.');
+    btn.disabled = false;
+    btn.textContent = 'Record payment';
+  }
+});
+
+document.getElementById('rev-form').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  if (!pendingReverse) return;
+  const reason = document.getElementById('rev-reason').value.trim();
+  if (!reason) return sectionError('rev-err', 'Say why the payment is being reversed.');
+  const btn = document.getElementById('rev-confirm');
+  btn.disabled = true;
+  btn.textContent = 'Reversing…';
+  try {
+    const res = await api(`/api/v1/platform/invoice-payments/${pendingReverse}/reversal`, {
+      method: 'POST', body: JSON.stringify({ reason }),
+    });
+    if (!res.ok) {
+      sectionError('rev-err', await readError(res, 'Could not reverse the payment.'));
+      btn.disabled = false;
+      btn.textContent = 'Reverse payment';
+      return;
+    }
+    closeReverse();
+    showToast('Payment reversed');
+    await Promise.all([loadInvoices(), loadOperators(), loadSummary()]);
+  } catch (e) {
+    sectionError('rev-err', 'Network error — the payment was not reversed.');
+    btn.disabled = false;
+    btn.textContent = 'Reverse payment';
+  }
 });
 document.getElementById('waive-cancel').addEventListener('click', closeWaive);
 document.getElementById('waive-overlay').addEventListener('click', ev => {

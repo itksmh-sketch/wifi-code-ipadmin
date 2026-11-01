@@ -202,12 +202,14 @@ async def notify_trial_expiry_warning(
     trial_end_date: str,
     days_remaining: int,
     monthly_fee_ghs: Decimal,
+    first_invoice_date: str,
 ) -> None:
     values = {
         "isp_name": isp_name,
         "trial_end_date": trial_end_date,
         "days_remaining": days_remaining,
         "monthly_fee_ghs": monthly_fee_ghs,
+        "first_invoice_date": first_invoice_date,
         "billing_url": await app_url("/admin/billing"),
         "platform_name": await get_platform_name(),
     }
@@ -216,9 +218,10 @@ async def notify_trial_expiry_warning(
     await _send_sms(phone, await store.render_sms("trial_expiry_warning", values))
 
 
-async def notify_trial_expired(*, email: str, phone: str, isp_name: str) -> None:
+async def notify_trial_expired(*, email: str, phone: str, isp_name: str, first_invoice_date: str) -> None:
     values = {
         "isp_name": isp_name,
+        "first_invoice_date": first_invoice_date,
         "billing_url": await app_url("/admin/billing"),
         "platform_name": await get_platform_name(),
     }

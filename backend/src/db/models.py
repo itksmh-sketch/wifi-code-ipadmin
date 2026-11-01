@@ -1350,6 +1350,32 @@ class OperatorInvoiceLineItem(Base):
     )
 
 
+class OperatorInvoicePayment(Base):
+    """A payment the platform owner received outside Paystack (mobile money,
+    bank transfer, cash) and recorded against one invoice, for its full amount
+    (kind 'payment'), or the reversal of one (kind 'reversal'). Append-only: a
+    wrong entry is reversed, never edited or deleted; a payment is reversed at
+    most once and a reversal never is (migration 064). Written only by
+    billing.manual_payments."""
+    __tablename__ = "operator_invoice_payments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default="gen_random_uuid()")
+    isp_operator_id = Column(UUID(as_uuid=True), ForeignKey("isp_operators.id"), nullable=False)
+    invoice_id = Column(UUID(as_uuid=True), ForeignKey("operator_invoices.id"), nullable=False)
+    kind = Column(String(10), nullable=False)
+    amount_ghs = Column(Numeric(10, 2), nullable=False)
+    # momo | bank | cash on a payment; NULL on a reversal.
+    method = Column(String(10), nullable=True)
+    reference = Column(Text, nullable=True)
+    # The day the money came in (a payment) or the day it was reversed.
+    received_on = Column(Date, nullable=False)
+    note = Column(Text, nullable=True)
+    reverses_payment_id = Column(UUID(as_uuid=True), ForeignKey("operator_invoice_payments.id"), unique=True,
+                                 nullable=True)
+    recorded_by_platform_owner_id = Column(UUID(as_uuid=True), ForeignKey("platform_owners.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class OperatorBillingEvent(Base):
     __tablename__ = "operator_billing_events"
 
@@ -1363,6 +1389,8 @@ class OperatorBillingEvent(Base):
             # Added to the database type by migration 024; without it here a
             # loaded row raises LookupError.
             "payment_rejected",
+            # Migration 064: a payment recorded by hand was reversed.
+            "payment_reversed",
             name="operator_billing_event_type",
             create_type=False,
         ),

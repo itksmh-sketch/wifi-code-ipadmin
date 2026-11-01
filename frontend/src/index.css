@@ -432,6 +432,43 @@ th {
 }
 .voucher-card-help { font-size: 0.72em; color: #6b7280; }
 
+/* ── Invoice and receipt (pages/InvoicePrint.jsx) ────────────────────────
+   Same portal as the vouchers: on paper only .print-root prints. One A4
+   page in portrait; on screen the same document is a white card. */
+.invoice-preview { overflow-x: auto; padding-bottom: 16px; }
+.invoice-doc {
+    max-width: 194mm; box-sizing: border-box; margin: 0 auto; padding: 14mm 12mm;
+    background: #fff; color: #111827; font-size: 13px; line-height: 1.45;
+    border: 1px solid #e5e7eb; border-radius: 6px;
+}
+.invoice-doc-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 24px; }
+.invoice-doc-issuer { font-size: 18px; font-weight: 700; }
+.invoice-doc-title { text-align: right; font-size: 20px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.invoice-doc-number { font-size: 14px; font-weight: 600; letter-spacing: 0; text-transform: none; margin-top: 2px; }
+.invoice-doc-status { display: inline-block; margin-top: 6px; padding: 2px 10px; border: 1px solid currentColor; border-radius: 999px; font-size: 12px; letter-spacing: .06em; }
+.invoice-doc-status-paid { color: #15803d; }
+.invoice-doc-status-issued, .invoice-doc-status-overdue { color: #b91c1c; }
+.invoice-doc-status-waived, .invoice-doc-status-draft { color: #6b7280; }
+.invoice-doc-meta { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+.invoice-doc-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: #6b7280; margin-bottom: 4px; }
+.invoice-doc-strong { font-weight: 600; }
+.invoice-doc-muted { color: #6b7280; }
+.invoice-doc-dates { display: grid; grid-template-columns: max-content auto; gap: 2px 14px; margin: 0; }
+.invoice-doc-dates dt { color: #6b7280; }
+.invoice-doc-dates dd { margin: 0; }
+.invoice-doc-lines { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+.invoice-doc-lines th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #6b7280; border-bottom: 1px solid #111827; padding: 6px 6px; }
+.invoice-doc-lines td { border-bottom: 1px solid #e5e7eb; padding: 6px 6px; vertical-align: top; }
+.invoice-doc-lines tfoot td { border-bottom: none; border-top: 1px solid #111827; font-weight: 700; }
+.invoice-doc-lines .num { text-align: right; white-space: nowrap; }
+.invoice-doc-receipt { border: 1px solid #bbf7d0; background: #f0fdf4; border-radius: 6px; padding: 12px 14px; }
+.invoice-doc-receipt p { margin: 8px 0 0; }
+@media (max-width: 640px) {
+    .invoice-doc { padding: 16px; }
+    .invoice-doc-head { flex-direction: column; }
+    .invoice-doc-title { text-align: left; }
+}
+
 @media print {
     @page { size: A4 portrait; margin: 8mm; }
     html, body { background: #fff !important; margin: 0 !important; padding: 0 !important; }
@@ -440,6 +477,8 @@ th {
     .voucher-sheet { break-after: page; page-break-after: always; }
     .voucher-sheet:last-child { break-after: auto; page-break-after: auto; }
     .voucher-card, .voucher-card-code { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .invoice-doc { border: none; border-radius: 0; max-width: none; padding: 0; }
+    .invoice-doc-receipt { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 .sidebar-role { text-transform: capitalize; }
 

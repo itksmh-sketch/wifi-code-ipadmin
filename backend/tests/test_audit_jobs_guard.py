@@ -32,8 +32,8 @@ AUDITED_JOBS = {
     "expire_vouchers": ("src.modules.vouchers.engine", "src.jobs.voucher_expiry"),
     # invoice.issue.
     "generate_monthly_invoices": ("src.modules.billing.service",),
-    # operator.trial_end, invoice.issue.
-    "handle_trial_expiry": ("src.jobs.trial_expiry", "src.modules.billing.service"),
+    # operator.trial_end (no invoice at trial end since migration 064's change).
+    "handle_trial_expiry": ("src.jobs.trial_expiry",),
     # invoice.overdue, operator.suspend.
     "enforce_billing": ("src.jobs.billing_enforcement",),
     # router.wireguard_remove for a removal finished on retry. The tunnel
